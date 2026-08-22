@@ -11,7 +11,13 @@
  */
 import { powerMonitor, BrowserWindow } from 'electron'
 import { exec } from 'node:child_process'
-import { connectIncyNode, disconnectIncy, getIncyStatus, loadIncySettings, loadIncySubscription } from './incy-engine'
+import {
+  connectIncyNode,
+  disconnectIncy,
+  getIncyStatus,
+  loadIncySettings,
+  loadIncySubscriptions
+} from './incy-engine'
 import { showSystemNotification } from '../utils/notifications'
 import { appLog } from '../utils/app-logger'
 
@@ -63,32 +69,48 @@ function todayKey(): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
 }
 
+/**
+ * Предупредить об истекающих подписках.
+ *
+ * Проверяются ВСЕ подписки, а не только активная: с несколькими провайдерами
+ * молчание про вторую означало бы, что человек узнаёт об окончании, только
+ * когда её серверы перестают работать.
+ *
+ * Уведомление не чаще раза в сутки — но выбирается самая срочная подписка,
+ * чтобы предупреждение про истёкшую не заслонялось той, у которой ещё неделя.
+ */
 export function checkSubscriptionExpiry(): void {
   const settings = loadIncySettings()
   const days = Number(settings.expireNotifyDays) || 0
   if (days <= 0) return
 
-  const sub = loadIncySubscription()
-  if (!sub?.expireAt) return
+  const expiring = loadIncySubscriptions()
+    .filter((s) => typeof s.expireAt === 'number' && s.expireAt !== null)
+    .map((s) => ({ sub: s, msLeft: (s.expireAt as number) - Date.now() }))
+    .filter((x) => Math.ceil(x.msLeft / 86_400_000) <= days)
+    .sort((a, b) => a.msLeft - b.msLeft)
 
-  const msLeft = sub.expireAt - Date.now()
-  const daysLeft = Math.ceil(msLeft / 86_400_000)
-  if (daysLeft > days) return
+  if (expiring.length === 0) return
   if (lastExpiryNoticeDay === todayKey()) return
   lastExpiryNoticeDay = todayKey()
+
+  const { sub, msLeft } = expiring[0]
+  // Про остальные — одной строкой, чтобы не сыпать уведомлениями подряд.
+  const alsoNote = expiring.length > 1 ? ` И ещё ${expiring.length - 1} на подходе.` : ''
 
   if (msLeft <= 0) {
     showSystemNotification(
       'LAZEYKA — подписка истекла',
-      `Срок действия «${sub.title}» закончился ${sub.expireDate ?? ''}. Продлите её, чтобы серверы снова заработали.`
+      `Срок действия «${sub.title}» закончился ${sub.expireDate ?? ''}. Продлите её, чтобы серверы снова заработали.${alsoNote}`
     )
     return
   }
 
+  const daysLeft = Math.ceil(msLeft / 86_400_000)
   const plural = daysLeft === 1 ? 'день' : daysLeft < 5 ? 'дня' : 'дней'
   showSystemNotification(
     'LAZEYKA — подписка скоро истечёт',
-    `«${sub.title}» действует ещё ${daysLeft} ${plural} (до ${sub.expireDate ?? '—'}).`
+    `«${sub.title}» действует ещё ${daysLeft} ${plural} (до ${sub.expireDate ?? '—'}).${alsoNote}`
   )
 }
 

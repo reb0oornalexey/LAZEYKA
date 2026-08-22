@@ -18,8 +18,9 @@ import { dialog, BrowserWindow } from 'electron'
 import {
   loadIncyNodes,
   saveIncyNodes,
-  loadIncySubscription,
-  saveIncySubscription,
+  loadIncySubscriptions,
+  saveIncySubscriptions,
+  newSubscriptionId,
   loadIncySettings,
   saveIncySettings,
   type IncyNode,
@@ -28,13 +29,20 @@ import {
 } from './incy-engine'
 
 const FORMAT = 'lazeyka-incy'
-const VERSION = 1
+/**
+ * 1 — одна подписка в поле `subscription`.
+ * 2 — список в `subscriptions`; `subscription` продолжаем писать (первая из
+ *     списка), чтобы копия, сделанная новой версией, открывалась и старой.
+ */
+const VERSION = 2
 
 interface IncyBackupFile {
   format: typeof FORMAT
   version: number
   exportedAt: number
+  /** Совместимость со старым форматом: первая подписка из списка. */
   subscription: IncySubscription | null
+  subscriptions: IncySubscription[]
   nodes: IncyNode[]
   settings: Partial<IncySettings>
 }
@@ -45,6 +53,8 @@ export interface IncyBackupPreview {
   filePath?: string
   exportedAt?: number
   subscriptionTitle?: string | null
+  /** Названия всех подписок в копии — их показываем в списке при восстановлении. */
+  subscriptionTitles?: string[]
   nodeCount?: number
   routingRuleCount?: number
   hasSettings?: boolean
@@ -80,11 +90,13 @@ function stripLatency(nodes: IncyNode[]): IncyNode[] {
 }
 
 function buildBundle(): IncyBackupFile {
+  const subscriptions = loadIncySubscriptions()
   return {
     format: FORMAT,
     version: VERSION,
     exportedAt: Date.now(),
-    subscription: loadIncySubscription(),
+    subscription: subscriptions[0] ?? null,
+    subscriptions,
     nodes: stripLatency(loadIncyNodes()),
     settings: sanitiseSettings(loadIncySettings())
   }
@@ -115,12 +127,15 @@ export async function exportIncyBackup(): Promise<{ ok: boolean; filePath?: stri
  * clipboard payload with 40 nodes in it is unusable in a chat message.
  */
 export function buildIncyBackupLink(): string {
-  const sub = loadIncySubscription()
+  const subs = loadIncySubscriptions()
+  const short = subs.map((s) => ({ url: s.url, title: s.title }))
   const payload = {
     format: FORMAT,
     version: VERSION,
     exportedAt: Date.now(),
-    subscription: sub ? { url: sub.url, title: sub.title } : null,
+    // `subscription` — для старых сборок, которые читают только её.
+    subscription: short[0] ?? null,
+    subscriptions: short,
     settings: sanitiseSettings(loadIncySettings())
   }
   return `lazeyka://restore/${Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url')}`
@@ -131,11 +146,21 @@ function parseBundle(raw: string): IncyBackupFile | null {
     const data = JSON.parse(raw)
     if (!data || typeof data !== 'object') return null
     if (data.format !== FORMAT) return null
+
+    // Копия версии 1 знает только про одну подписку — приводим её к списку,
+    // чтобы дальше по коду был ровно один путь.
+    const list: IncySubscription[] = Array.isArray(data.subscriptions)
+      ? data.subscriptions.filter((s: unknown) => s && typeof (s as IncySubscription).url === 'string')
+      : data.subscription && typeof data.subscription.url === 'string'
+        ? [data.subscription]
+        : []
+
     return {
       format: FORMAT,
       version: Number(data.version) || 1,
       exportedAt: Number(data.exportedAt) || 0,
-      subscription: data.subscription ?? null,
+      subscription: list[0] ?? null,
+      subscriptions: list,
       nodes: Array.isArray(data.nodes) ? data.nodes : [],
       settings: data.settings && typeof data.settings === 'object' ? data.settings : {}
     }
@@ -186,6 +211,7 @@ export async function pickIncyBackup(): Promise<IncyBackupPreview> {
     filePath,
     exportedAt: bundle.exportedAt,
     subscriptionTitle: bundle.subscription?.title ?? null,
+    subscriptionTitles: bundle.subscriptions.map((s) => s.title || s.url),
     nodeCount: bundle.nodes.length,
     routingRuleCount: rules,
     hasSettings: Object.keys(bundle.settings).length > 0
@@ -207,14 +233,37 @@ export function applyIncyBackup(
 
   const applied: string[] = []
 
-  if (parts.nodes && bundle.nodes.length > 0) {
-    saveIncyNodes(stripLatency(bundle.nodes))
-    applied.push(`серверы (${bundle.nodes.length})`)
+  // Подписки восстанавливаем перед серверами: узлам нужны их id, а копия
+  // первой версии этих id вообще не содержит — их приходится выдавать здесь.
+  const restored: IncySubscription[] = bundle.subscriptions.map((s) => ({
+    ...s,
+    id: s.id || newSubscriptionId()
+  }))
+
+  if (parts.subscription && restored.length > 0) {
+    saveIncySubscriptions(restored)
+    applied.push(restored.length === 1 ? 'подписка' : `подписки (${restored.length})`)
   }
 
-  if (parts.subscription && bundle.subscription) {
-    saveIncySubscription(bundle.subscription)
-    applied.push('подписка')
+  if (parts.nodes && bundle.nodes.length > 0) {
+    // Привязка действительна только если подписки из файла тоже применяются.
+    // Иначе узел ссылался бы на подписку, которой на этой машине нет, — и
+    // первое же «Обновить» такой подписки его бы не тронуло, а удаление
+    // соседней могло бы задеть.
+    const knownIds = new Set(parts.subscription ? restored.map((s) => s.id) : [])
+    // Узел без привязки — либо из копии старого формата, либо добавлен вручную.
+    // В первом случае владелец очевиден: подписка была одна.
+    const soleOwner = restored.length === 1 ? restored[0].id : undefined
+    const nodes = stripLatency(bundle.nodes).map((n) => {
+      if (n.subscriptionId && knownIds.has(n.subscriptionId)) return n
+      if (!n.subscriptionId && soleOwner && parts.subscription) {
+        return { ...n, subscriptionId: soleOwner }
+      }
+      // Осиротевший узел не удаляем — он останется ручным и продолжит работать.
+      return n.subscriptionId ? { ...n, subscriptionId: undefined } : n
+    })
+    saveIncyNodes(nodes)
+    applied.push(`серверы (${nodes.length})`)
   }
 
   if (parts.settings || parts.routingRules) {

@@ -31,6 +31,9 @@ import {
   importIncyInput,
   fetchIncySubscription,
   refreshIncySubscription,
+  loadIncySubscriptions,
+  refreshAllIncySubscriptions,
+  removeIncySubscription,
   parseIncyUri,
   getIncyStatus,
   connectIncyNode,
@@ -385,7 +388,15 @@ export function registerIpcMainHandlers(): void {
   // Re-fetches the saved subscription URL. Previously missing entirely, so the
   // "Обновить подписку" button on the INCY page always failed with
   // "No handler registered for 'incy:refreshSubscription'".
-  ipcMain.handle('incy:refreshSubscription', h(() => refreshIncySubscription()))
+  ipcMain.handle(
+    'incy:refreshSubscription',
+    h((id) => refreshIncySubscription(id ? String(id) : undefined))
+  )
+
+  // ---- INCY: несколько подписок ------------------------------------------
+  ipcMain.handle('incy:getSubscriptions', h(() => loadIncySubscriptions()))
+  ipcMain.handle('incy:refreshAllSubscriptions', h(() => refreshAllIncySubscriptions()))
+  ipcMain.handle('incy:removeSubscription', h((id) => removeIncySubscription(String(id))))
 
   // ---- INCY geo databases (RoscomVPN geoip.dat / geosite.dat) ------------
   ipcMain.handle('incy:checkGeoUpdate', h(() => checkGeoUpdate()))
@@ -466,7 +477,9 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('app:installUpdate', h((url, expectedVersion) =>
     installAppUpdate(url as string, expectedVersion as string | undefined)
   ))
-  ipcMain.handle('app:dismissUpdate', h((tag) => dismissAppUpdate(tag as string)))
+  ipcMain.handle('app:dismissUpdate', h((tag, forever) =>
+    dismissAppUpdate(tag as string, Boolean(forever))
+  ))
 
   // ---- Quit / restart -----------------------------------------------------
   ipcMain.handle('app:quit', h(() => app.quit()))

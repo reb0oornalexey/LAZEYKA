@@ -8,7 +8,14 @@ import { performance } from 'node:perf_hooks'
 import { randomBytes } from 'node:crypto'
 import { ChildProcess, spawn } from 'node:child_process'
 import { BrowserWindow } from 'electron'
-import { dataDir, incyBinaryPath, isXrayAvailable, xrayAssetsDir, xrayBinaryPath } from '../utils/dirs'
+import {
+  dataDir,
+  incyBinaryPath,
+  incyRuntimeDir,
+  isXrayAvailable,
+  xrayAssetsDir,
+  xrayBinaryPath
+} from '../utils/dirs'
 import { planTopology, usesXrayOnlyFeatures } from './incy-topology'
 import { buildXrayConfig } from './incy-xray'
 import { areGeoDatabasesReady } from './incy-geo-updater'
@@ -78,9 +85,26 @@ export interface IncyNode {
   latencyMs: number | null
   /** When `latencyMs` was measured. Used to discard stale readings on load. */
   latencyAt?: number
+  /**
+   * Подписка, из которой пришёл узел.
+   *
+   * Пусто у узлов, добавленных вручную одной ссылкой (`vless://…`) — они не
+   * принадлежат никакому провайдеру и не должны исчезать при обновлении или
+   * удалении подписок.
+   */
+  subscriptionId?: string
 }
 
 export interface IncySubscription {
+  /**
+   * Стабильный идентификатор подписки.
+   *
+   * Появился вместе с поддержкой нескольких подписок: по нему узлы связаны со
+   * своим провайдером, и по нему же обновляется/удаляется конкретная подписка,
+   * не задевая остальные. У подписок, сохранённых до этого изменения, id
+   * проставляется при миграции.
+   */
+  id: string
   url: string
   title: string
   usedBytes: number | null
@@ -589,26 +613,123 @@ export function saveIncyNodes(nodes: IncyNode[]): void {
   writeFileSync(file, JSON.stringify(stamped, null, 2), 'utf-8')
 }
 
-export function loadIncySubscription(): IncySubscription | null {
+/** Файл со списком подписок. Пришёл на смену одиночному incy-sub.json. */
+function incySubsFile(): string {
+  return path.join(dataDir(), 'incy-subs.json')
+}
+
+/** Новый идентификатор подписки. */
+export function newSubscriptionId(): string {
+  return `sub_${randomBytes(6).toString('hex')}`
+}
+
+/**
+ * Прочитать старый файл одиночной подписки.
+ *
+ * Отдельно от загрузки списка, потому что нужен ровно один раз — при миграции.
+ */
+function readLegacySubscription(): IncySubscription | null {
   const file = incySubFile()
   if (!existsSync(file)) return null
   try {
     const content = readFileSync(file, 'utf-8').trim()
     if (!content || content === 'null') return null
-    return JSON.parse(content)
+    const parsed = JSON.parse(content)
+    return parsed && typeof parsed === 'object' && parsed.url ? parsed : null
   } catch {
     return null
   }
 }
 
-export function saveIncySubscription(sub: IncySubscription | null): void {
-  const file = incySubFile()
-  mkdirSync(path.dirname(file), { recursive: true })
-  if (!sub) {
-    if (existsSync(file)) writeFileSync(file, 'null', 'utf-8')
-    return
+/**
+ * Все подписки пользователя.
+ *
+ * Если списка ещё нет, но лежит старый одиночный файл — он превращается в
+ * список из одного элемента, а всем узлам без метки проставляется его id.
+ * Иначе после обновления приложения узлы оказались бы «ничьими»: обновление
+ * подписки их бы не тронуло, а удаление — не убрало.
+ *
+ * Миграция идемпотентна: повторный запуск ничего не меняет, потому что после
+ * первого прохода файл списка уже существует.
+ */
+export function loadIncySubscriptions(): IncySubscription[] {
+  const file = incySubsFile()
+  if (existsSync(file)) {
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf-8'))
+      if (Array.isArray(parsed)) {
+        // Подстраховка: запись без id читать бессмысленно, узлы к ней не
+        // привязать. Такие пропускаем, а не роняем весь список.
+        return parsed.filter((s) => s && typeof s.id === 'string' && typeof s.url === 'string')
+      }
+    } catch { /* повреждён — уходим на миграцию ниже */ }
   }
-  writeFileSync(file, JSON.stringify(sub, null, 2), 'utf-8')
+
+  const legacy = readLegacySubscription()
+  if (!legacy) return []
+
+  const migrated: IncySubscription = { ...legacy, id: legacy.id || newSubscriptionId() }
+  saveIncySubscriptions([migrated])
+
+  // Пометить узлы, у которых метки ещё нет. Ручные узлы отличить от узлов
+  // подписки задним числом невозможно, но до этой версии подписка была одна,
+  // так что «всё, что есть» — это её узлы плюс, возможно, пара ручных. Отдать
+  // их подписке безопаснее, чем оставить сиротами: иначе обновление подписки
+  // задублировало бы их.
+  try {
+    const nodes = loadIncyNodes()
+    if (nodes.some((n) => !n.subscriptionId)) {
+      saveIncyNodes(nodes.map((n) => (n.subscriptionId ? n : { ...n, subscriptionId: migrated.id })))
+    }
+  } catch { /* узлов может не быть */ }
+
+  return [migrated]
+}
+
+export function saveIncySubscriptions(list: IncySubscription[]): void {
+  const file = incySubsFile()
+  mkdirSync(path.dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify(list, null, 2), 'utf-8')
+}
+
+/**
+ * «Текущая» подписка — та, которой принадлежит выбранный сервер.
+ *
+ * Отдельной настройки нет намеренно: она бы разъезжалась с выбранным узлом.
+ * Если выбранного нет или он добавлен вручную, берётся первая в списке.
+ */
+export function loadIncySubscription(): IncySubscription | null {
+  const list = loadIncySubscriptions()
+  if (list.length === 0) return null
+  const selectedId = loadIncySettings().selectedNodeId
+  if (selectedId) {
+    const node = loadIncyNodes().find((n) => n.id === selectedId)
+    const owner = node?.subscriptionId && list.find((s) => s.id === node.subscriptionId)
+    if (owner) return owner
+  }
+  return list[0]
+}
+
+/** Совместимость: сохранить одну подписку, добавив или заменив её в списке. */
+export function saveIncySubscription(sub: IncySubscription | null): void {
+  if (!sub) return
+  upsertIncySubscription(sub)
+}
+
+/**
+ * Добавить подписку или обновить существующую.
+ *
+ * Совпадением считается либо тот же id, либо тот же URL: повторный импорт
+ * одной и той же ссылки должен обновлять запись, а не плодить дубли.
+ */
+export function upsertIncySubscription(sub: IncySubscription): IncySubscription {
+  const list = loadIncySubscriptions()
+  const idx = list.findIndex((s) => s.id === sub.id || s.url === sub.url)
+  const withId: IncySubscription = { ...sub, id: sub.id || list[idx]?.id || newSubscriptionId() }
+  if (idx >= 0) list[idx] = { ...list[idx], ...withId, id: list[idx].id }
+  else list.push(withId)
+  saveIncySubscriptions(list)
+  return idx >= 0 ? list[idx] : withId
 }
 
 /**
@@ -1109,6 +1230,9 @@ export async function fetchIncySubscription(subUrl: string): Promise<{ subscript
   appendLog(`Успешно загружено узлов: ${nodes.length}`)
 
   const subscription: IncySubscription = {
+    // Существующая подписка с этим URL сохраняет свой id — иначе повторная
+    // загрузка отвязала бы от неё все узлы. Для новой генерируется свой.
+    id: loadIncySubscriptions().find((s) => s.url === subUrl)?.id ?? newSubscriptionId(),
     url: subUrl,
     title,
     usedBytes,
@@ -1126,7 +1250,9 @@ export async function fetchIncySubscription(subUrl: string): Promise<{ subscript
     announcements
   }
 
-  return { subscription, nodes }
+  // Метка принадлежности ставится здесь, в одном месте: любой путь получения
+  // узлов из подписки проходит через эту функцию, и забыть пометить нельзя.
+  return { subscription, nodes: nodes.map((n) => ({ ...n, subscriptionId: subscription.id })) }
 }
 
 /**
@@ -1149,11 +1275,14 @@ function nodeIdentity(n: IncyNode): string {
  * was started with. Reconnecting mid-refresh would drop the user's traffic for
  * no reason — they can switch servers explicitly afterwards.
  */
-export async function refreshIncySubscription(): Promise<{
+export async function refreshIncySubscription(subscriptionId?: string): Promise<{
   subscription: IncySubscription
   nodes: IncyNode[]
 }> {
-  const current = loadIncySubscription()
+  const list = loadIncySubscriptions()
+  const current = subscriptionId
+    ? list.find((s) => s.id === subscriptionId)
+    : loadIncySubscription()
   if (!current?.url) {
     throw new Error('Подписка не добавлена — сначала импортируйте ссылку на подписку.')
   }
@@ -1166,12 +1295,19 @@ export async function refreshIncySubscription(): Promise<{
   for (const p of previous) {
     if (p.latencyMs !== null) latencyByIdentity.set(nodeIdentity(p), p.latencyMs)
   }
-  const merged = nodes.map((n) => ({
+  const fresh = nodes.map((n) => ({
     ...n,
+    subscriptionId: current.id,
     latencyMs: n.latencyMs ?? latencyByIdentity.get(nodeIdentity(n)) ?? null
   }))
 
-  saveIncySubscription(subscription)
+  // Заменяются только узлы ЭТОЙ подписки. Раньше список перезаписывался
+  // целиком — с одной подпиской разницы не было, а с несколькими это стирало
+  // бы серверы всех остальных провайдеров и вручную добавленные узлы.
+  const untouched = previous.filter((n) => n.subscriptionId !== current.id)
+  const merged = [...untouched, ...fresh]
+
+  saveIncySubscription({ ...subscription, id: current.id })
   saveIncyNodes(merged)
 
   // Re-point the selection at the same endpoint under its new id, so the
@@ -1181,19 +1317,94 @@ export async function refreshIncySubscription(): Promise<{
   const reselected = previouslySelected
     ? merged.find((n) => nodeIdentity(n) === nodeIdentity(previouslySelected))
     : undefined
-  const nextSelectedId = reselected?.id ?? merged[0]?.id ?? null
+  // Запасной вариант — только если выбранный узел действительно исчез.
+  // Иначе обновление одной подписки перекидывало бы выбор на чужой сервер.
+  const selectionSurvived = merged.some((n) => n.id === settings.selectedNodeId)
+  const nextSelectedId = reselected?.id ?? (selectionSurvived ? settings.selectedNodeId : merged[0]?.id ?? null)
   if (nextSelectedId !== settings.selectedNodeId) {
     settings.selectedNodeId = nextSelectedId
     saveIncySettings(settings)
     broadcastStatus({ selectedNodeId: nextSelectedId })
   }
 
+  // То же самое для АКТИВНОГО узла.
+  //
+  // Обновление подписки выдаёт узлам новые id, а туннель продолжает работать
+  // со старым. Сам по себе он от этого не падает, но следующая же смена режима
+  // соединения или маршрутизации переподключается по `activeNodeId` — и
+  // спотыкалась об «Узел не найден», хотя сервер никуда не делся. Здесь
+  // указатель переводится на тот же адрес под новым id.
+  if (currentStatus.state === 'running' && currentStatus.activeNodeId) {
+    const stillThere = merged.some((n) => n.id === currentStatus.activeNodeId)
+    if (!stillThere) {
+      const activeBefore = previous.find((p) => p.id === currentStatus.activeNodeId)
+      const activeNow = activeBefore
+        ? merged.find((n) => nodeIdentity(n) === nodeIdentity(activeBefore))
+        : undefined
+      if (activeNow) {
+        broadcastStatus({ activeNodeId: activeNow.id })
+        appendLog(`Активный сервер сохранён после обновления: ${activeNow.name}`)
+      }
+    }
+  }
+
   appendLog(
-    `Подписка обновлена: ${merged.length} узл(ов)` +
+    `Подписка «${subscription.title}» обновлена: ${fresh.length} узл(ов)` +
       (reselected ? `, выбранный сервер сохранён (${reselected.name})` : '')
   )
 
-  return { subscription, nodes: merged }
+  return { subscription: { ...subscription, id: current.id }, nodes: merged }
+}
+
+/** Обновить все подписки подряд. Падение одной не отменяет остальные. */
+export async function refreshAllIncySubscriptions(): Promise<{
+  subscriptions: IncySubscription[]
+  nodes: IncyNode[]
+  failed: { title: string; error: string }[]
+}> {
+  const list = loadIncySubscriptions()
+  const failed: { title: string; error: string }[] = []
+  for (const sub of list) {
+    try {
+      await refreshIncySubscription(sub.id)
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e)
+      failed.push({ title: sub.title, error })
+      appendLog(`Подписка «${sub.title}» не обновилась: ${error}`)
+    }
+  }
+  return { subscriptions: loadIncySubscriptions(), nodes: loadIncyNodes(), failed }
+}
+
+/**
+ * Удалить подписку вместе с её узлами.
+ *
+ * Вручную добавленные узлы не трогаются: у них нет метки принадлежности.
+ */
+export function removeIncySubscription(subscriptionId: string): {
+  subscriptions: IncySubscription[]
+  nodes: IncyNode[]
+} {
+  const list = loadIncySubscriptions()
+  const target = list.find((s) => s.id === subscriptionId)
+  const nextSubs = list.filter((s) => s.id !== subscriptionId)
+  const nextNodes = loadIncyNodes().filter((n) => n.subscriptionId !== subscriptionId)
+
+  saveIncySubscriptions(nextSubs)
+  saveIncyNodes(nextNodes)
+
+  // Выбранный сервер мог принадлежать удалённой подписке — перевести выбор на
+  // первый оставшийся, иначе приложение осталось бы с ссылкой в пустоту.
+  const settings = loadIncySettings()
+  if (settings.selectedNodeId && !nextNodes.some((n) => n.id === settings.selectedNodeId)) {
+    const nextId = nextNodes[0]?.id ?? null
+    settings.selectedNodeId = nextId
+    saveIncySettings(settings)
+    broadcastStatus({ selectedNodeId: nextId })
+  }
+
+  appendLog(`Подписка «${target?.title ?? subscriptionId}» удалена`)
+  return { subscriptions: nextSubs, nodes: nextNodes }
 }
 
 export async function importIncyInput(input: string): Promise<{ addedCount: number; subscription: IncySubscription | null; nodes: IncyNode[] }> {
@@ -1202,9 +1413,26 @@ export async function importIncyInput(input: string): Promise<{ addedCount: numb
 
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
     const { subscription, nodes } = await fetchIncySubscription(trimmed)
-    saveIncySubscription(subscription)
-    saveIncyNodes(nodes)
-    return { addedCount: nodes.length, subscription, nodes }
+    const saved = upsertIncySubscription(subscription)
+
+    // Подписка ДОБАВЛЯЕТСЯ к существующим, а не заменяет их. Прежний код
+    // перезаписывал весь список узлов, поэтому вторая ссылка стирала первую.
+    // Узлы этой же подписки при повторном импорте обновляются, чужие целы.
+    const others = loadIncyNodes().filter((n) => n.subscriptionId !== saved.id)
+    const fresh = nodes.map((n) => ({ ...n, subscriptionId: saved.id }))
+    const next = [...others, ...fresh]
+    saveIncyNodes(next)
+
+    // Первая подписка в пустом приложении — сразу выбрать её сервер, иначе
+    // пользователь добавил серверы и не может подключиться без лишнего клика.
+    const settings = loadIncySettings()
+    if (!settings.selectedNodeId || !next.some((n) => n.id === settings.selectedNodeId)) {
+      settings.selectedNodeId = fresh[0]?.id ?? next[0]?.id ?? null
+      saveIncySettings(settings)
+      broadcastStatus({ selectedNodeId: settings.selectedNodeId })
+    }
+
+    return { addedCount: fresh.length, subscription: saved, nodes: next }
   }
 
   const single = parseIncyUri(trimmed)
@@ -1524,10 +1752,18 @@ export async function pingIncyNode(
 function buildModernDnsServer(
   tag: string,
   address: string,
-  detour: 'proxy' | 'direct',
+  /**
+   * Тег исходящего, через который ходит этот сервер, или null для прямого.
+   *
+   * Именно null, а не 'direct': ссылка detour на пустой outbound `direct`
+   * в sing-box 1.12+ — ошибка запуска. Прямой выход задаётся правилом
+   * маршрутизации на адрес сервера (см. вызывающий код).
+   */
+  detour: 'proxy' | null,
   needsBootstrap: boolean
 ): Record<string, unknown> {
-  const base: Record<string, unknown> = { tag, detour }
+  const base: Record<string, unknown> = { tag }
+  if (detour) base.detour = detour
   if (needsBootstrap) base.domain_resolver = 'dns-bootstrap'
 
   const match = address.match(/^([a-z0-9+.-]+):\/\/(.+)$/i)
@@ -1774,6 +2010,50 @@ function buildSingBoxOutbound(node: IncyNode, settings: IncySettings): any {
  * even launch the checker is treated as "ok" — a missing checker must never
  * block a connection that might otherwise work.
  */
+/**
+ * Версия ядра и то, откуда оно взято.
+ *
+ * Версию Xray видно в логе — он печатает её сам при старте. sing-box молчит,
+ * и это оказалось дорогой слепой зоной: у двух человек с одинаковой версией
+ * LAZEYKA ядра могут быть разные, потому что `incyBinaryPath()` предпочитает
+ * скачанное в `runtime/` вшитому в сборку, автообновление тихо ставит патч-
+ * версии, а `runtime/` лежит в %APPDATA% и переживает переустановку. Разбирать
+ * такие расхождения без версии в логе невозможно.
+ *
+ * Кешируется по пути к файлу: ядро в пределах сессии не меняется, а спавнить
+ * процесс на каждое подключение незачем.
+ */
+const coreVersionCache = new Map<string, string>()
+
+function readSingBoxVersion(bin: string): Promise<string> {
+  const cached = coreVersionCache.get(bin)
+  if (cached) return Promise.resolve(cached)
+  return new Promise((resolve) => {
+    let out = ''
+    let settled = false
+    const finish = (v: string): void => {
+      if (settled) return
+      settled = true
+      coreVersionCache.set(bin, v)
+      resolve(v)
+    }
+    try {
+      const p = spawn(bin, ['version'], { windowsHide: true })
+      p.stdout?.on('data', (b) => { out += b.toString() })
+      p.stderr?.on('data', (b) => { out += b.toString() })
+      p.on('exit', () => {
+        // Первая строка вида «sing-box version 1.13.19».
+        const m = out.match(/version\s+(\d+\.\d+\.\d+\S*)/i)
+        finish(m ? m[1] : 'неизвестна')
+      })
+      p.on('error', () => finish('неизвестна'))
+      setTimeout(() => finish('неизвестна'), 4000)
+    } catch {
+      finish('неизвестна')
+    }
+  })
+}
+
 function validateCoreConfig(
   bin: string,
   args: string[]
@@ -1885,6 +2165,18 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     const bin = incyBinaryPath()
     if (!existsSync(bin)) {
       throw new Error(`Бинарник sing-box не найден: ${bin}`)
+    }
+
+    // Версия ядра и его происхождение — первым делом. Одинаковая версия
+    // LAZEYKA НЕ означает одинаковый sing-box: скачанное автообновлением ядро
+    // лежит в runtime/ и имеет приоритет над вшитым в сборку. Без этой строки
+    // расхождение «у меня работает, у него нет» неразрешимо.
+    {
+      const version = await readSingBoxVersion(bin)
+      const fromRuntime = bin.startsWith(incyRuntimeDir())
+      appendLog(
+        `Ядро sing-box ${version} (${fromRuntime ? 'скачано автообновлением' : 'из комплекта'}: ${bin})`
+      )
     }
 
     // Announce the attempt straight away.
@@ -2045,13 +2337,27 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // Поэтому сначала пробуем современную форму, а если ядро её не примет
     // (значит, оно старое) — откатываемся на legacy. Ровно та же схема, что
     // уже используется для Clash API и уровней гео-правил.
+    /**
+     * У «прямых» DNS-серверов detour НЕ указывается.
+     *
+     * sing-box 1.12+ считает ошибкой ссылку detour на пустой outbound `direct`
+     * и падает на старте: «detour to an empty direct outbound makes no sense».
+     * Логика ядра здесь верная — direct и так означает «без обёртки», указывать
+     * его отдельно бессмысленно.
+     *
+     * Но убрать detour мало: без него запросы пойдут по общим правилам
+     * маршрутизации, где `route.final` = proxy, и локальный DNS уехал бы в
+     * туннель. Поэтому ниже добавляется правило маршрутизации, прибивающее
+     * адреса этих серверов к direct — тот же смысл, выраженный тем способом,
+     * который ядро принимает.
+     */
     const dnsServersModern = [
       buildModernDnsServer('remote-dns', dnsPair.remote, 'proxy', needsResolver(dnsPair.remote)),
-      buildModernDnsServer('local-dns', dnsPair.local, 'direct', needsResolver(dnsPair.local)),
-      // Bootstrap only: plain UDP to a literal IP, always direct. Nothing uses
-      // it except resolving the hostnames of the two servers above, so it sits
-      // last where it can never become the default.
-      { tag: 'dns-bootstrap', type: 'udp', server: bootstrapIp, detour: 'direct' }
+      buildModernDnsServer('local-dns', dnsPair.local, null, needsResolver(dnsPair.local)),
+      // Bootstrap only: plain UDP to a literal IP. Nothing uses it except
+      // resolving the hostnames of the two servers above, so it sits last
+      // where it can never become the default.
+      { tag: 'dns-bootstrap', type: 'udp', server: bootstrapIp }
     ]
     const dnsServersLegacy = [
       {
@@ -2248,6 +2554,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       })
     }
 
+
     // NOTE: no TLS-fragmentation rule here.
     //
     // sing-box 1.12 did add `tls_fragment`, but it is NOT an option of the
@@ -2268,6 +2575,30 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // sing-box's own resolver instead of letting it escape to the ISP.
     if (settings.hijackDns) {
       config.route.rules.push({ protocol: 'dns', action: 'hijack-dns' })
+    }
+
+    // Локальный и bootstrap DNS — мимо туннеля.
+    //
+    // Заменяет `detour: "direct"` у этих серверов: sing-box 1.12+ отвергает
+    // ссылку detour на пустой outbound `direct` и падает на старте с
+    // «detour to an empty direct outbound makes no sense». Без замены запросы
+    // попали бы под `route.final` = proxy — локальный DNS уехал бы в туннель,
+    // а bootstrap перестал бы быть доступным ДО его подъёма.
+    //
+    // Строго ПОСЛЕ hijack-dns: иначе прямой выход перехватил бы системные
+    // DNS-запросы к тому же адресу раньше перехвата и выпустил бы их наружу.
+    // Собственные обращения ядра к своим DNS-серверам под hijack-dns не
+    // попадают — там нет ни входящего соединения, ни сниффинга.
+    //
+    // Только литеральные адреса: доменное имя тут пришлось бы резолвить, а
+    // резолвить нечем — это и есть bootstrap.
+    {
+      const directDnsIps = [...new Set([dnsPair.local, bootstrapIp])]
+        .filter((a) => net.isIP(a))
+        .map((ip) => `${ip}/${net.isIPv6(ip) ? 128 : 32}`)
+      if (directDnsIps.length > 0) {
+        config.route.rules.push({ ip_cidr: directDnsIps, outbound: 'direct' })
+      }
     }
 
     pushCustomRules()

@@ -52,6 +52,23 @@ export default function AppUpdateOverlay(): React.ReactElement | null {
     }
   }, [autoCheckUpdate, appConfig === undefined])
 
+  // Главный процесс проверяет обновления сам и присылает результат сюда.
+  // Своего опроса выше уже недостаточно: при скрытом окне Chromium душит
+  // таймеры, а после разворота окна по клику на уведомление показать
+  // обновление надо сразу, не дожидаясь следующего часа.
+  useEffect(() => {
+    const onPush = (_e: unknown, next: AppUpdateInfo): void => {
+      setInfo(next)
+      // Человек мог закрыть окно раньше; раз главный процесс зовёт снова —
+      // значит, отсрочка кончилась и прятать больше нечего.
+      if (!next.dismissed) setClosing(false)
+    }
+    window.electron.ipcRenderer.on('app:updateAvailable', onPush)
+    return () => {
+      window.electron.ipcRenderer.removeAllListeners('app:updateAvailable')
+    }
+  }, [])
+
   const visible =
     !!info &&
     info.hasUpdate &&
@@ -73,14 +90,21 @@ export default function AppUpdateOverlay(): React.ReactElement | null {
     }
   }
 
-  const handleLater = async (): Promise<void> => {
+  /**
+   * «Позже» — тишина на сутки, не навсегда.
+   *
+   * Раньше эта кнопка записывала тег в конфиг без срока, и окно больше не
+   * появлялось до следующего релиза. Для тех, кто держит LAZEYKA в трее, это
+   * означало, что про обновление они не узнают вовсе.
+   */
+  const handleLater = async (forever = false): Promise<void> => {
     if (!info?.tag) {
       setClosing(true)
       return
     }
     setClosing(true)
     try {
-      await appDismissUpdate(info.tag)
+      await appDismissUpdate(info.tag, forever)
     } catch {
       /* noop — dismissal is a soft signal */
     }
@@ -105,7 +129,7 @@ export default function AppUpdateOverlay(): React.ReactElement | null {
       <div className="relative w-[min(560px,92vw)] rounded-2xl border border-primary/30 bg-card/95 backdrop-blur-2xl text-card-foreground shadow-[0_0_50px_rgba(0,0,0,0.8)] p-6 sm:p-8">
         <button
           type="button"
-          onClick={handleLater}
+          onClick={() => { void handleLater(false) }}
           disabled={installing}
           aria-label="Закрыть"
           className="absolute top-3 right-3 size-8 inline-flex items-center justify-center rounded-xl text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -143,32 +167,46 @@ export default function AppUpdateOverlay(): React.ReactElement | null {
           </div>
         </div>
 
-        <div className="mt-6 flex items-center justify-end gap-2">
-          <Button
-            variant="ghost"
-            onClick={handleLater}
+        <div className="mt-6 flex items-center justify-between gap-2">
+          {/* Отказ от версии насовсем — отдельным, неброским действием.
+              Он остаётся доступным тем, кто правда не хочет обновляться, но
+              больше не срабатывает случайно при нажатии «Позже». */}
+          <button
+            type="button"
+            onClick={() => { void handleLater(true) }}
             disabled={installing}
+            className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            Позже
-          </Button>
-          <Button onClick={handleInstall} disabled={installing}>
-            {installing ? (
-              <>
-                <Loader2 className="size-4 mr-2 animate-spin" />
-                Загрузка…
-              </>
-            ) : (
-              <>
-                <Download className="size-4 mr-2" />
-                Установить
-              </>
-            )}
-          </Button>
+            Пропустить эту версию
+          </button>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => { void handleLater(false) }}
+              disabled={installing}
+            >
+              Позже
+            </Button>
+            <Button onClick={handleInstall} disabled={installing}>
+              {installing ? (
+                <>
+                  <Loader2 className="size-4 mr-2 animate-spin" />
+                  Загрузка…
+                </>
+              ) : (
+                <>
+                  <Download className="size-4 mr-2" />
+                  Установить
+                </>
+              )}
+            </Button>
+          </div>
         </div>
 
         <div className="mt-3 text-[11px] text-muted-foreground leading-relaxed">
-          LAZEYKA закроется на 5–10 секунд для установки и запустится снова автоматически.
-          Все настройки и конфиги сохраняются.
+          «Позже» — напомним через сутки. LAZEYKA закроется на 5–10 секунд для установки
+          и запустится снова автоматически. Все настройки и конфиги сохраняются.
         </div>
       </div>
     </div>

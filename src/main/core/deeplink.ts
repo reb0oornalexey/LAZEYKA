@@ -260,10 +260,26 @@ function applyRestorePayload(payload: string): boolean {
       saveIncySettings(next)
     }
 
-    if (data.subscription?.url) {
-      void importIncyInput(String(data.subscription.url))
-        .then(() => broadcastRefresh())
-        .catch((e) => appLog('warn', `[deeplink] Подписка из ссылки не загрузилась: ${String(e)}`))
+    // Ссылка может нести несколько подписок; у старых — только поле
+    // `subscription`. Импортируем последовательно, чтобы одновременные записи
+    // в файл узлов не затирали друг друга.
+    const urls: string[] = Array.isArray(data.subscriptions)
+      ? data.subscriptions.map((s: { url?: unknown }) => String(s?.url ?? '')).filter(Boolean)
+      : data.subscription?.url
+        ? [String(data.subscription.url)]
+        : []
+
+    if (urls.length > 0) {
+      void (async () => {
+        for (const url of urls) {
+          try {
+            await importIncyInput(url)
+          } catch (e) {
+            appLog('warn', `[deeplink] Подписка из ссылки не загрузилась: ${String(e)}`)
+          }
+        }
+        broadcastRefresh()
+      })()
     }
     return true
   } catch {

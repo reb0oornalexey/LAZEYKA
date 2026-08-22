@@ -5,6 +5,7 @@ import { mainWindow, triggerMainWindow, showMainWindow } from '..'
 import { startTgws, stopTgws, getTgwsStatus } from '../core/tgws'
 import { startZapret, stopZapret, getZapretStatus, listStrategies, restartZapret } from '../core/zapret'
 import { getIncyStatus, connectIncyNode, disconnectIncy } from '../core/incy-engine'
+import { getPendingAppUpdate, openUpdateWindow } from '../core/app-update-watcher'
 import { getAppConfigSync, patchAppConfig } from '../config'
 import { appLog } from '../utils/app-logger'
 
@@ -112,7 +113,27 @@ export async function createTray(): Promise<void> {
       }
     }))
 
+    // Пункт про обновление держится первым и не пропадает, пока версию не
+    // поставили: для человека, у которого окно скрыто, это единственный
+    // постоянно видимый признак, что вышла новая версия. Уведомление можно
+    // прозевать, меню трея — нет.
+    const update = getPendingAppUpdate()
+    const updateItems: Electron.MenuItemConstructorOptions[] =
+      update?.hasUpdate && update.assetUrl
+        ? [
+            {
+              label: `⬆ Доступно обновление ${update.latest ? `v${update.latest}` : ''}`.trim(),
+              // Именно openUpdateWindow, а не просто показ окна: человек
+              // мог нажать «Позже», и тогда обычный показ не открыл бы
+              // ничего — клик по пункту выглядел бы как пустое действие.
+              click: () => { void openUpdateWindow() }
+            },
+            { type: 'separator' }
+          ]
+        : []
+
     const menu = Menu.buildFromTemplate([
+      ...updateItems,
       {
         label: mainWindow?.isVisible() ? 'Скрыть окно' : 'Показать окно',
         click: () => triggerMainWindow()

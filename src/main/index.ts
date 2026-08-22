@@ -22,6 +22,7 @@ import { pruneOldLogs, flushLogsNow, currentLogFilePath } from './utils/file-log
 import { flushStats } from './core/incy-stats'
 import { registerDeepLinkScheme, findDeepLinkInArgv, handleDeepLink } from './core/deeplink'
 import { installIncyWatchers } from './core/incy-watchers'
+import { installAppUpdateWatcher } from './core/app-update-watcher'
 
 // Lock the userData / cache / log folder names.
 app.setName(is.dev ? 'lazeyka-dev' : 'lazeyka')
@@ -232,6 +233,14 @@ app.whenReady().then(async () => {
   const uiTasks: Promise<unknown>[] = [initShortcut()]
   if (!appConfig.disableTray) uiTasks.push(createTray())
   await Promise.all(uiTasks)
+
+  // Проверка обновлений живёт здесь, а не в окне: при автозапуске со скрытым
+  // окном рендерер никому ничего показать не может — см. app-update-watcher.
+  try {
+    installAppUpdateWatcher()
+  } catch (e) {
+    appLog('warn', `install update watcher failed: ${e}`)
+  }
 
   app.on('activate', () => {
     showMainWindow()

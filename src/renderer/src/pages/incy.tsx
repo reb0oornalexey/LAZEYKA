@@ -44,6 +44,9 @@ import {
   incySaveSettings,
   incyImportInput,
   incyRefreshSubscription,
+  incyGetSubscriptions,
+  incyRefreshAllSubscriptions,
+  incyRemoveSubscription,
   incyGetStatus,
   incyConnect,
   incyDisconnect,
@@ -575,7 +578,7 @@ const BackupTab: React.FC<{ onRestored: () => void | Promise<void> }> = ({ onRes
       setPreview(res)
       // Pre-tick only what the file actually carries.
       setParts({
-        subscription: Boolean(res.subscriptionTitle),
+        subscription: Boolean(res.subscriptionTitles?.length || res.subscriptionTitle),
         nodes: (res.nodeCount ?? 0) > 0,
         settings: Boolean(res.hasSettings),
         routingRules: (res.routingRuleCount ?? 0) > 0
@@ -671,9 +674,17 @@ const BackupTab: React.FC<{ onRestored: () => void | Promise<void> }> = ({ onRes
                 [
                   {
                     key: 'subscription' as const,
-                    label: 'Подписка',
-                    detail: preview.subscriptionTitle || 'нет в файле',
-                    available: Boolean(preview.subscriptionTitle)
+                    label:
+                      (preview.subscriptionTitles?.length ?? 0) > 1 ? 'Подписки' : 'Подписка',
+                    // Перечисляем все: восстановление заменит список целиком,
+                    // и человек должен видеть, что именно приедет.
+                    detail:
+                      preview.subscriptionTitles?.join(', ') ||
+                      preview.subscriptionTitle ||
+                      'нет в файле',
+                    available: Boolean(
+                      preview.subscriptionTitles?.length || preview.subscriptionTitle
+                    )
                   },
                   {
                     key: 'nodes' as const,
@@ -1247,7 +1258,15 @@ export default function IncyPage(): React.ReactElement {
     'main' | 'servers' | 'routing' | 'settings' | 'stats' | 'logs' | 'backup' | 'urls'
   >('main')
   const [nodes, setNodes] = useState<IncyNode[]>([])
+  /** «Текущая» подписка — та, которой принадлежит выбранный сервер. */
   const [subscription, setSubscription] = useState<IncySubscription | null>(null)
+  /** Все подписки пользователя; на вкладке «Сервера» у каждой своя карточка. */
+  const [subscriptions, setSubscriptions] = useState<IncySubscription[]>([])
+  /** Какие карточки подписок свёрнуты: с пятью провайдерами список иначе не читается. */
+  const [collapsedSubs, setCollapsedSubs] = useState<Set<string>>(new Set())
+  /** id подписки, которая сейчас обновляется поодиночке. */
+  const [refreshingSubId, setRefreshingSubId] = useState<string | null>(null)
+  const [removingSub, setRemovingSub] = useState<IncySubscription | null>(null)
   const [settings, setSettings] = useState<IncySettings | null>(null)
   const storeStatus = useIncyStore((s) => s.status)
   const [status, setStatus] = useState<IncyStatus>(storeStatus)
@@ -1272,17 +1291,22 @@ export default function IncyPage(): React.ReactElement {
 
   const loadData = async (): Promise<void> => {
     try {
-      const [n, s, sub, st, stData, lgs] = await Promise.all([
+      const [n, s, sub, subs, st, stData, lgs] = await Promise.all([
         incyGetNodes(),
         incyGetSettings(),
         incyGetSubscription(),
+        incyGetSubscriptions(),
         incyGetStatus(),
         incyGetStats(),
         incyGetLogs()
       ])
       setNodes(n)
       setSettings(s)
+      setSubscriptions(subs)
+      // Не затираем показанную подписку пустотой: при кратком сбое чтения
+      // карточка на главной иначе моргала бы «подписки нет».
       if (sub) setSubscription(sub)
+      else if (subs.length === 0) setSubscription(null)
       setStatus(st)
       setStats(stData)
       setLogs(lgs)
@@ -1369,6 +1393,9 @@ export default function IncyPage(): React.ReactElement {
       const res = await incyImportInput(payload)
       setNodes(res.nodes)
       if (res.subscription) setSubscription(res.subscription)
+      // Ссылка могла добавить новую подписку — список нужно перечитать,
+      // иначе её карточка не появится до перехода по вкладкам.
+      setSubscriptions(await incyGetSubscriptions().catch(() => subscriptions))
       setInputUrl('')
       toast.success(`Импортировано серверов: ${res.addedCount}`, { style: POWER_ON_BANNER_STYLE })
       void handlePingAll(res.nodes)
@@ -1379,13 +1406,26 @@ export default function IncyPage(): React.ReactElement {
     }
   }
 
-  const handleRefreshSubscription = async (): Promise<void> => {
+  /**
+   * Обновить одну подписку. Без аргумента — текущую (кнопка на главной).
+   *
+   * Серверы остальных провайдеров при этом не трогаются: главный процесс
+   * заменяет только узлы этой подписки.
+   */
+  const handleRefreshSubscription = async (subscriptionId?: string): Promise<void> => {
     setLoadingRefresh(true)
+    setRefreshingSubId(subscriptionId ?? null)
     try {
-      const res = await incyRefreshSubscription()
+      const res = await incyRefreshSubscription(subscriptionId)
       setNodes(res.nodes)
-      if (res.subscription) setSubscription(res.subscription)
-      toast.success('Подписка успешно обновлена', { style: POWER_ON_BANNER_STYLE })
+      setSubscriptions(await incyGetSubscriptions().catch(() => subscriptions))
+      if (res.subscription) {
+        // Карточку на главной меняем только если обновили именно её подписку.
+        if (!subscriptionId || subscriptionId === subscription?.id) setSubscription(res.subscription)
+      }
+      toast.success(`Подписка «${res.subscription?.title ?? ''}» обновлена`, {
+        style: POWER_ON_BANNER_STYLE
+      })
       if (settings?.pingOnUpdateSubscription) {
         void handlePingAll(res.nodes)
       }
@@ -1393,6 +1433,55 @@ export default function IncyPage(): React.ReactElement {
       toast.error('Не удалось обновить подписку', { description: e?.message || String(e) })
     } finally {
       setLoadingRefresh(false)
+      setRefreshingSubId(null)
+    }
+  }
+
+  /**
+   * Обновить все подписки подряд.
+   *
+   * Упавший провайдер не отменяет остальные — про него говорим отдельно,
+   * иначе одна мёртвая ссылка блокировала бы обновление всех.
+   */
+  const handleRefreshAllSubscriptions = async (): Promise<void> => {
+    setLoadingRefresh(true)
+    try {
+      const res = await incyRefreshAllSubscriptions()
+      setNodes(res.nodes)
+      setSubscriptions(res.subscriptions)
+      const current = await incyGetSubscription().catch(() => null)
+      if (current) setSubscription(current)
+
+      const okCount = res.subscriptions.length - res.failed.length
+      if (res.failed.length === 0) {
+        toast.success(`Обновлено подписок: ${okCount}`, { style: POWER_ON_BANNER_STYLE })
+      } else {
+        toast.warning(`Обновлено ${okCount} из ${res.subscriptions.length}`, {
+          description: res.failed.map((f) => `${f.title}: ${f.error}`).join('\n')
+        })
+      }
+      if (settings?.pingOnUpdateSubscription) void handlePingAll(res.nodes)
+    } catch (e: any) {
+      toast.error('Не удалось обновить подписки', { description: e?.message || String(e) })
+    } finally {
+      setLoadingRefresh(false)
+    }
+  }
+
+  /** Удалить подписку вместе с её серверами. Ручные узлы остаются. */
+  const handleRemoveSubscription = async (sub: IncySubscription): Promise<void> => {
+    try {
+      const res = await incyRemoveSubscription(sub.id)
+      setNodes(res.nodes)
+      setSubscriptions(res.subscriptions)
+      const current = await incyGetSubscription().catch(() => null)
+      setSubscription(current)
+      setStatus(await incyGetStatus().catch(() => status))
+      toast.success(`Подписка «${sub.title}» удалена`)
+    } catch (e: any) {
+      toast.error('Не удалось удалить подписку', { description: e?.message || String(e) })
+    } finally {
+      setRemovingSub(null)
     }
   }
 
@@ -1436,6 +1525,11 @@ export default function IncyPage(): React.ReactElement {
       setShowServerSelectModal(false)
       const target = nodes.find((n) => n.id === nodeId)
       toast.success(`Выбран сервер: ${target?.name || 'Сервер'}`)
+      // «Текущая подписка» на главной — это подписка выбранного сервера.
+      // Без перечитывания карточка осталась бы от прежнего провайдера.
+      void incyGetSubscription()
+        .then((s) => { if (s) setSubscription(s) })
+        .catch(() => {})
       if (status.state === 'running') {
         void handleConnect(nodeId)
       }
@@ -1646,8 +1740,135 @@ export default function IncyPage(): React.ReactElement {
     })
   }, [sortedNodes, protocolFilter, searchQuery])
 
+  /**
+   * Узлы, не принадлежащие ни одной существующей подписке.
+   *
+   * Сюда попадают и добавленные вручную ссылкой, и «осиротевшие» — те, чья
+   * подписка удалена не до конца (например, старой сборкой). Показать их всё
+   * равно надо: иначе рабочий сервер молча исчез бы из списка.
+   */
+  const manualNodes = useMemo(
+    () =>
+      filteredNodes.filter(
+        (n) => !n.subscriptionId || !subscriptions.some((s) => s.id === n.subscriptionId)
+      ),
+    [filteredNodes, subscriptions]
+  )
+
+  /** Подписки, кроме текущей — для блока «Другие провайдеры» на главной. */
+  const otherSubscriptions = useMemo(
+    () => subscriptions.filter((s) => s.id !== subscription?.id),
+    [subscriptions, subscription?.id]
+  )
+
+  /**
+   * Сделать провайдера текущим: выбрать его самый быстрый сервер.
+   *
+   * Без замеров пинга берётся первый — порядок в подписке обычно осмысленный.
+   * Если туннель поднят, `handleSelectNode` переподключит его сам.
+   */
+  const handleSwitchProvider = async (sub: IncySubscription): Promise<void> => {
+    const candidates = nodes.filter((n) => n.subscriptionId === sub.id)
+    if (candidates.length === 0) {
+      toast.info(`У подписки «${sub.title}» нет серверов`, {
+        description: 'Обновите её на вкладке «Сервера».'
+      })
+      return
+    }
+    const measured = candidates.filter((n) => typeof n.latencyMs === 'number')
+    const best = measured.length
+      ? measured.reduce((a, b) => ((a.latencyMs ?? 1e9) <= (b.latencyMs ?? 1e9) ? a : b))
+      : candidates[0]
+    await handleSelectNode(best.id)
+  }
+
   const isConnected = status.state === 'running'
   const hasError = status.state === 'error'
+
+  /**
+   * Строка сервера на вкладке «Сервера».
+   *
+   * Вынесена в функцию, потому что список теперь рисуется в нескольких местах:
+   * внутри карточки каждой подписки и отдельно для добавленных вручную.
+   * Копия разметки на каждую группу разъехалась бы при первой же правке.
+   */
+  const renderServerRow = (node: IncyNode): React.ReactElement => {
+    const isNodeActive = isConnected && status.activeNodeId === node.id
+    const isNodeSelected = (status.selectedNodeId || nodes[0]?.id) === node.id
+    const flag = getFlagEmoji(node.name)
+    const cleanName = cleanServerName(node.name)
+
+    return (
+      <div
+        key={node.id}
+        className={cn(
+          'flex items-center justify-between p-3 rounded-xl border transition-all duration-200',
+          isNodeActive
+            ? 'border-emerald-500/60 bg-emerald-500/10 shadow-sm'
+            : isNodeSelected
+            ? 'border-primary/60 bg-primary/10'
+            : 'border-border bg-card/40 hover:bg-card/70'
+        )}
+      >
+        <div
+          onClick={() => { void handleSelectNode(node.id) }}
+          className="flex items-center gap-3 min-w-0 cursor-pointer flex-1"
+        >
+          <span className="text-xl shrink-0 select-none">{flag}</span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-foreground truncate">{cleanName}</span>
+              <Badge
+                variant="outline"
+                className={cn(
+                  'text-[9px] px-1.5 py-0 font-mono uppercase',
+                  node.protocol === 'hysteria2' && 'border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-500/10'
+                )}
+              >
+                {node.protocol === 'hysteria2' ? 'HYS2' : node.protocol}
+              </Badge>
+              {node.rawJson && (
+                <Badge variant="secondary" className="text-[9px] px-1 py-0 font-mono opacity-70">
+                  JSON
+                </Badge>
+              )}
+            </div>
+            <div className="text-[11px] text-muted-foreground truncate mt-0.5">
+              {node.description || `${node.server}:${node.port}`}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {pingingNodeIds.has(node.id) ? (
+            <div className="px-2 py-0.5 flex items-center justify-center">
+              <div className="h-3 w-3 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
+            </div>
+          ) : (
+            <LatencyBadge node={node} display={settings?.pingDisplay} strong />
+          )}
+
+          <Button
+            size="sm"
+            variant={isNodeActive ? 'default' : 'outline'}
+            onClick={() => {
+              if (isNodeActive) {
+                void handleDisconnect()
+              } else {
+                void handleConnect(node.id)
+              }
+            }}
+            className={cn(
+              'text-xs h-7 min-w-[90px]',
+              isNodeActive && 'bg-emerald-500 hover:bg-emerald-600 text-white'
+            )}
+          >
+            {isNodeActive ? 'Активен' : 'Подключить'}
+          </Button>
+        </div>
+      </div>
+    )
+  }
 
   /**
    * Local "busy" flag.
@@ -2142,8 +2363,11 @@ export default function IncyPage(): React.ReactElement {
                         <div className="font-bold text-sm text-foreground truncate">
                           {subscription.title}
                         </div>
+                        {/* Считаем узлы именно этой подписки. Общее число
+                            приписывало бы ей серверы других провайдеров. */}
                         <Badge variant="secondary" className="text-[10px] px-1.5 py-0 font-mono bg-primary/20 text-primary">
-                          {nodes.length}
+                          {nodes.filter((n) => n.subscriptionId === subscription.id).length ||
+                            nodes.length}
                         </Badge>
                       </div>
 
@@ -2273,6 +2497,68 @@ export default function IncyPage(): React.ReactElement {
                 </div>
               )}
             </div>
+
+            {/* ДРУГИЕ ПРОВАЙДЕРЫ.
+                Нужен способ переключиться между подписками, не уходя со
+                главной: клик берёт самый быстрый сервер провайдера и делает
+                его текущим — а если туннель поднят, сразу переподключается. */}
+            {otherSubscriptions.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                    Другие провайдеры ({otherSubscriptions.length})
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => { void handleRefreshAllSubscriptions() }}
+                    disabled={loadingRefresh}
+                    className="h-7 gap-1.5 text-xs"
+                  >
+                    <RefreshCw className={cn('h-3.5 w-3.5', loadingRefresh && 'animate-spin')} />
+                    Обновить все
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  {otherSubscriptions.map((sub) => {
+                    const subNodes = nodes.filter((n) => n.subscriptionId === sub.id)
+                    return (
+                      <div
+                        key={sub.id}
+                        onClick={() => { void handleSwitchProvider(sub) }}
+                        className="flex items-center justify-between p-3 rounded-xl border border-border bg-card/40 hover:bg-card/70 hover:border-primary/50 cursor-pointer transition-all"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Star className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          <div className="min-w-0">
+                            <div className="text-xs font-semibold text-foreground truncate">
+                              {sub.title}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground truncate mt-0.5">
+                              {subNodes.length} серв.
+                              {sub.expireDate ? ` • до ${sub.expireDate}` : ''}
+                            </div>
+                          </div>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={subNodes.length === 0}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            void handleSwitchProvider(sub)
+                          }}
+                          className="text-xs h-7 shrink-0"
+                        >
+                          Переключиться
+                        </Button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* SELECTED SERVER CARD (Directly on Main Screen!) */}
             <div className="space-y-2">
@@ -2464,101 +2750,185 @@ export default function IncyPage(): React.ReactElement {
               </Button>
             </div>
 
-            {/* Subscription Card on Servers Tab */}
-            {subscription && (
-              <Card className="border-primary/40 bg-gradient-to-br from-card/90 via-card/60 to-primary/10 shadow-md">
-                <CardContent className="p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Star className="h-4 w-4 text-amber-700 dark:text-amber-400 fill-amber-400 shrink-0" />
-                      <div className="font-bold text-sm text-foreground truncate">
-                        {subscription.title}
-                      </div>
-                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0 font-mono bg-primary/20 text-primary">
-                        {nodes.length}
-                      </Badge>
-                    </div>
-
-                    <div className="flex items-center gap-1">
-                      <Button
-                        size="icon-sm"
-                        variant="ghost"
-                        onClick={() => { void handleRefreshSubscription() }}
-                        disabled={loadingRefresh}
-                        title="Обновить подписку"
-                        className="h-7 w-7"
-                      >
-                        <RefreshCw className={cn('h-3.5 w-3.5', loadingRefresh && 'animate-spin')} />
-                      </Button>
-                      <Button
-                        size="icon-sm"
-                        variant="ghost"
-                        onClick={() => { void handlePingAll() }}
-                        disabled={testingPings}
-                        title="Замерить пинг всех серверов"
-                        className="h-7 w-7"
-                      >
-                        <Activity className={cn('h-3.5 w-3.5', testingPings && 'animate-pulse text-amber-700 dark:text-amber-500')} />
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* Progress bar */}
-                  {subscription.usedBytes !== null && subscription.totalBytes !== null && (
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>
-                          {subscription.expireDate ? `Срок: ${subscription.expireDate}` : 'Активна'}
-                        </span>
-                        <span className="font-mono text-primary">
-                          {(subscription.usedBytes / (1024 * 1024 * 1024)).toFixed(2)} ГБ /{' '}
-                          {(subscription.totalBytes / (1024 * 1024 * 1024)).toFixed(2)} ГБ
-                        </span>
-                      </div>
-                      <div className="w-full bg-secondary/80 h-2 rounded-full overflow-hidden">
-                        <div
-                          className="bg-primary h-full transition-all duration-500 shadow-sm"
-                          style={{
-                            width: `${Math.min(
-                              100,
-                              Math.round((subscription.usedBytes / subscription.totalBytes) * 100)
-                            )}%`
-                          }}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Те же объявления, что и на главной — тот же вид: отделены
-                      линией, эмодзи вынесено в отдельную колонку, а не оставлено
-                      внутри текста. Раньше здесь была вторая, непохожая
-                      вёрстка, и один и тот же текст выглядел по-разному на двух
-                      вкладках. */}
-                  {subscription.announcements && subscription.announcements.length > 0 && (
-                    <div className="pt-3 mt-1 border-t border-border/50 space-y-1.5">
-                      {subscription.announcements.map((ann, idx) => {
-                        let emoji = 'ℹ️'
-                        if (ann.includes('📶') || ann.includes('LTE')) emoji = '📶'
-                        else if (ann.includes('⚠️') || ann.includes('Глушат')) emoji = '⚠️'
-                        else if (ann.includes('⛔') || ann.includes('Перестало')) emoji = '⛔'
-                        else if (ann.includes('🆔') || ann.includes('⏱️')) emoji = '🆔'
-
-                        const cleanText = stripLeadingEmoji(ann)
-                        return (
-                          <div
-                            key={idx}
-                            className="flex items-start gap-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-200/90"
-                          >
-                            <span className="shrink-0">{emoji}</span>
-                            <span>{cleanText || ann}</span>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+            {/* Подписки: по карточке на провайдера.
+                Раньше карточка была одна и показывала общее число серверов —
+                с двумя подписками это враньё: она приписывала себе чужие узлы.
+                Теперь каждая считает только свои. */}
+            {subscriptions.length > 1 && (
+              <div className="flex items-center justify-between px-0.5">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Подписки ({subscriptions.length})
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => { void handleRefreshAllSubscriptions() }}
+                  disabled={loadingRefresh}
+                  className="h-7 gap-1.5 text-xs"
+                >
+                  <RefreshCw className={cn('h-3.5 w-3.5', loadingRefresh && 'animate-spin')} />
+                  Обновить все
+                </Button>
+              </div>
             )}
+
+            {subscriptions.map((sub) => {
+              const subNodes = nodes.filter((n) => n.subscriptionId === sub.id)
+              const visibleNodes = filteredNodes.filter((n) => n.subscriptionId === sub.id)
+              const collapsed = collapsedSubs.has(sub.id)
+              const isCurrent = subscriptions.length > 1 && subscription?.id === sub.id
+              const busy = loadingRefresh && refreshingSubId === sub.id
+
+              return (
+                <Card
+                  key={sub.id}
+                  className={cn(
+                    'shadow-md transition-colors',
+                    isCurrent
+                      ? 'border-primary/40 bg-gradient-to-br from-card/90 via-card/60 to-primary/10'
+                      : 'border-border/70 bg-card/60'
+                  )}
+                >
+                  <CardContent className="p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCollapsedSubs((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(sub.id)) next.delete(sub.id)
+                            else next.add(sub.id)
+                            return next
+                          })
+                        }}
+                        className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                        title={collapsed ? 'Показать серверы' : 'Свернуть'}
+                      >
+                        <ChevronDown
+                          className={cn(
+                            'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+                            collapsed && '-rotate-90'
+                          )}
+                        />
+                        <Star className="h-4 w-4 text-amber-700 dark:text-amber-400 fill-amber-400 shrink-0" />
+                        <div className="font-bold text-sm text-foreground truncate">{sub.title}</div>
+                        <Badge
+                          variant="secondary"
+                          className="text-[10px] px-1.5 py-0 font-mono bg-primary/20 text-primary"
+                        >
+                          {subNodes.length}
+                        </Badge>
+                        {isCurrent && (
+                          <Badge variant="outline" className="text-[9px] px-1.5 py-0 uppercase">
+                            текущая
+                          </Badge>
+                        )}
+                      </button>
+
+                      <div className="flex items-center gap-1">
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          onClick={() => { void handleRefreshSubscription(sub.id) }}
+                          disabled={loadingRefresh}
+                          title="Обновить подписку"
+                          className="h-7 w-7"
+                        >
+                          <RefreshCw className={cn('h-3.5 w-3.5', busy && 'animate-spin')} />
+                        </Button>
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          onClick={() => { void handlePingAll() }}
+                          disabled={testingPings}
+                          title="Замерить пинг всех серверов"
+                          className="h-7 w-7"
+                        >
+                          <Activity className={cn('h-3.5 w-3.5', testingPings && 'animate-pulse text-amber-700 dark:text-amber-500')} />
+                        </Button>
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          onClick={() => setRemovingSub(sub)}
+                          title="Удалить подписку и её серверы"
+                          className="h-7 w-7 text-destructive hover:text-destructive"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Progress bar */}
+                    {sub.usedBytes !== null && sub.totalBytes !== null && (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span>{sub.expireDate ? `Срок: ${sub.expireDate}` : 'Активна'}</span>
+                          <span className="font-mono text-primary">
+                            {(sub.usedBytes / (1024 * 1024 * 1024)).toFixed(2)} ГБ /{' '}
+                            {(sub.totalBytes / (1024 * 1024 * 1024)).toFixed(2)} ГБ
+                          </span>
+                        </div>
+                        <div className="w-full bg-secondary/80 h-2 rounded-full overflow-hidden">
+                          <div
+                            className="bg-primary h-full transition-all duration-500 shadow-sm"
+                            style={{
+                              width: `${Math.min(
+                                100,
+                                Math.round((sub.usedBytes / sub.totalBytes) * 100)
+                              )}%`
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Те же объявления, что и на главной — тот же вид: отделены
+                        линией, эмодзи вынесено в отдельную колонку, а не оставлено
+                        внутри текста. Раньше здесь была вторая, непохожая
+                        вёрстка, и один и тот же текст выглядел по-разному на двух
+                        вкладках. */}
+                    {sub.announcements && sub.announcements.length > 0 && (
+                      <div className="pt-3 mt-1 border-t border-border/50 space-y-1.5">
+                        {sub.announcements.map((ann, idx) => {
+                          let emoji = 'ℹ️'
+                          if (ann.includes('📶') || ann.includes('LTE')) emoji = '📶'
+                          else if (ann.includes('⚠️') || ann.includes('Глушат')) emoji = '⚠️'
+                          else if (ann.includes('⛔') || ann.includes('Перестало')) emoji = '⛔'
+                          else if (ann.includes('🆔') || ann.includes('⏱️')) emoji = '🆔'
+
+                          const cleanText = stripLeadingEmoji(ann)
+                          return (
+                            <div
+                              key={idx}
+                              className="flex items-start gap-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-200/90"
+                            >
+                              <span className="shrink-0">{emoji}</span>
+                              <span>{cleanText || ann}</span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                    {/* Серверы этой подписки. Свёрнутая карточка их прячет —
+                        иначе при пяти провайдерах до нужного не долистать. */}
+                    {!collapsed && (
+                      <div className="pt-1 space-y-2">
+                        {visibleNodes.length > 0 ? (
+                          visibleNodes.map((node) => renderServerRow(node))
+                        ) : (
+                          <div className="py-3 text-center text-[11px] text-muted-foreground">
+                            {subNodes.length === 0
+                              ? 'В этой подписке пока нет серверов — нажмите «Обновить».'
+                              : 'В этой подписке ничего не найдено по запросу.'}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )
+            })}
 
             {/* Filter Pills and Search */}
             <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-1">
@@ -2600,96 +2970,24 @@ export default function IncyPage(): React.ReactElement {
               </div>
             </div>
 
-            {/* Server List */}
-            <div className="space-y-2">
-              {filteredNodes.length > 0 ? (
-                filteredNodes.map((node) => {
-                  const isNodeActive = isConnected && status.activeNodeId === node.id
-                  const isNodeSelected = (status.selectedNodeId || nodes[0]?.id) === node.id
-                  const flag = getFlagEmoji(node.name)
-                  const cleanName = cleanServerName(node.name)
-
-                  return (
-                    <div
-                      key={node.id}
-                      className={cn(
-                        'flex items-center justify-between p-3 rounded-xl border transition-all duration-200',
-                        isNodeActive
-                          ? 'border-emerald-500/60 bg-emerald-500/10 shadow-sm'
-                          : isNodeSelected
-                          ? 'border-primary/60 bg-primary/10'
-                          : 'border-border bg-card/40 hover:bg-card/70'
-                      )}
-                    >
-                      <div
-                        onClick={() => { void handleSelectNode(node.id) }}
-                        className="flex items-center gap-3 min-w-0 cursor-pointer flex-1"
-                      >
-                        <span className="text-xl shrink-0 select-none">{flag}</span>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-semibold text-foreground truncate">
-                              {cleanName}
-                            </span>
-                            <Badge
-                              variant="outline"
-                              className={cn(
-                                'text-[9px] px-1.5 py-0 font-mono uppercase',
-                                node.protocol === 'hysteria2' && 'border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-500/10'
-                              )}
-                            >
-                              {node.protocol === 'hysteria2' ? 'HYS2' : node.protocol}
-                            </Badge>
-                            {node.rawJson && (
-                              <Badge variant="secondary" className="text-[9px] px-1 py-0 font-mono opacity-70">
-                                JSON
-                              </Badge>
-                            )}
-                          </div>
-                          <div className="text-[11px] text-muted-foreground truncate mt-0.5">
-                            {node.description || `${node.server}:${node.port}`}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 shrink-0">
-                        {pingingNodeIds.has(node.id) ? (
-                          <div className="px-2 py-0.5 flex items-center justify-center">
-                            <div className="h-3 w-3 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
-                          </div>
-                        ) : (
-                          <LatencyBadge node={node} display={settings?.pingDisplay} strong />
-                        )}
-
-                        <Button
-                          size="sm"
-                          variant={isNodeActive ? 'default' : 'outline'}
-                          onClick={() => {
-                            if (isNodeActive) {
-                              void handleDisconnect()
-                            } else {
-                              void handleConnect(node.id)
-                            }
-                          }}
-                          className={cn(
-                            'text-xs h-7 min-w-[90px]',
-                            isNodeActive && 'bg-emerald-500 hover:bg-emerald-600 text-white'
-                          )}
-                        >
-                          {isNodeActive ? 'Активен' : 'Подключить'}
-                        </Button>
-                      </div>
-                    </div>
-                  )
-                })
-              ) : (
-                <div className="text-center py-10 text-xs text-muted-foreground">
-                  {nodes.length === 0
-                    ? 'Серверов пока нет. Вставьте ссылку на подписку сверху.'
-                    : 'По вашему запросу ничего не найдено.'}
+            {/* Серверы вне подписок: добавленные ссылкой вручную. Их не
+                удаляет и не перезаписывает ни одно обновление подписки. */}
+            {manualNodes.length > 0 && (
+              <div className="space-y-2">
+                <div className="px-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Добавлены вручную ({manualNodes.length})
                 </div>
-              )}
-            </div>
+                {manualNodes.map((node) => renderServerRow(node))}
+              </div>
+            )}
+
+            {filteredNodes.length === 0 && (
+              <div className="text-center py-10 text-xs text-muted-foreground">
+                {nodes.length === 0
+                  ? 'Серверов пока нет. Вставьте ссылку на подписку сверху.'
+                  : 'По вашему запросу ничего не найдено.'}
+              </div>
+            )}
           </div>
         )}
 
@@ -3622,6 +3920,45 @@ export default function IncyPage(): React.ReactElement {
 
         {/* TAB 7: URL SCHEMES */}
         {activeTab === 'urls' && <UrlSchemesTab />}
+
+        {/* Подтверждение удаления подписки. Спрашиваем всегда: вместе с ней
+            исчезают все её серверы, а вернуть их можно только повторным
+            импортом ссылки — которой у пользователя может уже не быть. */}
+        {removingSub && (
+          <div
+            className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4"
+            onClick={() => setRemovingSub(null)}
+          >
+            <div
+              className="bg-card/95 border border-destructive/40 w-full max-w-md rounded-2xl p-5 space-y-4 shadow-[0_0_50px_rgba(0,0,0,0.8)] backdrop-blur-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+                <Trash2 className="size-4 text-destructive" />
+                Удалить подписку «{removingSub.title}»?
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Вместе с ней удалятся её серверы (
+                {nodes.filter((n) => n.subscriptionId === removingSub.id).length} шт.). Остальные
+                подписки и серверы, добавленные вручную, останутся на месте. Саму подписку у
+                провайдера это не отменяет — её можно вернуть, снова вставив ссылку.
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="outline" onClick={() => setRemovingSub(null)} className="text-xs h-8">
+                  Отмена
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={() => { void handleRemoveSubscription(removingSub) }}
+                  className="text-xs h-8"
+                >
+                  Удалить
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </BasePage>
   )

@@ -27,10 +27,18 @@ interface AppConfig {
 
   // ---- Updates
   autoCheckUpdate: boolean
-  // Tag the user explicitly dismissed via the "Later" button on the
-  // full-screen LAZEYKA-update overlay. The overlay stays hidden until
-  // GitHub publishes a release with a different tag.
+  // Тег релиза, про который пользователь сказал «не сейчас».
+  //
+  // Раньше одного этого поля хватало, и кнопка «Позже» глушила окно навсегда:
+  // спрашивали снова только когда на GitHub выходил уже следующий релиз. Для
+  // человека, который держит LAZEYKA в трее, это означало «никогда».
   dismissedAppUpdateTag?: string
+  // До какого момента (epoch ms) молчать про `dismissedAppUpdateTag`.
+  //   число  — снуз, после этого времени спросим снова («Позже» = +24 ч);
+  //   0      — версия пропущена насовсем («Пропустить эту версию»);
+  //   пусто  — конфиг от старой сборки, читается как «пропущена насовсем»,
+  //            чтобы обновление приложения не всплыло сразу после установки.
+  dismissedAppUpdateUntil?: number
 
   // ---- Logs
   maxLogDays: number

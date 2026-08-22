@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, statSync } from 'fs'
 import { spawn } from 'child_process'
 import path from 'path'
 import { app } from 'electron'
@@ -26,7 +26,37 @@ export interface AppUpdateInfo {
   releaseUrl?: string
   releaseNotes?: string
   publishedAt?: string
+  /** Скрывать ли окно обновления прямо сейчас (снуз ещё не истёк). */
   dismissed?: boolean
+  /** Версия отложена, но снуз когда-нибудь кончится (epoch ms). */
+  snoozedUntil?: number
+  /** Версию пропустили насовсем — напомнит только следующий релиз. */
+  skipped?: boolean
+}
+
+/** «Позже» = сутки тишины. Достаточно, чтобы не бесить, и мало, чтобы не забыть. */
+export const SNOOZE_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Показывать ли окно обновления для этого тега.
+ *
+ * Вынесено отдельной функцией, потому что то же самое решение принимают три
+ * места: проверка по запросу из интерфейса, фоновый вотчер и меню трея.
+ */
+export function isUpdateDismissed(
+  tag: string | undefined,
+  dismissedTag: string | undefined,
+  until: number | undefined,
+  now = Date.now()
+): { dismissed: boolean; snoozedUntil?: number; skipped: boolean } {
+  if (!tag || !dismissedTag || dismissedTag !== tag) {
+    return { dismissed: false, skipped: false }
+  }
+  // Конфиг старой сборки: срока нет. Считаем «пропущена» — иначе человек,
+  // нажавший «Позже» до обновления, получил бы окно сразу после установки.
+  if (until === undefined || until === 0) return { dismissed: true, skipped: true }
+  if (now < until) return { dismissed: true, snoozedUntil: until, skipped: false }
+  return { dismissed: false, snoozedUntil: until, skipped: false }
 }
 
 interface GhAsset {
@@ -106,6 +136,7 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
   const installed = app.getVersion()
   const cfg = await getAppConfig()
   const dismissedTag = cfg.dismissedAppUpdateTag
+  const dismissedUntil = cfg.dismissedAppUpdateUntil
 
   if (!force && cache && Date.now() - cache.at < CACHE_TTL_MS && cache.data.tag) {
     if (Date.now() - cache.at > 30 * 60 * 1000) backgroundRefresh()
@@ -114,7 +145,7 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
       ...cache.data,
       installed,
       hasUpdate: !!cachedLatest && compareVersion(cachedLatest, installed) > 0,
-      dismissed: dismissedTag === cache.data.tag
+      ...isUpdateDismissed(cache.data.tag, dismissedTag, dismissedUntil)
     }
   }
 
@@ -160,7 +191,7 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
     releaseUrl: release.html_url,
     releaseNotes: release.body?.trim() || undefined,
     publishedAt: release.published_at,
-    dismissed: !!tag && dismissedTag === tag
+    ...isUpdateDismissed(tag, dismissedTag, dismissedUntil)
   }
 
   cache = { at: Date.now(), data: info }
@@ -168,10 +199,21 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
   return info
 }
 
-export async function dismissAppUpdate(tag: string): Promise<void> {
+/**
+ * Отложить или пропустить обновление.
+ *
+ * `forever = false` («Позже») — тишина на сутки, потом спросим снова.
+ * `forever = true`  («Пропустить эту версию») — молчим до следующего релиза.
+ */
+export async function dismissAppUpdate(tag: string, forever = false): Promise<void> {
   if (!tag) return
-  await patchAppConfig({ dismissedAppUpdateTag: tag })
-  if (cache && cache.data.tag === tag) cache.data.dismissed = true
+  const until = forever ? 0 : Date.now() + SNOOZE_MS
+  await patchAppConfig({ dismissedAppUpdateTag: tag, dismissedAppUpdateUntil: until })
+  if (cache && cache.data.tag === tag) {
+    cache.data.dismissed = true
+    cache.data.skipped = forever
+    cache.data.snoozedUntil = forever ? undefined : until
+  }
 }
 
 // Path of the upgrade marker, written next to LAZEYKA.exe so the OLD
@@ -240,7 +282,9 @@ export async function installAppUpdate(
 
   if (expectedVersion) {
     try {
-      await patchAppConfig({ dismissedAppUpdateTag: undefined })
+      // Обе половины отметки, иначе остался бы висеть срок от предыдущего
+      // «Позже» и приклеился бы к следующему тегу.
+      await patchAppConfig({ dismissedAppUpdateTag: undefined, dismissedAppUpdateUntil: undefined })
     } catch {
       /* noop — user can dismiss manually if cleanup fails */
     }
@@ -279,12 +323,28 @@ export async function installAppUpdate(
       const exeDir = path.dirname(exePath)
       const ts = Date.now()
       const logPath = path.join(dir, `LAZEYKA-relaunch-${ts}.log`)
+      /**
+       * Время изменения ТЕКУЩЕГО (ещё старого) LAZEYKA.exe.
+       *
+       * Сторож ждал просто наличия файла — но старый файл лежит на месте почти
+       * весь апгрейд, так что проверка проходила сразу. Запуск мог случиться в
+       * окно, когда деинсталлятор делает `taskkill /F /IM LAZEYKA.exe /T`, и
+       * только что поднятое приложение тут же убивали.
+       *
+       * Метка времени — единственный надёжный признак, что файл действительно
+       * заменили новым.
+       */
+      let oldExeMtime = 0
+      try {
+        oldExeMtime = statSync(exePath).mtimeMs
+      } catch { /* файла нет — тогда сойдёт любое появление */ }
       const watcherScript = [
         "$ErrorActionPreference = 'SilentlyContinue'",
         `$installerPid = ${installerPid}`,
         `$exe = '${exePath.replace(/'/g, "''")}'`,
         `$exeDir = '${exeDir.replace(/'/g, "''")}'`,
         `$logPath = '${logPath.replace(/'/g, "''")}'`,
+        `$oldMtime = ${Math.floor(oldExeMtime)}`,
         // Diagnostic log — survives even if the relaunch fails so we
         // can ask users to attach %TEMP%\LAZEYKA-relaunch-*.log when
         // a future bug report comes in.
@@ -302,13 +362,37 @@ export async function installAppUpdate(
         // 2) Defender often holds the freshly-written LAZEYKA.exe for a
         //    few seconds for an on-write scan; 1s wasn't always enough.
         'Start-Sleep -Seconds 3',
-        // 3) Wait until the new exe actually exists on disk.
-        '$filePoll = (Get-Date).AddSeconds(60)',
-        'while ((Get-Date) -lt $filePoll -and -not (Test-Path -LiteralPath $exe)) {',
+        // 3) Дождаться, пока файл действительно ЗАМЕНЯТ, а не просто увидеть
+        //    его на месте: старый exe лежит там почти весь апгрейд. Признак
+        //    замены — изменившееся время модификации.
+        '$filePoll = (Get-Date).AddSeconds(90)',
+        '$replaced = $false',
+        'while ((Get-Date) -lt $filePoll) {',
+        '  if (Test-Path -LiteralPath $exe) {',
+        // Epoch считаем через явный конструктор DateTime: `Get-Date "1970-01-01Z"`
+        // в Windows PowerShell 5.1 разбирается в зависимости от локали и может
+        // отдать не UTC. Здесь вид времени задан жёстко.
+        '    $epoch = New-Object DateTime 1970,1,1,0,0,0,([DateTimeKind]::Utc)',
+        '    $mt = [int64](((Get-Item -LiteralPath $exe).LastWriteTimeUtc - $epoch).TotalMilliseconds)',
+        '    if ($oldMtime -le 0 -or $mt -ne $oldMtime) { $replaced = $true; Log "exe replaced (mtime $oldMtime -> $mt)"; break }',
+        '  }',
         '  Start-Sleep -Milliseconds 500',
         '}',
         'if (-not (Test-Path -LiteralPath $exe)) { Log \"exe missing at $exe — giving up\"; exit 1 }',
-        // 4) Try to launch via Start-Process first (preferred — surfaces
+        'if (-not $replaced) { Log "mtime unchanged — запускаем всё равно, файл на месте" }',
+        // 4) Убедиться, что старый процесс уже не жив. Деинсталлятор делает
+        //    `taskkill /F /IM LAZEYKA.exe /T`; если стартовать раньше него,
+        //    он прибьёт только что поднятое приложение.
+        '$procPoll = (Get-Date).AddSeconds(30)',
+        '$name = [IO.Path]::GetFileNameWithoutExtension($exe)',
+        'while ((Get-Date) -lt $procPoll -and (Get-Process -Name $name -ErrorAction SilentlyContinue)) {',
+        '  Start-Sleep -Milliseconds 500',
+        '}',
+        'if (Get-Process -Name $name -ErrorAction SilentlyContinue) {',
+        '  Log "приложение уже запущено (установщик поднял сам) — выходим"',
+        '  exit 0',
+        '}',
+        // 5) Try to launch via Start-Process first (preferred — surfaces
         //    in the user's interactive session). If that throws, fall
         //    back to the .NET Process API which goes through CreateProcess
         //    directly.

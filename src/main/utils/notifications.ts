@@ -2,7 +2,14 @@ import { Notification, app } from 'electron'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
 
-export function showSystemNotification(title: string, body: string): void {
+/**
+ * Показать системное уведомление.
+ *
+ * `onClick` нужен уведомлениям, которые зовут человека обратно в приложение:
+ * без него клик по всплывашке не делает ничего, и единственный способ дойти
+ * до окна — вспомнить про значок в трее.
+ */
+export function showSystemNotification(title: string, body: string, onClick?: () => void): void {
   if (!Notification.isSupported()) return
 
   try {
@@ -14,6 +21,7 @@ export function showSystemNotification(title: string, body: string): void {
       silent: false
     })
 
+    if (onClick) notification.on('click', onClick)
     notification.show()
   } catch { /* ignore notification errors */ }
 }

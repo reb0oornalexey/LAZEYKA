@@ -275,7 +275,12 @@ export interface AppUpdateInfo {
   releaseUrl?: string
   releaseNotes?: string
   publishedAt?: string
+  /** Скрывать ли окно обновления сейчас (снуз ещё идёт или версия пропущена). */
   dismissed?: boolean
+  /** До какого момента отложено кнопкой «Позже» (epoch ms). */
+  snoozedUntil?: number
+  /** Версия пропущена насовсем — напомнит только следующий релиз. */
+  skipped?: boolean
 }
 export const appCheckUpdate = (force = false): Promise<AppUpdateInfo> =>
   invoke('app:checkUpdate', force)
@@ -284,8 +289,12 @@ export const appInstallUpdate = (
   expectedVersion?: string
 ): Promise<{ scheduled: true }> =>
   invoke('app:installUpdate', url, expectedVersion)
-export const appDismissUpdate = (tag: string): Promise<void> =>
-  invoke('app:dismissUpdate', tag)
+/**
+ * Отложить обновление. `forever` — «Пропустить эту версию»: спросим только
+ * когда выйдет следующий релиз. Без него — тишина на сутки.
+ */
+export const appDismissUpdate = (tag: string, forever = false): Promise<void> =>
+  invoke('app:dismissUpdate', tag, forever)
 
 // ---- App control ------------------------------------------------------------
 export const appQuit = (): Promise<void> => invoke('app:quit')
@@ -413,9 +422,16 @@ export interface IncyNode {
    * since `latencyMs` is null in both cases.
    */
   latencyAt?: number
+  /**
+   * Какой подписке принадлежит узел. Пусто — узел добавлен вручную ссылкой;
+   * такие переживают обновление любой подписки и удаляются только вручную.
+   */
+  subscriptionId?: string
 }
 
 export interface IncySubscription {
+  /** Постоянный идентификатор; по нему узлы привязаны к своему провайдеру. */
+  id: string
   url: string
   title: string
   usedBytes: number | null
@@ -582,8 +598,29 @@ export const incyImportInput = (
   input: string
 ): Promise<{ addedCount: number; subscription: IncySubscription | null; nodes: IncyNode[] }> =>
   invoke('incy:importInput', input)
-export const incyRefreshSubscription = (): Promise<{ subscription: IncySubscription; nodes: IncyNode[] }> =>
-  invoke('incy:refreshSubscription')
+export const incyRefreshSubscription = (
+  subscriptionId?: string
+): Promise<{ subscription: IncySubscription; nodes: IncyNode[] }> =>
+  invoke('incy:refreshSubscription', subscriptionId)
+
+/** Все подписки пользователя, в порядке добавления. */
+export const incyGetSubscriptions = (): Promise<IncySubscription[]> => invoke('incy:getSubscriptions')
+
+/**
+ * Обновить все подписки подряд. Возвращает и ошибки тоже: если один провайдер
+ * лежит, остальные должны обновиться, а про упавший надо сказать.
+ */
+export const incyRefreshAllSubscriptions = (): Promise<{
+  subscriptions: IncySubscription[]
+  nodes: IncyNode[]
+  failed: { title: string; error: string }[]
+}> => invoke('incy:refreshAllSubscriptions')
+
+/** Удалить подписку вместе с её серверами. Ручные узлы не трогает. */
+export const incyRemoveSubscription = (
+  subscriptionId: string
+): Promise<{ subscriptions: IncySubscription[]; nodes: IncyNode[] }> =>
+  invoke('incy:removeSubscription', subscriptionId)
 export const incyParseUri = (uri: string): Promise<IncyNode | null> => invoke('incy:parseUri', uri)
 export const incyGetStatus = (): Promise<IncyStatus> => invoke('incy:getStatus')
 export const incyConnect = (id?: string): Promise<IncyStatus> => invoke('incy:connect', id)
@@ -653,7 +690,10 @@ export interface IncyBackupPreview {
   message?: string
   filePath?: string
   exportedAt?: number
+  /** Первая подписка из копии — поле осталось ради копий старого формата. */
   subscriptionTitle?: string | null
+  /** Названия всех подписок в копии. */
+  subscriptionTitles?: string[]
   nodeCount?: number
   routingRuleCount?: number
   hasSettings?: boolean
