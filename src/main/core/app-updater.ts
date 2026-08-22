@@ -110,7 +110,19 @@ function compareVersion(a: string, b: string): number {
 
 let cache: { at: number; data: AppUpdateInfo } | null = null
 let cacheHydrated = false
-const CACHE_TTL_MS = 6 * 60 * 60 * 1000
+/**
+ * Сколько ответ GitHub считается свежим.
+ *
+ * Было шесть часов, и это оборачивалось так: выкладываешь релиз, у человека
+ * приложение молчит полдня, а перезапуск не помогает — кэш лежит файлом на
+ * диске и переживает перезапуск. «Обновлений нет» и «мы не спрашивали» с
+ * экрана выглядели одинаково.
+ *
+ * Полчаса — достаточно редко, чтобы не долбить GitHub (60 запросов в час на
+ * IP без авторизации), и достаточно часто, чтобы перезапуск приложения был
+ * рабочим способом получить свежий ответ.
+ */
+const CACHE_TTL_MS = 30 * 60 * 1000
 const CACHE_NAME = 'app'
 
 function hydrateCacheFromDisk(): void {
@@ -120,17 +132,6 @@ function hydrateCacheFromDisk(): void {
   if (persisted) cache = persisted
 }
 
-let refreshInflight = false
-function backgroundRefresh(): void {
-  if (refreshInflight) return
-  refreshInflight = true
-  checkAppUpdate(true)
-    .catch(() => void 0)
-    .finally(() => {
-      refreshInflight = false
-    })
-}
-
 export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
   hydrateCacheFromDisk()
   const installed = app.getVersion()
@@ -138,15 +139,20 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
   const dismissedTag = cfg.dismissedAppUpdateTag
   const dismissedUntil = cfg.dismissedAppUpdateUntil
 
-  if (!force && cache && Date.now() - cache.at < CACHE_TTL_MS && cache.data.tag) {
-    if (Date.now() - cache.at > 30 * 60 * 1000) backgroundRefresh()
-    const cachedLatest = cache.data.latest
+  /** Собрать ответ из того, что уже лежит в кэше. */
+  const fromCache = (): AppUpdateInfo => {
+    const data = cache!.data
+    const cachedLatest = data.latest
     return {
-      ...cache.data,
+      ...data,
       installed,
       hasUpdate: !!cachedLatest && compareVersion(cachedLatest, installed) > 0,
-      ...isUpdateDismissed(cache.data.tag, dismissedTag, dismissedUntil)
+      ...isUpdateDismissed(data.tag, dismissedTag, dismissedUntil)
     }
+  }
+
+  if (!force && cache && Date.now() - cache.at < CACHE_TTL_MS && cache.data.tag) {
+    return fromCache()
   }
 
   let release: GhRelease
@@ -155,6 +161,10 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
     if (!res.ok) throw new Error(`GitHub API ${res.status}`)
     release = (await res.json()) as GhRelease
   } catch (e) {
+    // Сеть отвалилась или GitHub упёрся в лимит запросов. Если человек нажал
+    // «Проверить обновления» сам — он должен увидеть причину, а не бодрое
+    // «всё свежее». В фоне же лучше отдать вчерашний ответ, чем ничего.
+    if (!force && cache?.data.tag) return fromCache()
     throw new Error(
       `Не удалось проверить обновления LAZEYKA: ${e instanceof Error ? e.message : String(e)}`
     )

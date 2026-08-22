@@ -9,7 +9,8 @@ import {
   Trash2,
   Globe,
   ChevronDown,
-  ChevronRight
+  ChevronRight,
+  RotateCw
 } from 'lucide-react'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
@@ -19,6 +20,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import {
   appRelaunch,
+  appCheckUpdateNow,
   profileExport,
   profileImport,
   dnsGetProviders,
@@ -48,11 +50,44 @@ const Settings: React.FC = () => {
   const [newDomain, setNewDomain] = useState('')
   const [newComment, setNewComment] = useState('')
   const [showRuCategories, setShowRuCategories] = useState(false)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
 
   useEffect(() => {
     dnsGetProviders().then(setDohProviders).catch(() => {})
     splitTunnelingGetConfig().then(setSplitConfig).catch(() => {})
   }, [])
+
+  /**
+   * Спросить GitHub про новую версию прямо сейчас, минуя кэш.
+   *
+   * Отвечаем во всех трёх случаях, включая «всё свежее»: кнопка, которая на
+   * вид ничего не сделала, вынуждает гадать, сработала она или нет.
+   */
+  const handleCheckUpdate = async (): Promise<void> => {
+    setCheckingUpdate(true)
+    try {
+      const info = await appCheckUpdateNow()
+      if (info.hasUpdate && info.assetUrl) {
+        // Окно обновления показывается само — оно слушает тот же результат.
+        toast.success(`Доступна версия ${info.latest}`, {
+          description: 'Окно с установкой сейчас откроется.',
+          style: POWER_ON_BANNER_STYLE
+        })
+      } else if (info.hasUpdate) {
+        toast.warning(`Версия ${info.latest} вышла, но установщик к релизу не приложен`, {
+          description: 'Скачайте её вручную со страницы релизов.'
+        })
+      } else {
+        toast.success(`Установлена последняя версия — ${info.installed}`)
+      }
+    } catch (e: any) {
+      toast.error('Не удалось проверить обновления', {
+        description: e?.message || String(e)
+      })
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
 
   const handleExport = async (): Promise<void> => {
     try {
@@ -471,6 +506,30 @@ const Settings: React.FC = () => {
                 checked={appConfig?.autoCheckUpdate ?? true}
                 onCheckedChange={(v) => patchAppConfig({ autoCheckUpdate: v })}
               />
+            </div>
+
+            {/* Проверка по кнопке.
+                Ответ GitHub кэшируется, и без принудительной проверки «новой
+                версии нет» и «мы её просто не спрашивали» выглядели с экрана
+                одинаково. Здесь кэш обходится, а ошибка показывается вслух —
+                молчащая проверка хуже честного «не смогли». */}
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col">
+                <Label className="text-sm">Проверить обновления сейчас</Label>
+                <span className="text-xs text-muted-foreground">
+                  Спросить GitHub напрямую, не дожидаясь плановой проверки.
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={checkingUpdate}
+                onClick={() => { void handleCheckUpdate() }}
+                className="gap-1.5 text-xs shrink-0"
+              >
+                <RotateCw className={cn('size-3.5', checkingUpdate && 'animate-spin')} />
+                {checkingUpdate ? 'Проверяем…' : 'Проверить'}
+              </Button>
             </div>
           </CardContent>
         </Card>

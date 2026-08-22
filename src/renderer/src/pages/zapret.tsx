@@ -234,6 +234,7 @@ const Zapret: React.FC = () => {
           title="Обход DPI (Zapret)"
           subtitle={active ?? 'Выберите стратегию ниже'}
           version={zapret?.installedVersion ?? updateInfo?.installed}
+          versionFallback="встроенная"
           status={status}
           disabled={isTestRunning}
           onToggle={(v) => {

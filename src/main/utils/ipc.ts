@@ -126,6 +126,7 @@ import {
   installAppUpdate,
   dismissAppUpdate
 } from '../core/app-updater'
+import { checkAppUpdateFromUi } from '../core/app-update-watcher'
 import { execFile } from 'node:child_process'
 import { writeFileSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
@@ -474,6 +475,10 @@ export function registerIpcMainHandlers(): void {
 
   // ---- LAZEYKA self-update -----------------------------------------------
   ipcMain.handle('app:checkUpdate', h((force) => checkAppUpdate(Boolean(force))))
+  // Отдельный канал для кнопки в настройках: он ещё и открывает окно
+  // обновления. Обычный `checkUpdate` этого делать не должен — его дёргает
+  // фоновый опрос, и отложенное обновление всплывало бы каждый час.
+  ipcMain.handle('app:checkUpdateNow', h(() => checkAppUpdateFromUi()))
   ipcMain.handle('app:installUpdate', h((url, expectedVersion) =>
     installAppUpdate(url as string, expectedVersion as string | undefined)
   ))

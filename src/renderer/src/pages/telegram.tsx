@@ -211,6 +211,7 @@ const TelegramPage: React.FC = () => {
           title="Telegram"
           subtitle={`${tgws?.host ?? '127.0.0.1'}:${tgws?.port ?? 1443}`}
           version={tgws?.installedVersion ?? updateInfo?.installed}
+          versionFallback="встроенная"
           status={status}
           onToggle={(v) => (v ? tgwsStart() : tgwsStop()).catch(() => void 0)}
           footer={running ? null : 'Нажмите для запуска'}

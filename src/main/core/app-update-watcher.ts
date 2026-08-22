@@ -145,12 +145,17 @@ async function runCheck(force: boolean): Promise<void> {
 }
 
 /**
- * Проверить прямо сейчас — например, когда человек нажал «Проверить
- * обновления» или после того, как снуз истёк.
+ * Проверка по кнопке «Проверить обновления» в настройках.
+ *
+ * Отличается от фоновой двумя вещами. Ошибку не проглатывает — человек нажал
+ * сам и должен увидеть причину, а не молчание. И показывает окно обновления
+ * даже если версия была отложена: раз спросили руками, значит хотят видеть.
  */
-export async function recheckAppUpdate(): Promise<AppUpdateInfo | null> {
-  await runCheck(true)
-  return pending
+export async function checkAppUpdateFromUi(): Promise<AppUpdateInfo> {
+  const info = await checkAppUpdate(true)
+  pending = info.hasUpdate && info.assetUrl ? info : null
+  if (pending) broadcast(true)
+  return info
 }
 
 /** Забыть, что уведомление уже показывали. */

@@ -13,6 +13,12 @@ interface SwitcherCardProps {
   onClick?: () => void
   className?: string
   version?: string
+  /**
+   * Подпись, когда версия ядра неизвестна. Она записывается в конфиг только
+   * после обновления через LAZEYKA, у бинарника из установщика её нет —
+   * и пустое место читалось как «версия потерялась».
+   */
+  versionFallback?: string
   disabled?: boolean
 }
 
@@ -34,6 +40,7 @@ const SwitcherCard: React.FC<SwitcherCardProps> = ({
   onClick,
   className,
   version,
+  versionFallback,
   disabled = false
 }) => {
   const [pending, setPending] = React.useState<null | boolean>(null)
@@ -95,9 +102,16 @@ const SwitcherCard: React.FC<SwitcherCardProps> = ({
             disabled={locked}
             onCheckedChange={handleChange}
           />
-          {version && (
-            <div className="text-[10px] font-mono text-muted-foreground/70 tabular-nums">
-              v{version}
+          {(version || versionFallback) && (
+            <div
+              className="text-[10px] font-mono text-muted-foreground/70 tabular-nums"
+              title={
+                version
+                  ? undefined
+                  : 'Ядро из установщика — номер появится после первого обновления через LAZEYKA'
+              }
+            >
+              {version ? `v${version}` : versionFallback}
             </div>
           )}
         </div>

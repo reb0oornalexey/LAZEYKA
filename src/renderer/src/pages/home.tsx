@@ -36,6 +36,14 @@ interface PowerToggleProps {
   status: CoreStatus
   onToggle: (next: boolean) => Promise<void> | void
   version?: string
+  /**
+   * Что писать, когда версия неизвестна.
+   *
+   * Версия ядра появляется в конфиге только после того, как его обновили
+   * через LAZEYKA: у бинарника из установщика отметки нет. Пустое место на
+   * этом месте читалось как «что-то отвалилось», хотя ядро работает.
+   */
+  versionFallback?: string
   disabled?: boolean
   disabledReason?: string
   subtitle?: React.ReactNode
@@ -43,7 +51,8 @@ interface PowerToggleProps {
 }
 
 const PowerToggle: React.FC<PowerToggleProps> = ({
-  label, status, onToggle, version, disabled = false, disabledReason, subtitle, onSubtitleClick
+  label, status, onToggle, version, versionFallback, disabled = false, disabledReason, subtitle,
+  onSubtitleClick
 }) => {
   const { t } = useTranslation()
   const [pending, setPending] = useState<null | boolean>(null)
@@ -105,9 +114,16 @@ const PowerToggle: React.FC<PowerToggleProps> = ({
             {label}
           </span>
         </div>
-        {version && (
-          <span className="text-[11px] font-mono text-muted-foreground bg-foreground/[0.05] px-2 py-0.5 rounded-full border border-border/40">
-            v{version}
+        {(version || versionFallback) && (
+          <span
+            className="text-[11px] font-mono text-muted-foreground bg-foreground/[0.05] px-2 py-0.5 rounded-full border border-border/40"
+            title={
+              version
+                ? undefined
+                : 'Ядро из установщика — номер версии появится после первого обновления через LAZEYKA'
+            }
+          >
+            {version ? `v${version}` : versionFallback}
           </span>
         )}
       </div>
@@ -413,6 +429,7 @@ const Home: React.FC = () => {
             status={tgws}
             onToggle={toggleTgws}
             version={appConfig?.tgws?.installedVersion ?? tgwsUpdate?.installed}
+            versionFallback="встроенная"
             subtitle={tgws.state === 'running' ? `MTProto • Порт ${appConfig?.tgws?.port || 1443}` : 'Нажмите для запуска'}
             onSubtitleClick={() => navigate('/telegram')}
           />
@@ -421,6 +438,7 @@ const Home: React.FC = () => {
             status={zapret}
             onToggle={toggleZapret}
             version={appConfig?.zapret?.installedVersion ?? zapretUpdate?.installed}
+            versionFallback="встроенная"
             subtitle={zapretStrategy ? `Стратегия: ${zapretStrategy}` : 'Стратегия не выбрана'}
             onSubtitleClick={() => navigate('/zapret')}
             disabled={isZapretTesting}

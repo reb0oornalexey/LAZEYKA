@@ -284,6 +284,12 @@ export interface AppUpdateInfo {
 }
 export const appCheckUpdate = (force = false): Promise<AppUpdateInfo> =>
   invoke('app:checkUpdate', force)
+
+/**
+ * Проверка по кнопке в настройках: мимо кэша, с открытием окна обновления и
+ * без проглатывания ошибки. Фоновый опрос должен звать `appCheckUpdate`.
+ */
+export const appCheckUpdateNow = (): Promise<AppUpdateInfo> => invoke('app:checkUpdateNow')
 export const appInstallUpdate = (
   url: string,
   expectedVersion?: string
