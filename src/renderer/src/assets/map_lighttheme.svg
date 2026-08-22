@@ -1,0 +1,86 @@
+<svg width="2560" height="1440" viewBox="0 0 2560 1440" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Light Slate Base Gradient -->
+    <radialGradient id="cyber_light_core" cx="50%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#f8fafc" stop-opacity="1"/>
+      <stop offset="60%" stop-color="#edf2f7" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#e2e8f0" stop-opacity="1"/>
+    </radialGradient>
+
+    <!-- Indigo Light Nebula Glow -->
+    <radialGradient id="nebula_light_indigo" cx="20%" cy="25%" r="40%">
+      <stop offset="0%" stop-color="#6366f1" stop-opacity="0.08"/>
+      <stop offset="60%" stop-color="#818cf8" stop-opacity="0.02"/>
+      <stop offset="100%" stop-color="#f8fafc" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Emerald Light Nebula Glow -->
+    <radialGradient id="nebula_light_emerald" cx="80%" cy="30%" r="45%">
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.07"/>
+      <stop offset="55%" stop-color="#34d399" stop-opacity="0.02"/>
+      <stop offset="100%" stop-color="#f8fafc" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Cyber Matrix Dot Grid Pattern (Light) -->
+    <pattern id="cyber_grid_dots_light" width="48" height="48" patternUnits="userSpaceOnUse">
+      <circle cx="24" cy="24" r="1.2" fill="#6366f1" fill-opacity="0.25"/>
+      <path d="M 24 0 L 24 4 M 24 44 L 24 48 M 0 24 L 4 24 M 44 24 L 48 24" stroke="#6366f1" stroke-width="0.75" stroke-opacity="0.10"/>
+    </pattern>
+
+    <!-- Large HUD Blueprint Grid Pattern (Light) -->
+    <pattern id="cyber_grid_lines_light" width="192" height="192" patternUnits="userSpaceOnUse">
+      <rect width="192" height="192" fill="none" stroke="#6366f1" stroke-width="0.75" stroke-opacity="0.08"/>
+      <!-- Corner Markers -->
+      <path d="M 0 16 L 0 0 L 16 0" fill="none" stroke="#6366f1" stroke-width="1" stroke-opacity="0.25"/>
+      <path d="M 192 16 L 192 0 L 176 0" fill="none" stroke="#6366f1" stroke-width="1" stroke-opacity="0.25"/>
+      <path d="M 0 176 L 0 192 L 16 192" fill="none" stroke="#6366f1" stroke-width="1" stroke-opacity="0.25"/>
+      <path d="M 192 176 L 192 192 L 176 192" fill="none" stroke="#6366f1" stroke-width="1" stroke-opacity="0.25"/>
+    </pattern>
+  </defs>
+
+  <!-- 1. Light Base -->
+  <rect width="2560" height="1440" fill="url(#cyber_light_core)"/>
+
+  <!-- 2. Ambient Color Nebulae -->
+  <rect width="2560" height="1440" fill="url(#nebula_light_indigo)"/>
+  <rect width="2560" height="1440" fill="url(#nebula_light_emerald)"/>
+
+  <!-- 3. Grid Patterns -->
+  <rect width="2560" height="1440" fill="url(#cyber_grid_dots_light)"/>
+  <rect width="2560" height="1440" fill="url(#cyber_grid_lines_light)"/>
+
+  <!-- 4. Subtle Cyber Constellation Nodes & Circuit Traces -->
+  <g opacity="0.6">
+    <!-- Orbital Target Rings -->
+    <circle cx="680" cy="420" r="180" stroke="#6366f1" stroke-width="1" stroke-opacity="0.2" stroke-dasharray="4 8"/>
+    <circle cx="680" cy="420" r="240" stroke="#6366f1" stroke-width="0.75" stroke-opacity="0.12"/>
+    <circle cx="1880" cy="420" r="180" stroke="#10b981" stroke-width="1" stroke-opacity="0.2" stroke-dasharray="4 8"/>
+    <circle cx="1880" cy="420" r="240" stroke="#10b981" stroke-width="0.75" stroke-opacity="0.12"/>
+
+    <!-- High-tech HUD Crosshairs -->
+    <g stroke="#6366f1" stroke-width="1.2" stroke-opacity="0.35">
+      <path d="M 320 180 L 320 200 M 310 190 L 330 190"/>
+      <path d="M 2240 180 L 2240 200 M 2230 190 L 2250 190"/>
+      <path d="M 320 1260 L 320 1280 M 310 1270 L 330 1270"/>
+      <path d="M 2240 1260 L 2240 1280 M 2230 1270 L 2250 1270"/>
+      <path d="M 1280 80 L 1280 100 M 1270 90 L 1290 90"/>
+    </g>
+
+    <!-- Circuit Connection Traces -->
+    <path d="M 320 190 L 540 190 L 680 330 L 680 420" fill="none" stroke="#6366f1" stroke-width="1" stroke-opacity="0.25"/>
+    <circle cx="540" cy="190" r="3.5" fill="#6366f1" fill-opacity="0.6"/>
+
+    <path d="M 2240 190 L 2020 190 L 1880 330 L 1880 420" fill="none" stroke="#10b981" stroke-width="1" stroke-opacity="0.25"/>
+    <circle cx="2020" cy="190" r="3.5" fill="#10b981" fill-opacity="0.6"/>
+
+    <path d="M 680 510 L 680 640 L 960 920 L 1600 920 L 1880 640 L 1880 510" fill="none" stroke="#6366f1" stroke-width="0.75" stroke-opacity="0.18" stroke-dasharray="6 6"/>
+  </g>
+
+  <!-- 5. Technical Cyber Typography Elements in Corners -->
+  <g fill="#6366f1" fill-opacity="0.35" font-family="monospace" font-size="11" letter-spacing="2">
+    <text x="340" y="194">SYS://CORE.MATRIX.ACTIVE</text>
+    <text x="2040" y="194">SEC://TUNNEL.ENCRYPTED</text>
+    <text x="340" y="1274">LOC://LATENCY.OPTIMIZED</text>
+    <text x="2080" y="1274">VER://LAZEYKA.HUD.1.0.1</text>
+  </g>
+</svg>

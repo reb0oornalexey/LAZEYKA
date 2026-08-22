@@ -1,0 +1,492 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.75rem;
+  /* Comfortable Titanium Slate light background - easy on the eyes, never blinding */
+  --background: oklch(0.935 0.012 245);
+  --foreground: oklch(0.18 0.025 250);
+  --card: oklch(0.985 0.005 240 / 96%);
+  --card-foreground: oklch(0.18 0.025 250);
+  --popover: oklch(0.985 0.005 240);
+  --popover-foreground: oklch(0.18 0.025 250);
+  --primary: oklch(0.52 0.22 260);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.89 0.015 245);
+  --secondary-foreground: oklch(0.18 0.025 250);
+  --muted: oklch(0.89 0.015 245);
+  --muted-foreground: oklch(0.42 0.025 250);
+  --stroke-power-off: oklch(0.75 0.04 250);
+  --gradient-start-power-off: oklch(0.88 0.03 250);
+  --gradient-end-power-off: oklch(0.8 0.03 250);
+  --stroke-power-on: oklch(0.6 0.18 155);
+  --gradient-start-power-on: oklch(0.65 0.2 155);
+  --gradient-end-power-on: oklch(0.5 0.18 155);
+  --profile-active: oklch(0.6 0.18 155 / 15%);
+  --stroke-profile-active: oklch(0.6 0.18 155);
+  --profile-inactive: oklch(0.88 0.01 245 / 50%);
+  --stroke-profile-inactive: oklch(0.75 0.015 245);
+  --stroke: oklch(0.84 0.015 245);
+  --accent: oklch(0.89 0.015 245);
+  --accent-foreground: oklch(0.18 0.025 250);
+  --destructive: oklch(0.55 0.22 25);
+  --destructive-foreground: oklch(0.99 0 0);
+  --border: oklch(0.84 0.015 245);
+  --input: oklch(0.84 0.015 245);
+  --ring: oklch(0.52 0.22 260);
+  --chart-1: oklch(0.52 0.22 260);
+  --chart-2: oklch(0.55 0.2 155);
+  --chart-3: oklch(0.65 0.18 75);
+  --chart-4: oklch(0.6 0.22 310);
+  --chart-5: oklch(0.55 0.22 25);
+  --success: oklch(0.55 0.2 155);
+  --success-foreground: oklch(0.99 0 0);
+  --warning: oklch(0.65 0.18 75);
+  --warning-foreground: oklch(0.15 0 0);
+  --sidebar: oklch(0.95 0.01 240 / 95%);
+  --sidebar-foreground: oklch(0.18 0.025 250);
+  --sidebar-primary: oklch(0.52 0.22 260);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: oklch(0.89 0.015 245);
+  --sidebar-accent-foreground: oklch(0.18 0.025 250);
+  --sidebar-border: oklch(0.84 0.015 245);
+  --sidebar-ring: oklch(0.52 0.22 260);
+}
+
+.dark {
+  /* High-tech Obsidian void background */
+  --background: oklch(0.1 0.015 250);
+  --foreground: oklch(0.98 0 0);
+  --card: oklch(0.14 0.02 250 / 80%);
+  --card-foreground: oklch(0.98 0 0);
+  --popover: oklch(0.13 0.02 250);
+  --popover-foreground: oklch(0.98 0 0);
+  --primary: oklch(0.65 0.22 260);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.2 0.025 250);
+  --secondary-foreground: oklch(0.98 0 0);
+  --muted: oklch(0.18 0.02 250);
+  --muted-foreground: oklch(0.72 0.02 250);
+  --stroke-power-off: oklch(0.35 0.03 250);
+  --gradient-start-power-off: oklch(0.25 0.02 250);
+  --gradient-end-power-off: oklch(0.16 0.02 250);
+  --stroke-power-on: oklch(0.75 0.22 155);
+  --gradient-start-power-on: oklch(0.65 0.24 155);
+  --gradient-end-power-on: oklch(0.45 0.2 155);
+  --profile-active: oklch(0.65 0.22 155 / 25%);
+  --stroke-profile-active: oklch(0.75 0.22 155);
+  --profile-inactive: oklch(0.18 0.02 250 / 60%);
+  --stroke-profile-inactive: oklch(0.28 0.02 250);
+  --stroke: oklch(1 0 0 / 10%);
+  --accent: oklch(0.22 0.03 250);
+  --accent-foreground: oklch(0.98 0 0);
+  --destructive: oklch(0.65 0.24 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.65 0.22 260);
+  --success: oklch(0.72 0.22 155);
+  --success-foreground: oklch(0.08 0 0);
+  --warning: oklch(0.78 0.18 75);
+  --warning-foreground: oklch(0.1 0 0);
+  --chart-1: oklch(0.65 0.22 260);
+  --chart-2: oklch(0.72 0.22 155);
+  --chart-3: oklch(0.78 0.18 75);
+  --chart-4: oklch(0.68 0.25 310);
+  --chart-5: oklch(0.68 0.24 25);
+  --sidebar: oklch(0.11 0.018 250 / 90%);
+  --sidebar-foreground: oklch(0.98 0 0);
+  --sidebar-primary: oklch(0.65 0.22 260);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.2 0.025 250);
+  --sidebar-accent-foreground: oklch(0.98 0 0);
+  --sidebar-border: oklch(1 0 0 / 8%);
+  --sidebar-ring: oklch(0.65 0.22 260);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-stroke-power-off: var(--stroke-power-off);
+  --color-gradient-start-power-off: var(--gradient-start-power-off);
+  --color-gradient-end-power-off: var(--gradient-end-power-off);
+  --color-stroke-power-on: var(--stroke-power-on);
+  --color-gradient-start-power-on: var(--gradient-start-power-on);
+  --color-gradient-end-power-on: var(--gradient-end-power-on);
+  --color-profile-active: var(--profile-active);
+  --color-stroke-profile-active: var(--stroke-profile-active);
+  --color-profile-inactive: var(--profile-inactive);
+  --color-stroke-profile-inactive: var(--stroke-profile-inactive);
+  --color-stroke: var(--stroke);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* NOTE: the driver.js tour styling that used to live here was removed —
+   nothing in the renderer imports driver.js, so ~145 lines of !important
+   overrides were shipped to every user for a tour that never runs.
+   The package is still listed in devDependencies; drop it there too if
+   no onboarding tour is planned. */
+
+.app-nodrag {
+  -webkit-app-region: none;
+}
+.app-drag {
+  -webkit-app-region: drag;
+}
+
+.wc-group {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.wc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: default;
+  padding: 0;
+  outline: none;
+  background: transparent;
+}
+
+.wc-mac {
+  gap: 7px;
+  padding-right: 8px;
+}
+
+.wc-mac .wc-btn {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  color: transparent;
+  transition: all 0.12s ease;
+}
+
+.wc-mac .wc-btn svg {
+  width: 6px;
+  height: 6px;
+}
+
+.wc-mac .wc-close {
+  background: #ff5f57;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+}
+
+.wc-mac .wc-minimize {
+  background: #febc2e;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+}
+
+.wc-mac .wc-maximize {
+  background: #28c840;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+}
+
+.wc-mac.wc-blurred .wc-btn {
+  background: color-mix(in oklab, var(--muted-foreground) 30%, transparent);
+  box-shadow: none;
+}
+
+.wc-mac:hover .wc-close {
+  color: #4d0000;
+}
+
+.wc-mac:hover .wc-minimize {
+  color: #614a00;
+}
+
+.wc-mac:hover .wc-maximize {
+  color: #00590c;
+}
+
+.wc-mac .wc-btn:active {
+  filter: brightness(0.78);
+}
+
+.wc-win {
+  gap: 1px;
+  padding-left: 4px;
+}
+
+.wc-win .wc-btn {
+  width: 34px;
+  height: 26px;
+  border-radius: calc(var(--radius) - 4px);
+  color: var(--muted-foreground);
+  transition: all 0.12s ease;
+}
+
+.wc-win .wc-btn svg {
+  width: 10px;
+  height: 10px;
+}
+
+.wc-win .wc-btn:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.wc-win .wc-close:hover {
+  background: var(--destructive);
+  color: var(--destructive-foreground);
+}
+
+.wc-win .wc-btn:active {
+  opacity: 0.6;
+}
+
+/*
+ * Stuck-hover workaround for the X / minimize buttons. When Electron hides or
+ * minimizes the window in response to the click, Windows never delivers the
+ * matching mouseleave event to the renderer process, so the button's
+ * :hover state stays "on" until the next mouse movement. We tag the button
+ * with .wc-suppress-hover at click time and the rules below override the
+ * hover styles back to their idle values; the React layer clears the tag on
+ * pointerleave / pointermove / window focus.
+ */
+.wc-win .wc-btn.wc-suppress-hover,
+.wc-win .wc-btn.wc-suppress-hover:hover,
+.wc-win .wc-btn.wc-suppress-hover:active {
+  background: transparent !important;
+  color: inherit !important;
+  opacity: 1 !important;
+}
+.wc-mac .wc-btn.wc-suppress-hover,
+.wc-mac .wc-btn.wc-suppress-hover:hover,
+.wc-mac .wc-btn.wc-suppress-hover:active {
+  filter: none !important;
+}
+.wc-mac:hover .wc-close.wc-suppress-hover,
+.wc-mac:hover .wc-minimize.wc-suppress-hover {
+  color: transparent !important;
+}
+
+* {
+  user-select: none;
+}
+
+.select-text,
+.select-text * {
+  user-select: text;
+}
+
+/* Mouse focus stays ringless (the old blanket `*:focus { outline: none }`),
+   but keyboard focus must remain visible — otherwise Tab-navigating the app
+   is blind guesswork. `:focus-visible` only fires for keyboard/AT focus, so
+   this costs nothing visually for mouse users. */
+*:focus {
+  outline: none;
+  outline-width: 0;
+  outline-color: transparent;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.flag-emoji {
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    Oxygen,
+    Ubuntu,
+    Cantarell,
+    'Open Sans',
+    'Helvetica Neue',
+    sans-serif,
+    'Apple Color Emoji',
+    'Segoe UI Emoji';
+}
+
+/* Sticky-hover fix companion (see App.tsx clearStuckState). While the
+   `hover-reset` class is on <body> for two frames after a window
+   focus/blur transition, every descendant becomes pointer-event-inert,
+   which forces Chromium to drop any :hover that was latched onto an
+   element when the window was minimised to the tray. */
+body.hover-reset,
+body.hover-reset * {
+  pointer-events: none !important;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-corner {
+  background-color: transparent;
+}
+
+/* Scrollbars follow the theme the user picked in Settings, not the OS.
+   These used to be keyed on `prefers-color-scheme`, but the app switches
+   themes via the `.dark` class (next-themes, attribute="class") — so a
+   light OS with the dark theme selected kept light scrollbars, and vice
+   versa. Deriving from --muted-foreground makes them track whichever
+   palette is active automatically.
+
+   The old rules also had the hover states inverted in light mode (hover
+   made the thumb *more* transparent); hover is now consistently stronger. */
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--muted-foreground) 32%, transparent);
+  border-radius: 5px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--muted-foreground) 55%, transparent);
+}
+
+.no-font-smoothing,
+.no-font-smoothing * {
+  -webkit-font-smoothing: none !important;
+  -moz-osx-font-smoothing: grayscale !important;
+  text-rendering: geometricPrecision !important;
+}
+
+/* ═════════════════════════════════════════════════════════════════════
+   OBSIDIAN CYBER-HUD UTILITIES & VISUAL EFFECTS
+   ═════════════════════════════════════════════════════════════════════ */
+
+.cyber-card {
+  background: color-mix(in oklab, var(--card) 94%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 20px -4px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dark .cyber-card {
+  background: color-mix(in oklab, var(--card) 92%, transparent);
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.45);
+}
+
+.cyber-card-hover:hover {
+  border-color: color-mix(in oklab, var(--primary) 40%, var(--border));
+  box-shadow: 0 8px 30px -4px rgba(15, 23, 42, 0.12), 0 0 15px -3px rgba(99, 102, 241, 0.15);
+  transform: translateY(-1px);
+}
+
+.dark .cyber-card-hover:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 14px 38px -8px rgba(0, 0, 0, 0.55), 0 0 20px -5px rgba(99, 102, 241, 0.15);
+}
+
+.cyber-glow-emerald {
+  box-shadow: 0 0 25px -4px rgba(16, 185, 129, 0.35), inset 0 0 15px -2px rgba(16, 185, 129, 0.2);
+}
+
+.cyber-glow-indigo {
+  box-shadow: 0 0 25px -4px rgba(99, 102, 241, 0.35), inset 0 0 15px -2px rgba(99, 102, 241, 0.2);
+}
+
+.cyber-glow-rose {
+  box-shadow: 0 0 25px -4px rgba(244, 63, 94, 0.35), inset 0 0 15px -2px rgba(244, 63, 94, 0.2);
+}
+
+.cyber-glow-amber {
+  box-shadow: 0 0 25px -4px rgba(245, 158, 11, 0.35), inset 0 0 15px -2px rgba(245, 158, 11, 0.2);
+}
+
+.cyber-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+}
+
+@keyframes cyber-pulse {
+  0%, 100% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(1.08);
+  }
+}
+
+.animate-cyber-pulse {
+  animation: cyber-pulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes cyber-scan {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(1000%); }
+}
+
+.cyber-scanner::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.8), transparent);
+  animation: cyber-scan 3s linear infinite;
+  opacity: 0.3;
+}
+
+

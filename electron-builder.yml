@@ -1,0 +1,94 @@
+appId: com.lazeyka.app
+productName: LAZEYKA
+# Trim Chromium's locale pack from ~42 MB (55 files) to ~1.5 MB by shipping
+# only the languages the LAZEYKA UI actually uses. The renderer is fully
+# Russian; en-US stays as a fallback for system-level Chromium prompts
+# (form validation, default context-menu strings) when ru is unavailable.
+electronLanguages:
+  - en-US
+  - ru
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!aur/*'
+  - '!images/*'
+  - '!scripts/*'
+  - '!extra/*'
+  - '!tailwind.config.js'
+  - '!postcss.config.js'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+extraResources:
+  - from: './resources/'
+    to: ''
+    filter:
+      - '**/*'
+      - '!**/.git/**'
+      - '!**/.github/**'
+      - '!**/.service/**'
+      - '!**/.gitignore'
+      - '!**/.gitattributes'
+      - '!**/README.md'
+      - '!**/LICENSE.txt'
+      - '!**/*.backup'
+      - '!**/zapret/utils/**'
+protocols:
+  name: 'LAZEYKA URI Scheme'
+  schemes:
+    - 'lazeyka'
+    - 'tg-ws'
+win:
+  target:
+    - nsis
+    - 7z
+  artifactName: ${productName}_${arch}-portable.${ext}
+  requestedExecutionLevel: requireAdministrator
+nsis:
+  artifactName: ${productName}_${arch}.${ext}
+  uninstallDisplayName: ${productName}
+  allowToChangeInstallationDirectory: true
+  oneClick: false
+  perMachine: true
+  createDesktopShortcut: true
+  include: build/nsis/installer.nsh
+mac:
+  target:
+    - pkg
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+  extendInfo:
+    - NSCameraUsageDescription: Application requests access to the device's camera.
+    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+  artifactName: ${productName}_${arch}.${ext}
+pkg:
+  allowAnywhere: false
+  allowCurrentUserHome: false
+linux:
+  desktop:
+    entry:
+      Name: LAZEYKA
+      MimeType: 'x-scheme-handler/lazeyka;x-scheme-handler/tg-ws'
+  target:
+    - deb
+    - rpm
+    - pacman
+  maintainer: LAZEYKA
+  category: Utility
+  artifactName: ${productName}_${arch}.${ext}
+deb:
+  afterInstall: 'build/linux/postinst'
+rpm:
+  afterInstall: 'build/linux/postinst'
+pacman:
+  afterInstall: 'build/linux/postinst'
+  artifactName: ${productName}_${arch}.pkg.tar.xz
+npmRebuild: true
+publish: []

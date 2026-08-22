@@ -1,0 +1,16 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGradOff" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#12161a"/>
+      <stop offset="100%" stop-color="#06080a"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="512" height="512" rx="104" fill="url(#bgGradOff)"/>
+  <rect x="8" y="8" width="496" height="496" rx="98" fill="none" stroke="#1e2528" stroke-width="2"/>
+
+  <!-- потухшая трещина: сервисы не запущены -->
+  <path d="M 176 78 L 224 176 L 172 214 L 268 306 L 214 344 L 320 434"
+        fill="none" stroke="#333f48" stroke-width="26"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
