@@ -479,13 +479,23 @@ export function loadIncySettings(): IncySettings {
       (p: IncyRoutingProfile) => p && !p.builtin && typeof p.id === 'string'
     )
     merged.routingProfileList = [...BUILTIN_ROUTING_PROFILES, ...custom]
-    if (
-      typeof merged.activeRoutingProfileId !== 'string' ||
-      (merged.activeRoutingProfileId &&
-        !merged.routingProfileList.some((p: IncyRoutingProfile) => p.id === merged.activeRoutingProfileId))
-    ) {
-      // A profile that no longer exists must not leave the UI highlighting
-      // nothing; '' means "current settings do not match any profile".
+    // Метка активного профиля должна соответствовать тому, что реально
+    // применено. Три случая, когда её нужно снять:
+    //
+    //  1. Значение не строка — битый или чужой файл настроек.
+    //  2. Профиля с таким id больше нет (пользователь удалил).
+    //  3. Профиль есть, но живые настройки от него отличаются.
+    //
+    // Третий случай — это ровно то, что происходит при обновлении с версии,
+    // где профилей ещё не было: у настроек нет поля `activeRoutingProfileId`,
+    // подставляется дефолт «Раздельно», а маршрутизация у человека может быть
+    // какая угодно. Без этой проверки интерфейс подсвечивал бы профиль,
+    // описывающий не то, что применено.
+    const active = merged.routingProfileList.find(
+      (p: IncyRoutingProfile) => p.id === merged.activeRoutingProfileId
+    )
+    if (typeof merged.activeRoutingProfileId !== 'string' || !active || !matchesProfile(merged, active)) {
+      // '' означает «текущие настройки не совпадают ни с одним профилем».
       merged.activeRoutingProfileId = ''
     }
     return merged
