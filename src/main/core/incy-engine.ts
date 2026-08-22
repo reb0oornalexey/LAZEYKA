@@ -1510,6 +1510,61 @@ export async function pingIncyNode(
  * disk, but nothing ever read them — the config always used the raw
  * `remoteDns`/`localDns` values, so picking "Quad9" or "Xbox DNS" did nothing.
  */
+/**
+ * Адрес DNS-сервера → объект в формате sing-box 1.12+.
+ *
+ * Старая схема описывала сервер одной строкой-URL в поле `address`. Новая
+ * разбирает её на части: `type` — транспорт, `server` — хост, плюс `path` и
+ * `server_port`, если они не стандартные. Поле `address_resolver` тоже
+ * переименовали в `domain_resolver`.
+ *
+ * Понимает всё, что может выдать `resolveDnsPair`: голый IP, `https://`,
+ * `tls://`, `quic://`, `h3://`, `tcp://` и `udp://`.
+ */
+function buildModernDnsServer(
+  tag: string,
+  address: string,
+  detour: 'proxy' | 'direct',
+  needsBootstrap: boolean
+): Record<string, unknown> {
+  const base: Record<string, unknown> = { tag, detour }
+  if (needsBootstrap) base.domain_resolver = 'dns-bootstrap'
+
+  const match = address.match(/^([a-z0-9+.-]+):\/\/(.+)$/i)
+  if (!match) {
+    // Голый адрес без схемы — обычный UDP-резолвер (`8.8.8.8`).
+    return { ...base, type: 'udp', server: address }
+  }
+
+  const scheme = match[1].toLowerCase()
+  let url: URL
+  try {
+    url = new URL(address)
+  } catch {
+    return { ...base, type: 'udp', server: address }
+  }
+
+  const server = url.hostname.replace(/^\[|\]$/g, '')
+  const port = url.port ? Number(url.port) : undefined
+  const path = url.pathname && url.pathname !== '/' ? url.pathname : undefined
+
+  switch (scheme) {
+    case 'https':
+    case 'h2':
+      return { ...base, type: 'https', server, ...(port ? { server_port: port } : {}), ...(path ? { path } : {}) }
+    case 'h3':
+      return { ...base, type: 'h3', server, ...(port ? { server_port: port } : {}), ...(path ? { path } : {}) }
+    case 'tls':
+      return { ...base, type: 'tls', server, ...(port ? { server_port: port } : {}) }
+    case 'quic':
+      return { ...base, type: 'quic', server, ...(port ? { server_port: port } : {}) }
+    case 'tcp':
+      return { ...base, type: 'tcp', server, ...(port ? { server_port: port } : {}) }
+    default:
+      return { ...base, type: 'udp', server, ...(port ? { server_port: port } : {}) }
+  }
+}
+
 function resolveDnsPair(settings: IncySettings): { remote: string; local: string } {
   const fallbackRemote = settings.remoteDns || 'https://1.1.1.1/dns-query'
   const fallbackLocal = settings.localDns || '8.8.8.8'
@@ -1961,7 +2016,10 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       const host = address.includes('://')
         ? (() => {
             try {
-              return new URL(address).hostname
+              // URL.hostname отдаёт IPv6 в скобках (`[2606:4700::1111]`), а
+              // net.isIP такую форму не признаёт — без снятия скобок литеральный
+              // IPv6-адрес считался бы доменом и получал ненужный bootstrap.
+              return new URL(address).hostname.replace(/^\[|\]$/g, '')
             } catch {
               return ''
             }
@@ -1974,7 +2032,28 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // no rule matched. remote-dns has to stay first — putting the bootstrap
     // resolver at the top would quietly send every lookup out in plaintext,
     // past the tunnel, to be answered (or poisoned) by the local network.
-    const dnsServers: any[] = [
+    //
+    // Два набора серверов, потому что sing-box сменил схему DNS на ходу:
+    //
+    //   1.11 и старше  — `{ tag, address: "https://1.1.1.1/dns-query" }`
+    //   1.12+          — `{ tag, type: "https", server: "1.1.1.1" }`
+    //
+    // В 1.12 старая форма стала deprecated, а в 1.14 её удалили: ядро падает
+    // с FATAL «legacy DNS servers is deprecated». Полагаться на переменную
+    // ENABLE_DEPRECATED_LEGACY_DNS_SERVERS нельзя — она тоже временная.
+    //
+    // Поэтому сначала пробуем современную форму, а если ядро её не примет
+    // (значит, оно старое) — откатываемся на legacy. Ровно та же схема, что
+    // уже используется для Clash API и уровней гео-правил.
+    const dnsServersModern = [
+      buildModernDnsServer('remote-dns', dnsPair.remote, 'proxy', needsResolver(dnsPair.remote)),
+      buildModernDnsServer('local-dns', dnsPair.local, 'direct', needsResolver(dnsPair.local)),
+      // Bootstrap only: plain UDP to a literal IP, always direct. Nothing uses
+      // it except resolving the hostnames of the two servers above, so it sits
+      // last where it can never become the default.
+      { tag: 'dns-bootstrap', type: 'udp', server: bootstrapIp, detour: 'direct' }
+    ]
+    const dnsServersLegacy = [
       {
         tag: 'remote-dns',
         address: dnsPair.remote,
@@ -1987,11 +2066,9 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         detour: 'direct',
         ...(needsResolver(dnsPair.local) ? { address_resolver: 'dns-bootstrap' } : {})
       },
-      // Bootstrap only: plain UDP to a literal IP, always direct. Nothing uses
-      // it except resolving the hostnames of the two servers above, so it sits
-      // last where it can never become the default.
       { tag: 'dns-bootstrap', address: bootstrapIp, detour: 'direct' }
     ]
+    const dnsServers: any[] = [...dnsServersModern]
     const dnsRules: any[] = []
 
     // Clash-compatible API: the only way to get real byte counters out of
@@ -2405,23 +2482,73 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     }
 
     let preflight = await validateCoreConfig(bin, ['check', '-c', cfgFile])
+
     if (!preflight.ok) {
-      // The Clash API is a compile-time feature (`with_clash_api`). Official
-      // Windows builds ship it, but a user who swapped in a slimmer binary
-      // would otherwise lose the whole tunnel over a statistics endpoint.
-      // Drop it and try once more before giving up.
-      appendLog(`[preflight] Конфиг отклонён: ${preflight.reason} — пробуем без Clash API.`)
-      delete config.experimental
-      statsClashPort = 0
-      writeFileSync(cfgFile, JSON.stringify(config, null, 2), 'utf-8')
-      preflight = await validateCoreConfig(bin, ['check', '-c', cfgFile])
-      if (preflight.ok) {
-        appendLog(
-          'Статистика трафика недоступна: это ядро sing-box собрано без Clash API. ' +
-            'Время сессии и число подключений считаются по-прежнему.'
-        )
+      /**
+       * Схема конфига sing-box меняется между версиями, и одна незнакомая
+       * секция роняет весь запуск. Вместо того чтобы гадать, подбираем
+       * лекарство по тексту отказа.
+       *
+       * `matches` — признаки, по которым ошибка опознаётся. Если ни одно
+       * средство не подошло по признаку, они всё равно перебираются подряд:
+       * лучше применить лишнее и подняться, чем отказать пользователю.
+       *
+       * Раньше цепочка была жёсткой: любой отказ сначала выключал Clash API.
+       * На ошибку про DNS это писало в лог «пробуем без Clash API» и без
+       * нужды отключало статистику — при том что причина была совсем другая.
+       */
+      const remedies: {
+        id: string
+        matches: RegExp
+        note: string
+        apply: () => void
+      }[] = [
+        {
+          id: 'dns-legacy',
+          matches: /dns/i,
+          note: 'Используется устаревший формат DNS: это ядро sing-box старее 1.12.',
+          apply: () => {
+            config.dns.servers = dnsServersLegacy
+          }
+        },
+        {
+          id: 'no-clash-api',
+          matches: /clash|experimental/i,
+          note:
+            'Статистика трафика недоступна: это ядро sing-box собрано без Clash API. ' +
+            'Время сессии и число подключений считаются по-прежнему.',
+          apply: () => {
+            delete config.experimental
+            statsClashPort = 0
+          }
+        }
+      ]
+
+      const reason = preflight.reason ?? ''
+      // Сначала то, что подходит по тексту ошибки, затем всё остальное.
+      const ordered = [
+        ...remedies.filter((r) => r.matches.test(reason)),
+        ...remedies.filter((r) => !r.matches.test(reason))
+      ]
+
+      const applied: string[] = []
+      for (const remedy of ordered) {
+        if (preflight.ok) break
+        appendLog(`[preflight] Конфиг отклонён: ${preflight.reason} — пробуем «${remedy.id}».`)
+        remedy.apply()
+        applied.push(remedy.id)
+        writeFileSync(cfgFile, JSON.stringify(config, null, 2), 'utf-8')
+        preflight = await validateCoreConfig(bin, ['check', '-c', cfgFile])
+        if (preflight.ok) {
+          // Пишем только про то, что реально понадобилось.
+          for (const id of applied) {
+            const r = remedies.find((x) => x.id === id)
+            if (r) appendLog(r.note)
+          }
+        }
       }
     }
+
     if (!preflight.ok) {
       const message = `Конфигурация отклонена ядром sing-box: ${preflight.reason}`
       appendLog(`[preflight] ${message}`)
