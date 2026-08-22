@@ -2132,7 +2132,22 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         // outbound implicitly, which made the 'direct' routing mode below a
         // no-op — every mode behaved like 'global'.
         final: routingMode === 'direct' ? 'direct' : 'proxy',
-        auto_detect_interface: true
+        auto_detect_interface: true,
+        /**
+         * Чем резолвить имена, когда исходящее соединение набирает хост.
+         *
+         * Вторая половина миграции DNS в sing-box 1.12: мало перевести
+         * серверы на новый формат — ядро ещё требует явно указать резолвер
+         * для набора номера, иначе падает с «missing
+         * route.default_domain_resolver ... deprecated».
+         *
+         * Именно `local-dns`, а не `remote-dns`: remote-dns ходит через
+         * туннель (`detour: proxy`), а адрес самого VPN-сервера нужно
+         * разрешить ДО того, как туннель поднят. Через remote-dns это
+         * замкнутый круг — ровно тот дедлок, от которого ниже стоит
+         * отдельное правило на хост узла.
+         */
+        default_domain_resolver: { server: 'local-dns' }
       }
     }
 
@@ -2505,10 +2520,15 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       }[] = [
         {
           id: 'dns-legacy',
-          matches: /dns/i,
-          note: 'Используется устаревший формат DNS: это ядро sing-box старее 1.12.',
+          matches: /dns|domain_resolver/i,
+          note: 'Используется устаревшая схема DNS: это ядро sing-box старее 1.12.',
           apply: () => {
+            // Схема «до 1.12» — это пара: серверы одной строкой в `address`
+            // И отсутствие `default_domain_resolver`, о котором старое ядро
+            // не знает. Менять только одно бессмысленно: получится гибрид,
+            // который не примет ни новое ядро, ни старое.
             config.dns.servers = dnsServersLegacy
+            delete config.route.default_domain_resolver
           }
         },
         {
@@ -2524,28 +2544,66 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         }
       ]
 
-      const reason = preflight.reason ?? ''
+      /**
+       * Исходная причина отказа и исходный конфиг.
+       *
+       * И то, и другое обязательно сохранить до первой попытки. Лекарство
+       * может не помочь и при этом ухудшить конфиг — например, откат на
+       * старый формат DNS на ядре 1.14 добавляет свою фатальную ошибку.
+       * Без отката изменений и без запоминания первой причины пользователь
+       * увидел бы сообщение от последней, самой неудачной попытки, а
+       * настоящая причина потерялась бы.
+       */
+      const originalReason = preflight.reason ?? ''
+      const pristine = JSON.stringify(config)
+      const pristineStatsPort = statsClashPort
+
+      const restore = (): void => {
+        // Восстанавливаем содержимое объекта, не подменяя ссылку: `config`
+        // объявлен через const и используется ниже по коду.
+        for (const key of Object.keys(config)) delete config[key]
+        Object.assign(config, JSON.parse(pristine))
+        statsClashPort = pristineStatsPort
+      }
+
       // Сначала то, что подходит по тексту ошибки, затем всё остальное.
       const ordered = [
-        ...remedies.filter((r) => r.matches.test(reason)),
-        ...remedies.filter((r) => !r.matches.test(reason))
+        ...remedies.filter((r) => r.matches.test(originalReason)),
+        ...remedies.filter((r) => !r.matches.test(originalReason))
       ]
 
-      const applied: string[] = []
-      for (const remedy of ordered) {
-        if (preflight.ok) break
-        appendLog(`[preflight] Конфиг отклонён: ${preflight.reason} — пробуем «${remedy.id}».`)
-        remedy.apply()
-        applied.push(remedy.id)
+      // Пробуем сначала каждое лекарство по отдельности, затем — все сразу.
+      // Так одно неподходящее средство не тянет за собой остальные и не
+      // подменяет диагноз своей ошибкой.
+      const attempts: { ids: string[]; apply: () => void }[] = [
+        ...ordered.map((r) => ({ ids: [r.id], apply: r.apply })),
+        ...(ordered.length > 1
+          ? [{ ids: ordered.map((r) => r.id), apply: () => ordered.forEach((r) => r.apply()) }]
+          : [])
+      ]
+
+      for (const attempt of attempts) {
+        appendLog(`[preflight] Конфиг отклонён: ${originalReason} — пробуем «${attempt.ids.join(' + ')}».`)
+        restore()
+        attempt.apply()
         writeFileSync(cfgFile, JSON.stringify(config, null, 2), 'utf-8')
         preflight = await validateCoreConfig(bin, ['check', '-c', cfgFile])
         if (preflight.ok) {
-          // Пишем только про то, что реально понадобилось.
-          for (const id of applied) {
+          for (const id of attempt.ids) {
             const r = remedies.find((x) => x.id === id)
             if (r) appendLog(r.note)
           }
+          break
         }
+        appendLog(`[preflight] «${attempt.ids.join(' + ')}» не помогло: ${preflight.reason}`)
+      }
+
+      if (!preflight.ok) {
+        // Ни одно средство не подошло — возвращаем исходный конфиг и
+        // сообщаем первую, настоящую причину.
+        restore()
+        writeFileSync(cfgFile, JSON.stringify(config, null, 2), 'utf-8')
+        preflight = { ok: false, reason: originalReason }
       }
     }
 

@@ -247,7 +247,20 @@ export async function installAppUpdate(
   }
 
   // Spawn detached so the installer survives our app.quit().
-  const child = spawn(installerPath, ['/S', '--updated'], {
+  //
+  // `--force-run` — штатный флаг electron-builder, который поднимает
+  // приложение после установки. Для assisted-установщика (`oneClick: false`)
+  // автозапуск в тихом режиме включается ТОЛЬКО этим флагом:
+  //
+  //   ${if} ${isForceRun}
+  //   ${andIf} ${Silent}
+  //     !insertmacro doStartApp
+  //
+  // Мы передавали лишь `/S --updated`, поэтому установщик молча завершался и
+  // приложение приходилось открывать руками. Сторож на PowerShell ниже писался
+  // как обходной путь именно для этого и остаётся запасным вариантом на случай,
+  // если антивирус прибьёт запуск из установщика.
+  const child = spawn(installerPath, ['/S', '--updated', '--force-run'], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true
