@@ -127,6 +127,7 @@ import {
   dismissAppUpdate
 } from '../core/app-updater'
 import { checkAppUpdateFromUi } from '../core/app-update-watcher'
+import { getHwidHeaders } from '../core/incy-hwid'
 import { execFile } from 'node:child_process'
 import { writeFileSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
@@ -445,6 +446,10 @@ export function registerIpcMainHandlers(): void {
       })
     })
   )
+  // Что именно уходит провайдеру подписки вместе с запросом. Показывается в
+  // настройках рядом с выключателем: обещание «мы отправляем только это»
+  // стоит ровно столько, сколько возможность в этом убедиться.
+  ipcMain.handle('incy:getHwidHeaders', h(() => getHwidHeaders()))
   ipcMain.handle('incy:getLogs', h(() => getIncyLogs()))
   ipcMain.handle('incy:clearLogs', h(() => clearIncyLogs()))
   ipcMain.handle('incy:getStats', h(() => getIncyStats()))

@@ -40,6 +40,10 @@ interface AppConfig {
   //            чтобы обновление приложения не всплыло сразу после установки.
   dismissedAppUpdateUntil?: number
 
+  // Запасное зерно для идентификатора устройства (заголовок x-hwid), когда
+  // системный MachineGuid прочитать не удалось. См. core/incy-hwid.ts.
+  deviceHwidSeed?: string
+
   // ---- Logs
   maxLogDays: number
 

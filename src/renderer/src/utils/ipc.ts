@@ -454,6 +454,10 @@ export interface IncySubscription {
   requestedAt?: string
   updateIntervalHours?: number
   announcements?: string[]
+  /** У провайдера включено ограничение по числу устройств (заголовок x-hwid-active). */
+  hwidRequired?: boolean
+  /** Лимит устройств исчерпан. */
+  hwidLimitReached?: boolean
 }
 
 /** One calendar day of traffic. Mirrors IncyDayStat in the main process. */
@@ -611,6 +615,15 @@ export const incyRefreshSubscription = (
 
 /** Все подписки пользователя, в порядке добавления. */
 export const incyGetSubscriptions = (): Promise<IncySubscription[]> => invoke('incy:getSubscriptions')
+
+/** Заголовки с идентификатором устройства — ровно то, что уйдёт провайдеру. */
+export interface IncyHwidHeaders {
+  'x-hwid': string
+  'x-device-os': string
+  'x-ver-os': string
+  'x-device-model': string
+}
+export const incyGetHwidHeaders = (): Promise<IncyHwidHeaders> => invoke('incy:getHwidHeaders')
 
 /**
  * Обновить все подписки подряд. Возвращает и ошибки тоже: если один провайдер

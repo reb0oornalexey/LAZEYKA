@@ -45,6 +45,7 @@ import {
   incyImportInput,
   incyRefreshSubscription,
   incyGetSubscriptions,
+  incyGetHwidHeaders,
   incyRefreshAllSubscriptions,
   incyRemoveSubscription,
   incyGetStatus,
@@ -69,6 +70,7 @@ import {
   incyCheckGeoUpdate,
   type GeoCategoryInfo,
   type GeoUpdateInfo,
+  type IncyHwidHeaders,
   type IncyBackupPreview,
   type IncyBackupParts,
   type IncyNode,
@@ -769,6 +771,89 @@ const BackupTab: React.FC<{ onRestored: () => void | Promise<void> }> = ({ onRes
  * comes from the same module the config builder reads, so the list on screen
  * is by construction the list that ships to the core.
  */
+/**
+ * Отправка идентификатора устройства провайдеру подписки.
+ *
+ * Панели вроде Remnawave ограничивают число устройств на одну подписку и
+ * узнают их по заголовку `x-hwid`. Если у провайдера это включено, а клиент
+ * заголовок не шлёт, подписка не загружается вовсе — поэтому выключатель здесь
+ * не украшение: от него зависит, работает ли VPN.
+ *
+ * Когда провайдер требует HWID, переключатель заблокирован во включённом
+ * положении: выбора в этот момент всё равно нет, и притворяться, что он есть,
+ * значило бы предлагать способ сломать себе подписку.
+ */
+const HwidCard: React.FC<{
+  settings: IncySettings
+  subscriptions: IncySubscription[]
+  onUpdate: (patch: Partial<IncySettings>) => void | Promise<void>
+}> = ({ settings, subscriptions, onUpdate }) => {
+  const [headers, setHeaders] = useState<IncyHwidHeaders | null>(null)
+  const [shown, setShown] = useState(false)
+
+  useEffect(() => {
+    incyGetHwidHeaders().then(setHeaders).catch(() => {})
+  }, [])
+
+  const required = subscriptions.some((s) => s.hwidRequired)
+  const limitReached = subscriptions.filter((s) => s.hwidLimitReached)
+  const enabled = settings.sendHwid !== false
+
+  return (
+    <div className="space-y-2 pt-2 border-t border-border/50">
+      <div className="flex items-center justify-between">
+        <div className="flex flex-col min-w-0">
+          <Label className="text-sm">Отправлять HWID</Label>
+          <span className="text-xs text-muted-foreground">
+            {required
+              ? 'Задано провайдером подписки'
+              : 'Нужно провайдерам, которые ограничивают число устройств на подписку'}
+          </span>
+        </div>
+        <Switch
+          checked={required ? true : enabled}
+          disabled={required}
+          onCheckedChange={(v) => onUpdate({ sendHwid: v })}
+        />
+      </div>
+
+      {limitReached.length > 0 && (
+        <div className="p-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 text-[11px] leading-relaxed text-amber-700 dark:text-amber-200/90">
+          Лимит устройств исчерпан у подписки «{limitReached[0].title}». Удалите лишнее устройство
+          в личном кабинете провайдера — иначе подписка перестанет обновляться.
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => setShown((v) => !v)}
+        className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
+      >
+        {shown ? 'Скрыть, что отправляется' : 'Показать, что отправляется'}
+      </button>
+
+      {shown && (
+        <div className="p-2.5 rounded-xl border border-border/60 bg-card/40 space-y-1 font-mono text-[10px] text-muted-foreground select-text">
+          {headers ? (
+            Object.entries(headers).map(([k, v]) => (
+              <div key={k} className="truncate">
+                <span className="text-foreground/70">{k}:</span> {v}
+              </div>
+            ))
+          ) : (
+            <div>Читаем идентификатор устройства…</div>
+          )}
+          <div className="pt-1.5 font-sans text-[11px] leading-relaxed">
+            Идентификатор — это необратимый хэш от системного номера установки Windows: провайдер
+            видит устройство как одно и то же, но восстановить из него что-либо о вас нельзя. Имя
+            компьютера отправляется, чтобы вы узнали свою машину в списке устройств у провайдера.
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 const GeoCategoriesCard: React.FC<{
   settings: IncySettings
   onUpdate: (patch: Partial<IncySettings>) => void | Promise<void>
@@ -3578,6 +3663,12 @@ export default function IncyPage(): React.ReactElement {
                     onCheckedChange={(v) => handleUpdateSettings({ pingOnUpdateSubscription: v })}
                   />
                 </div>
+
+                <HwidCard
+                  settings={settings}
+                  subscriptions={subscriptions}
+                  onUpdate={handleUpdateSettings}
+                />
 
                 {/* Сортировка */}
                 <div className="space-y-1.5 pt-2 border-t border-border/50">

@@ -28,6 +28,7 @@ import {
   resetTodayStats,
   type IncyStatsSnapshot
 } from './incy-stats'
+import { getHwidHeaders } from './incy-hwid'
 import { showSystemNotification } from '../utils/notifications'
 import { getAllBypassDomains } from './split-tunneling'
 import { setWindowsSystemProxy, clearWindowsSystemProxy } from '../utils/system-proxy'
@@ -128,6 +129,16 @@ export interface IncySubscription {
   requestedAt?: string
   updateIntervalHours?: number
   announcements?: string[]
+  /**
+   * У провайдера включено ограничение по числу устройств.
+   *
+   * Панель сообщает это заголовком `x-hwid-active` при каждой загрузке
+   * подписки. Когда включено, отправка HWID перестаёт быть выбором
+   * пользователя: без заголовка подписка просто не отдаётся.
+   */
+  hwidRequired?: boolean
+  /** Лимит устройств исчерпан — заголовок `x-hwid-max-devices-reached`. */
+  hwidLimitReached?: boolean
 }
 
 /**
@@ -378,7 +389,10 @@ export const DEFAULT_INCY_SETTINGS: IncySettings = {
   updateOnLaunch: true,
   pingOnLaunch: true,
   pingOnUpdateSubscription: false,
-  sendHwid: false,
+  // По умолчанию включено: у провайдера с ограничением по устройствам подписка
+  // без этого заголовка не отдаётся вовсе, а сам заголовок несёт только
+  // обезличенный идентификатор машины, ОС и имя компьютера.
+  sendHwid: true,
   sortServersBy: 'default',
   expireNotifyDays: 3,
 
@@ -1080,7 +1094,12 @@ function parseJsonConfigItem(item: any, idx: number): IncyNode | null {
   }
 }
 
-function fetchHttpRaw(urlStr: string, userAgent = 'INCY/3.5.0', maxRedirects = 5): Promise<{ body: string; headers: http.IncomingHttpHeaders }> {
+function fetchHttpRaw(
+  urlStr: string,
+  userAgent = 'INCY/3.5.0',
+  maxRedirects = 5,
+  extraHeaders: Record<string, string> = {}
+): Promise<{ body: string; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     if (maxRedirects <= 0) return reject(new Error('Слишком много перенаправлений (redirects)'))
 
@@ -1092,17 +1111,43 @@ function fetchHttpRaw(urlStr: string, userAgent = 'INCY/3.5.0', maxRedirects = 5
       {
         headers: {
           'User-Agent': userAgent,
-          Accept: '*/*'
+          Accept: '*/*',
+          ...extraHeaders
         },
         timeout: 10000
       },
       (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           const nextUrl = new URL(res.headers.location, urlStr).toString()
-          return resolve(fetchHttpRaw(nextUrl, userAgent, maxRedirects - 1))
+          return resolve(fetchHttpRaw(nextUrl, userAgent, maxRedirects - 1, extraHeaders))
         }
 
         if (res.statusCode && res.statusCode >= 400) {
+          // Панель с включённым ограничением по устройствам отвечает 404 и
+          // объясняет причину заголовками. Без этой расшифровки человек видит
+          // «HTTP 404» и думает, что ссылка протухла.
+          const hwidActive = String(res.headers['x-hwid-active'] ?? '') === 'true'
+          const notSupported = String(res.headers['x-hwid-not-supported'] ?? '') === 'true'
+          const limitReached =
+            String(res.headers['x-hwid-max-devices-reached'] ?? '') === 'true' ||
+            String(res.headers['x-hwid-limit'] ?? '') === 'true'
+
+          if (limitReached) {
+            return reject(
+              new Error(
+                'Достигнут лимит устройств у провайдера подписки. Удалите лишнее устройство в личном кабинете или обратитесь в поддержку провайдера.'
+              )
+            )
+          }
+          if (hwidActive && notSupported) {
+            const err = new Error(
+              'Провайдер требует передачу идентификатора устройства (HWID).'
+            ) as Error & { hwidRequired?: boolean }
+            // Помечаем причину отдельно от текста: вызывающий код повторит
+            // запрос с заголовком, а разбирать для этого строку — плохая идея.
+            err.hwidRequired = true
+            return reject(err)
+          }
           return reject(new Error(`Сервер вернул ошибку: HTTP ${res.statusCode}`))
         }
 
@@ -1122,7 +1167,50 @@ function fetchHttpRaw(urlStr: string, userAgent = 'INCY/3.5.0', maxRedirects = 5
 
 export async function fetchIncySubscription(subUrl: string): Promise<{ subscription: IncySubscription; nodes: IncyNode[] }> {
   appendLog(`Загрузка подписки: ${subUrl}`)
-  const { body, headers } = await fetchHttpRaw(subUrl, 'INCY/3.5.0')
+
+  // Идентификатор устройства для подписок с ограничением по числу устройств.
+  const buildHwid = async (): Promise<Record<string, string>> => {
+    try {
+      return { ...(await getHwidHeaders()) }
+    } catch (e) {
+      appendLog(`Не удалось получить идентификатор устройства: ${String(e)}`)
+      return {}
+    }
+  }
+
+  const wantsHwid = loadIncySettings().sendHwid !== false
+  let hwid: Record<string, string> = wantsHwid ? await buildHwid() : {}
+
+  let body: string
+  let headers: http.IncomingHttpHeaders
+  try {
+    ({ body, headers } = await fetchHttpRaw(subUrl, 'INCY/3.5.0', 5, hwid))
+  } catch (e) {
+    // Провайдер прямо сказал, что без идентификатора устройства не отдаст
+    // подписку. Просить человека найти нужный выключатель ради этого — лишний
+    // круг: повторяем запрос с заголовком и запоминаем выбор, раз он всё равно
+    // навязан провайдером. В логе видно, что произошло и почему.
+    if (!(e as { hwidRequired?: boolean })?.hwidRequired) throw e
+
+    appendLog('Провайдер требует HWID — включаем отправку идентификатора устройства и повторяем запрос')
+    hwid = await buildHwid()
+    if (Object.keys(hwid).length === 0) throw e
+    ;({ body, headers } = await fetchHttpRaw(subUrl, 'INCY/3.5.0', 5, hwid))
+
+    const s = loadIncySettings()
+    if (s.sendHwid !== true) saveIncySettings({ ...s, sendHwid: true })
+  }
+
+  // Панель сообщает, включено ли у провайдера ограничение по устройствам.
+  // Это нужно интерфейсу: когда включено, выключатель HWID показывается
+  // заданным провайдером, а не свободным выбором.
+  const hwidRequired = String(headers['x-hwid-active'] ?? '') === 'true'
+  const hwidLimitReached =
+    String(headers['x-hwid-max-devices-reached'] ?? '') === 'true' ||
+    String(headers['x-hwid-limit'] ?? '') === 'true'
+  if (hwidLimitReached) {
+    appendLog('Провайдер сообщает, что лимит устройств для этой подписки исчерпан')
+  }
 
   let title = 'VPN Подписка'
   if (headers['profile-title']) {
@@ -1247,7 +1335,9 @@ export async function fetchIncySubscription(subUrl: string): Promise<{ subscript
     keyNumber,
     requestedAt,
     updateIntervalHours,
-    announcements
+    announcements,
+    hwidRequired,
+    hwidLimitReached
   }
 
   // Метка принадлежности ставится здесь, в одном месте: любой путь получения
@@ -1530,32 +1620,44 @@ async function resolveHostFast(host: string): Promise<string> {
 }
 
 /**
- * Measure a URL through a proxy the given core is already exposing.
+ * Забирает ли туннель сейчас весь трафик машины.
  *
- * Used by the HTTP ping protocols: instead of just checking that the node's
- * port accepts a TCP connection (which a firewall or a dead-but-listening
- * server also does), this sends a real request through a throwaway sing-box
- * instance and times the response. Slower, but it answers "does this node
- * actually carry traffic", which is what the user is really asking.
+ * В режиме TUN sing-box поднимает виртуальный адаптер и перехватывает всё, что
+ * уходит с компьютера, — включая наши собственные измерительные соединения.
+ * Обычный TCP-пинг из Node в этот момент врёт: TUN-стек принимает соединение
+ * локально, рукопожатие завершается за доли миллисекунды, и на экране у всех
+ * серверов оказывается одно и то же минимальное значение.
  */
-async function pingViaCore(
-  node: IncyNode,
+function tunnelCapturesTraffic(): boolean {
+  return currentStatus.state === 'running' && currentStatus.connectionMode === 'tun'
+}
+
+/**
+ * Общая часть измерения через отдельный процесс ядра.
+ *
+ * `auto_detect_interface` — ключевая строчка. Она заставляет ядро привязать
+ * исходящий сокет к физическому интерфейсу (на Windows это `IP_UNICAST_IF`),
+ * то есть уйти мимо TUN-адаптера, даже когда туннель поднят. Тем же приёмом
+ * сам sing-box не даёт своему соединению с VPN-сервером зациклиться в
+ * собственном туннеле.
+ */
+function spawnProbe(
+  outbounds: Record<string, unknown>[],
   testUrl: string,
-  method: 'GET' | 'HEAD',
   timeoutMs: number
 ): Promise<number | null> {
   const bin = incyBinaryPath()
-  if (!existsSync(bin)) return null
+  if (!existsSync(bin)) return Promise.resolve(null)
 
-  // `sing-box tools fetch` always issues a GET; HEAD is emulated by asking for
-  // a 204 endpoint, which returns no body either way. The distinction the user
-  // picks still changes the request the *direct* (no-core) path makes below.
-  const outbound = buildSingBoxOutbound(node, DEFAULT_INCY_SETTINGS)
   const tmpFile = path.join(dataDir(), `temp-ping-${randomBytes(6).toString('hex')}.json`)
   try {
-    writeFileSync(tmpFile, JSON.stringify({ outbounds: [{ ...outbound, tag: 'proxy' }] }), 'utf-8')
+    writeFileSync(
+      tmpFile,
+      JSON.stringify({ outbounds, route: { auto_detect_interface: true } }),
+      'utf-8'
+    )
   } catch {
-    return null
+    return Promise.resolve(null)
   }
 
   return new Promise((resolve) => {
@@ -1570,14 +1672,7 @@ async function pingViaCore(
       try {
         if (existsSync(tmpFile)) unlinkSync(tmpFile)
       } catch { /* noop */ }
-      if (code === 0) {
-        // Subtract the fixed cost of spawning a core and doing a TLS
-        // handshake to the test endpoint, so the number is comparable with
-        // the plain TCP measurement shown for other nodes.
-        resolve(Math.max(30, Math.round(performance.now() - start - 470)))
-      } else {
-        resolve(null)
-      }
+      resolve(code === 0 ? performance.now() - start : null)
     }
     cp.on('exit', finish)
     cp.on('error', () => finish(-1))
@@ -1587,8 +1682,58 @@ async function pingViaCore(
       } catch { /* noop */ }
       finish(-1)
     }, timeoutMs + 1500)
-    void method
   })
+}
+
+/**
+ * Сколько стоит сам замер: запуск процесса ядра плюс TLS до тестового адреса.
+ *
+ * Раньше здесь стояла константа в 470 мс, вычитаемая из каждого результата.
+ * На медленной машине или холодном диске запуск ядра занимает и секунду — и
+ * все узлы получали заниженные, а то и упёртые в нижнюю границу числа. Теперь
+ * накладные расходы измеряются на месте, через прямой выход, и живут минуту:
+ * за это время они не успевают заметно измениться.
+ */
+let baselineCache: { at: number; value: number } | null = null
+const BASELINE_TTL_MS = 60_000
+
+async function probeBaseline(testUrl: string, timeoutMs: number): Promise<number> {
+  const now = Date.now()
+  if (baselineCache && now - baselineCache.at < BASELINE_TTL_MS) return baselineCache.value
+
+  const direct = await spawnProbe([{ type: 'direct', tag: 'proxy' }], testUrl, timeoutMs)
+  // Прямой выход не удался (нет сети до тестового адреса) — считать поправку
+  // не из чего. Ноль честнее выдуманного числа: результат будет завышен, но
+  // не занижен, и узлы всё равно сравнимы между собой.
+  const value = direct ?? 0
+  baselineCache = { at: now, value }
+  return value
+}
+
+/**
+ * Measure a URL through a proxy the given core is already exposing.
+ *
+ * Used by the HTTP ping protocols: instead of just checking that the node's
+ * port accepts a TCP connection (which a firewall or a dead-but-listening
+ * server also does), this sends a real request through a throwaway sing-box
+ * instance and times the response. Slower, but it answers "does this node
+ * actually carry traffic", which is what the user is really asking.
+ */
+async function pingViaCore(
+  node: IncyNode,
+  testUrl: string,
+  method: 'GET' | 'HEAD',
+  timeoutMs: number
+): Promise<number | null> {
+  void method // `sing-box tools fetch` всегда шлёт GET; выбор влияет на прямой путь ниже
+
+  const outbound = buildSingBoxOutbound(node, DEFAULT_INCY_SETTINGS)
+  const [through, baseline] = await Promise.all([
+    spawnProbe([{ ...outbound, tag: 'proxy' }], testUrl, timeoutMs),
+    probeBaseline(testUrl, timeoutMs)
+  ])
+  if (through === null) return null
+  return Math.max(1, Math.round(through - baseline))
 }
 
 export async function pingIncyNode(
@@ -1636,6 +1781,23 @@ export async function pingIncyNode(
     })
   }
 
+  // Туннель поднят в режиме TUN — обычный TCP-замер из Node бессмыслен.
+  //
+  // Виртуальный адаптер перехватывает соединение и отвечает на него сам,
+  // локально: рукопожатие завершается мгновенно, и у всех серверов на экране
+  // оказывается одно и то же минимальное число (у нас — нижняя граница в 5 мс).
+  // Замер через отдельный процесс ядра уходит мимо TUN и меряет настоящий путь
+  // до узла. Дороже по времени, но это единственный способ получить правду,
+  // не отключая VPN.
+  if (tunnelCapturesTraffic() && (protocol === 'incy' || protocol === 'tcp')) {
+    const viaCore = await pingViaCore(node, testUrl, 'GET', timeoutMs)
+    if (viaCore !== null) return viaCore
+    // Ядра нет (портативная установка без скачанного sing-box) — лучше
+    // сомнительное число, чем пустота: узел хотя бы виден как живой.
+    if (!existsSync(incyBinaryPath())) return pingTcp(node.server, node.port)
+    return null
+  }
+
   // HTTP protocols: measure a real request carried by the node, not just a
   // handshake with its port. `pingTestUrl` is what the user typed in Settings.
   if (protocol === 'http_get' || protocol === 'http_head') {
@@ -1666,68 +1828,35 @@ export async function pingIncyNode(
   if (typeof tcpRes === 'number' && tcpRes > 0) return tcpRes
 
   // If TCP fails (pure UDP/QUIC Hysteria2), use sing-box tools fetch to measure real QUIC handshake!
-  const bin = incyBinaryPath()
-  if (existsSync(bin)) {
-    return new Promise((resolve) => {
-      const tmpFile = path.join(dataDir(), `temp-ping-${Math.random().toString(36).slice(2)}.json`)
-      const cfg = {
-        outbounds: [
-          {
-            type: 'hysteria2',
-            tag: 'proxy',
-            server: node.server,
-            server_port: node.port,
-            password: node.password || '',
-            tls: {
-              enabled: true,
-              server_name: node.sni || node.server,
-              alpn: ['h3']
-            }
+  //
+  // Тот же путь, что и у HTTP-протоколов: отдельный процесс ядра с
+  // `auto_detect_interface`, накладные расходы вычитаются измеренные, а не
+  // взятые из головы.
+  if (!existsSync(incyBinaryPath())) return null
+
+  const [through, baseline] = await Promise.all([
+    spawnProbe(
+      [
+        {
+          type: 'hysteria2',
+          tag: 'proxy',
+          server: node.server,
+          server_port: node.port,
+          password: node.password || '',
+          tls: {
+            enabled: true,
+            server_name: node.sni || node.server,
+            alpn: ['h3']
           }
-        ]
-      }
-      try {
-        writeFileSync(tmpFile, JSON.stringify(cfg), 'utf-8')
-      } catch {
-        return resolve(null)
-      }
-
-      const start = performance.now()
-      const cp = spawn(
-        bin,
-        ['tools', 'fetch', testUrl, '-c', tmpFile, '-o', 'proxy'],
-        { windowsHide: true }
-      )
-
-      let done = false
-      const finish = (code: number | null): void => {
-        if (done) return
-        done = true
-        try {
-          if (existsSync(tmpFile)) unlinkSync(tmpFile)
-        } catch { /* noop */ }
-        if (code === 0) {
-          const totalMs = performance.now() - start
-          // Process initialization and TLS fetch overhead is ~470ms on Windows
-          const netMs = Math.max(30, Math.round(totalMs - 470))
-          resolve(netMs)
-        } else {
-          resolve(null)
         }
-      }
-
-      cp.on('exit', finish)
-      cp.on('error', () => finish(-1))
-      setTimeout(() => {
-        try {
-          cp.kill('SIGTERM')
-        } catch { /* noop */ }
-        finish(-1)
-      }, timeoutMs + 1500)
-    })
-  }
-
-  return null
+      ],
+      testUrl,
+      timeoutMs
+    ),
+    probeBaseline(testUrl, timeoutMs)
+  ])
+  if (through === null) return null
+  return Math.max(1, Math.round(through - baseline))
 }
 
 /**
