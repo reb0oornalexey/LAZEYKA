@@ -124,6 +124,7 @@ import {
 import {
   checkAppUpdate,
   installAppUpdate,
+  cancelAppUpdateDownload,
   dismissAppUpdate
 } from '../core/app-updater'
 import { checkAppUpdateFromUi } from '../core/app-update-watcher'
@@ -487,6 +488,7 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('app:installUpdate', h((url, expectedVersion) =>
     installAppUpdate(url as string, expectedVersion as string | undefined)
   ))
+  ipcMain.handle('app:cancelUpdateDownload', h(() => cancelAppUpdateDownload()))
   ipcMain.handle('app:dismissUpdate', h((tag, forever) =>
     dismissAppUpdate(tag as string, Boolean(forever))
   ))

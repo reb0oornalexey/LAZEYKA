@@ -3,13 +3,27 @@ import { Loader2, Download, Sparkles, X } from 'lucide-react'
 import {
   appCheckUpdate,
   appInstallUpdate,
+  appCancelUpdateDownload,
   appDismissUpdate,
-  type AppUpdateInfo
+  type AppUpdateInfo,
+  type AppUpdateProgress
 } from '@renderer/utils/ipc'
 import { Button } from '@renderer/components/ui/button'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
 
 const POLL_INTERVAL_MS = 60 * 60 * 1000 // 1 h
+
+function formatMb(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(1)
+}
+
+/** «осталось ~2 мин» — в минутах и секундах, без ложной точности. */
+function formatEta(seconds: number): string {
+  if (seconds < 60) return `${Math.ceil(seconds)} с`
+  const min = Math.floor(seconds / 60)
+  const sec = Math.round(seconds % 60)
+  return sec > 0 ? `${min} мин ${sec} с` : `${min} мин`
+}
 
 export default function AppUpdateOverlay(): React.ReactElement | null {
   const { appConfig } = useAppConfig()
@@ -17,6 +31,7 @@ export default function AppUpdateOverlay(): React.ReactElement | null {
   const [installing, setInstalling] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [closing, setClosing] = useState(false)
+  const [progress, setProgress] = useState<AppUpdateProgress | null>(null)
 
   // Gate both the initial check and the hourly poll behind the user's
   // "Проверять обновления LAZEYKA" setting (Settings → Запуск). Default
@@ -69,6 +84,22 @@ export default function AppUpdateOverlay(): React.ReactElement | null {
     }
   }, [])
 
+  // Ход загрузки. Без него окно показывало вечный спиннер: 220 МБ качаются
+  // минутами, и отличить «идёт» от «зависло» было невозможно.
+  useEffect(() => {
+    const onProgress = (_e: unknown, p: AppUpdateProgress): void => {
+      setProgress(p)
+      if (p.state === 'error' || p.state === 'cancelled') {
+        setInstalling(false)
+        if (p.state === 'error' && p.message) setError(p.message)
+      }
+    }
+    window.electron.ipcRenderer.on('app:updateProgress', onProgress)
+    return () => {
+      window.electron.ipcRenderer.removeAllListeners('app:updateProgress')
+    }
+  }, [])
+
   const visible =
     !!info &&
     info.hasUpdate &&
@@ -80,13 +111,16 @@ export default function AppUpdateOverlay(): React.ReactElement | null {
     if (!info?.assetUrl) return
     setInstalling(true)
     setError(null)
+    setProgress(null)
     try {
       await appInstallUpdate(info.assetUrl, info.latest)
       // Main process will quit LAZEYKA within ~1 s. We just keep the
       // spinner up; user perceives "downloading… closing…".
     } catch (e) {
       setInstalling(false)
-      setError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      // Отмену человек сделал сам — сообщать ему об этом как об ошибке незачем.
+      setError(msg.includes('отменена') ? null : msg)
     }
   }
 
@@ -164,6 +198,43 @@ export default function AppUpdateOverlay(): React.ReactElement | null {
                 Не удалось установить обновление: {error}
               </div>
             ) : null}
+
+            {/* Ход загрузки. Установщик весит больше двухсот мегабайт, и без
+                цифр перед глазами минуты ожидания читаются как зависание. */}
+            {installing && progress ? (
+              <div className="mt-4 space-y-1.5">
+                <div className="h-2 w-full rounded-full bg-foreground/[0.08] overflow-hidden">
+                  <div
+                    className={
+                      progress.percent === null
+                        ? 'h-full w-1/3 bg-primary animate-pulse'
+                        : 'h-full bg-primary transition-[width] duration-300'
+                    }
+                    style={
+                      progress.percent === null ? undefined : { width: `${progress.percent}%` }
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-muted-foreground font-mono tabular-nums">
+                  <span>
+                    {progress.state === 'installing'
+                      ? 'Запуск установщика…'
+                      : progress.totalBytes
+                        ? `${formatMb(progress.receivedBytes)} / ${formatMb(progress.totalBytes)} МБ`
+                        : `${formatMb(progress.receivedBytes)} МБ`}
+                  </span>
+                  <span>
+                    {progress.state === 'downloading' && progress.bytesPerSecond > 0
+                      ? `${formatMb(progress.bytesPerSecond)} МБ/с${
+                          progress.etaSeconds !== null
+                            ? ` · осталось ${formatEta(progress.etaSeconds)}`
+                            : ''
+                        }`
+                      : ''}
+                  </span>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -181,18 +252,29 @@ export default function AppUpdateOverlay(): React.ReactElement | null {
           </button>
 
           <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              onClick={() => { void handleLater(false) }}
-              disabled={installing}
-            >
-              Позже
-            </Button>
+            {/* Во время загрузки «Позже» превращается в «Отменить»: прервать
+                двухсотмегабайтную закачку должно быть можно, не закрывая
+                приложение. Недокачанный файл при этом удаляется. */}
+            {installing ? (
+              <Button
+                variant="ghost"
+                onClick={() => { void appCancelUpdateDownload().catch(() => {}) }}
+                disabled={progress?.state === 'installing'}
+              >
+                Отменить
+              </Button>
+            ) : (
+              <Button variant="ghost" onClick={() => { void handleLater(false) }}>
+                Позже
+              </Button>
+            )}
             <Button onClick={handleInstall} disabled={installing}>
               {installing ? (
                 <>
                   <Loader2 className="size-4 mr-2 animate-spin" />
-                  Загрузка…
+                  {progress?.percent !== null && progress?.percent !== undefined
+                    ? `${Math.round(progress.percent)}%`
+                    : 'Загрузка…'}
                 </>
               ) : (
                 <>
@@ -205,7 +287,8 @@ export default function AppUpdateOverlay(): React.ReactElement | null {
         </div>
 
         <div className="mt-3 text-[11px] text-muted-foreground leading-relaxed">
-          «Позже» — напомним через сутки. LAZEYKA закроется на 5–10 секунд для установки
+          «Позже» — напомним через сутки. Установщик весит около 220 МБ; при обрыве связи
+          загрузка продолжится с того же места. LAZEYKA закроется на 5–10 секунд для установки
           и запустится снова автоматически. Все настройки и конфиги сохраняются.
         </div>
       </div>

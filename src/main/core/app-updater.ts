@@ -1,10 +1,13 @@
-import { existsSync, mkdirSync, writeFileSync, statSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, statSync, createWriteStream, unlinkSync } from 'fs'
+import { once } from 'node:events'
+import { Readable } from 'node:stream'
 import { spawn } from 'child_process'
 import path from 'path'
-import { app } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { dataDir } from '../utils/dirs'
 import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
+import { appLog } from '../utils/app-logger'
 
 const REPO = 'reb0oornalexey/LAZEYKA'
 const RELEASES_LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`
@@ -165,9 +168,7 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
     // «Проверить обновления» сам — он должен увидеть причину, а не бодрое
     // «всё свежее». В фоне же лучше отдать вчерашний ответ, чем ничего.
     if (!force && cache?.data.tag) return fromCache()
-    throw new Error(
-      `Не удалось проверить обновления LAZEYKA: ${e instanceof Error ? e.message : String(e)}`
-    )
+    throw new Error(`Не удалось проверить обновления LAZEYKA: ${describeNetworkError(e)}`)
   }
 
   if (release.draft || release.prerelease) {
@@ -245,6 +246,168 @@ function writeUpgradeMarker(): void {
 }
 
 /**
+ * Развернуть настоящую причину ошибки сети.
+ *
+ * `fetch` в Node прячет всё под глухим `TypeError: fetch failed`, а реальная
+ * причина — обрыв соединения, отвалившийся DNS, таймаут тела — лежит в
+ * `cause`, иногда на два уровня вглубь. Пользователь видел ровно «fetch
+ * failed» и не мог ни понять, ни рассказать, что случилось.
+ */
+function describeNetworkError(e: unknown): string {
+  const parts: string[] = []
+  let cur: unknown = e
+  for (let depth = 0; depth < 4 && cur; depth++) {
+    const err = cur as { message?: string; code?: string; cause?: unknown }
+    const piece = [err.code, err.message].filter(Boolean).join(': ')
+    if (piece && !parts.includes(piece)) parts.push(piece)
+    cur = err.cause
+  }
+  return parts.join(' ← ') || String(e)
+}
+
+/** Как идёт загрузка обновления — то, что видно в окне. */
+export interface AppUpdateProgress {
+  state: 'downloading' | 'installing' | 'error' | 'cancelled'
+  receivedBytes: number
+  /** Полный размер, если сервер его сообщил. */
+  totalBytes: number | null
+  /** 0–100, либо null пока размер неизвестен. */
+  percent: number | null
+  bytesPerSecond: number
+  etaSeconds: number | null
+  message?: string
+}
+
+function broadcastProgress(p: AppUpdateProgress): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send('app:updateProgress', p)
+  }
+}
+
+/** Живая загрузка — чтобы её можно было отменить кнопкой. */
+let downloadAbort: AbortController | null = null
+
+export function cancelAppUpdateDownload(): void {
+  downloadAbort?.abort()
+}
+
+/** Нет чанков дольше этого — считаем, что соединение умерло молча. */
+const STALL_TIMEOUT_MS = 30_000
+/** Столько попыток подряд БЕЗ единого нового байта, прежде чем сдаться. */
+const MAX_FRUITLESS_ATTEMPTS = 4
+/** Общий потолок, чтобы рвущаяся в клочья сеть не крутила цикл вечно. */
+const MAX_TOTAL_ATTEMPTS = 40
+
+/**
+ * Скачать файл на диск потоком, с прогрессом и докачкой.
+ *
+ * Раньше здесь стояло `res.arrayBuffer()`: все 220 МБ установщика собирались
+ * в память одним куском, копировались во второй буфер и только потом
+ * попадали на диск. Отсюда три беды. Показать прогресс было физически
+ * нечего — до последнего байта не происходило ни одного события, и человек
+ * видел вечный спиннер, неотличимый от зависания. Пик памяти доходил до
+ * полугигабайта, что на слабой машине само по себе замедляет загрузку. А
+ * обрыв связи на девяноста процентах означал молча начать сначала.
+ *
+ * Теперь байты идут сразу в файл, прогресс уходит в окно, а разрыв
+ * продолжается с места обрыва заголовком `Range` — если сервер это умеет.
+ */
+async function downloadToFile(
+  url: string,
+  dest: string,
+  onProgress: (received: number, total: number | null) => void
+): Promise<number> {
+  let received = 0
+  let total: number | null = null
+  let lastError: unknown = null
+
+  // Попытки считаются не подряд, а «впустую». Соединение, которое рвётся
+  // каждые двадцать мегабайт, при жёстком лимите в четыре попытки никогда бы
+  // не догрузило двухсотмегабайтный файл — хотя каждая попытка продвигала
+  // дело. Пока байты идут, счётчик обнуляется; упирается он только в общий
+  // потолок, чтобы мёртвая сеть не крутила цикл бесконечно.
+  let fruitless = 0
+  for (let total_attempts = 0; total_attempts < MAX_TOTAL_ATTEMPTS; total_attempts++) {
+    const receivedBefore = received
+    // Сторож простоя: свой контроллер на попытку, но внешняя отмена рвёт всё.
+    const controller = new AbortController()
+    const external = downloadAbort
+    const onExternalAbort = (): void => controller.abort()
+    external?.signal.addEventListener('abort', onExternalAbort, { once: true })
+
+    let stallTimer: NodeJS.Timeout | null = null
+    const armStall = (): void => {
+      if (stallTimer) clearTimeout(stallTimer)
+      stallTimer = setTimeout(() => controller.abort(), STALL_TIMEOUT_MS)
+      stallTimer.unref?.()
+    }
+
+    try {
+      const headers: Record<string, string> = { 'User-Agent': REQUEST_HEADERS['User-Agent'] }
+      if (received > 0) headers.Range = `bytes=${received}-`
+
+      armStall()
+      const res = await fetch(url, { headers, signal: controller.signal })
+
+      // Докачку попросили, но сервер отдал файл целиком — начинаем заново,
+      // иначе в файл дописались бы байты с начала и он стал бы мусором.
+      if (received > 0 && res.status !== 206) received = 0
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.body) throw new Error('Пустой ответ сервера')
+
+      const len = Number(res.headers.get('content-length'))
+      if (Number.isFinite(len) && len > 0) total = received + len
+
+      const ws = createWriteStream(dest, { flags: received > 0 ? 'a' : 'w' })
+      try {
+        for await (const chunk of Readable.fromWeb(res.body as never)) {
+          armStall()
+          received += (chunk as Buffer).length
+          if (!ws.write(chunk)) await once(ws, 'drain')
+          onProgress(received, total)
+        }
+        ws.end()
+        await once(ws, 'finish')
+      } finally {
+        if (!ws.closed) ws.destroy()
+      }
+
+      if (total !== null && received < total) {
+        throw new Error(`соединение оборвалось на ${received} из ${total} байт`)
+      }
+      return received
+    } catch (e) {
+      lastError = e
+      if (external?.signal.aborted) {
+        const err = new Error('Загрузка отменена') as Error & { cancelled?: boolean }
+        err.cancelled = true
+        throw err
+      }
+
+      if (received > receivedBefore) {
+        fruitless = 0
+        appLog(
+          'info',
+          `[update] соединение оборвалось на ${Math.round(received / 1048576)} МБ, продолжаем с того же места`
+        )
+      } else {
+        fruitless++
+      }
+      if (fruitless >= MAX_FRUITLESS_ATTEMPTS) break
+
+      // Пауза перед повтором растёт, чтобы не биться в мёртвую сеть подряд.
+      await new Promise((r) => setTimeout(r, Math.min(fruitless + 1, 4) * 1500))
+    } finally {
+      if (stallTimer) clearTimeout(stallTimer)
+      external?.signal.removeEventListener('abort', onExternalAbort)
+    }
+  }
+
+  throw new Error(lastError instanceof Error ? lastError.message : String(lastError))
+}
+
+/**
  * Download the installer and launch it in silent mode, then quit LAZEYKA
  * so NSIS can replace the on-disk files. The installer auto-relaunches the
  * new LAZEYKA when it's done; the user perceives the upgrade as ~5–10 s
@@ -259,31 +422,74 @@ export async function installAppUpdate(
     throw new Error('Авто-обновление поддерживается только на Windows')
   }
 
-  let buf: Buffer
-  try {
-    const res = await fetch(assetUrl, {
-      headers: { 'User-Agent': REQUEST_HEADERS['User-Agent'] }
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const ab = await res.arrayBuffer()
-    buf = Buffer.from(ab)
-  } catch (e) {
-    throw new Error(
-      `Не удалось скачать установщик: ${e instanceof Error ? e.message : String(e)}`
-    )
-  }
-
-  if (buf.length < 5 * 1024 * 1024) {
-    throw new Error(`Загруженный файл слишком маленький (${buf.length} байт)`)
-  }
-
   // Write the installer to %TEMP% so it's auto-cleaned by Windows. Using
   // a stable name plus a timestamp keeps concurrent retries (rare) from
   // colliding while leaving older copies for Disk Cleanup to remove.
   const dir = app.getPath('temp')
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const installerPath = path.join(dir, `LAZEYKA-update-${Date.now()}.exe`)
-  writeFileSync(installerPath, buf)
+
+  downloadAbort = new AbortController()
+  const startedAt = Date.now()
+  let lastSent = 0
+
+  let size: number
+  try {
+    size = await downloadToFile(assetUrl, installerPath, (received, total) => {
+      // Не чаще четырёх раз в секунду: чаще человек всё равно не различит,
+      // а поток событий в рендерер сам по себе стоит процессорного времени.
+      const now = Date.now()
+      if (now - lastSent < 250 && received !== total) return
+      lastSent = now
+
+      const elapsed = (now - startedAt) / 1000
+      const speed = elapsed > 0 ? received / elapsed : 0
+      broadcastProgress({
+        state: 'downloading',
+        receivedBytes: received,
+        totalBytes: total,
+        percent: total ? Math.min(100, (received / total) * 100) : null,
+        bytesPerSecond: speed,
+        etaSeconds: total && speed > 0 ? Math.max(0, (total - received) / speed) : null
+      })
+    })
+  } catch (e) {
+    const cancelled = Boolean((e as { cancelled?: boolean })?.cancelled)
+    try {
+      if (existsSync(installerPath)) unlinkSync(installerPath)
+    } catch { /* временный файл — не беда, Windows уберёт сам */ }
+    broadcastProgress({
+      state: cancelled ? 'cancelled' : 'error',
+      receivedBytes: 0,
+      totalBytes: null,
+      percent: null,
+      bytesPerSecond: 0,
+      etaSeconds: null,
+      message: describeNetworkError(e)
+    })
+    if (cancelled) throw e
+    const reason = describeNetworkError(e)
+    appLog('warn', `[update] загрузка установщика не удалась: ${reason}`)
+    throw new Error(`Не удалось скачать установщик: ${reason}`)
+  } finally {
+    downloadAbort = null
+  }
+
+  if (size < 5 * 1024 * 1024) {
+    try {
+      unlinkSync(installerPath)
+    } catch { /* noop */ }
+    throw new Error(`Загруженный файл слишком маленький (${size} байт)`)
+  }
+
+  broadcastProgress({
+    state: 'installing',
+    receivedBytes: size,
+    totalBytes: size,
+    percent: 100,
+    bytesPerSecond: 0,
+    etaSeconds: 0
+  })
 
   // Tell the OLD installer's customUnInstall macro that this run is an
   // in-place upgrade and the user-data wipe MUST be skipped — otherwise

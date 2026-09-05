@@ -1,6 +1,6 @@
 {
   "name": "lazeyka",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "LAZEYKA - Next-Gen Network Routing & DPI Bypass",
   "main": "./out/main/index.js",
   "author": "reb0oorn",

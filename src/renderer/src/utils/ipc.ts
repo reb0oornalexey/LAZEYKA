@@ -295,6 +295,21 @@ export const appInstallUpdate = (
   expectedVersion?: string
 ): Promise<{ scheduled: true }> =>
   invoke('app:installUpdate', url, expectedVersion)
+
+/** Ход загрузки обновления. Приходит событием `app:updateProgress`. */
+export interface AppUpdateProgress {
+  state: 'downloading' | 'installing' | 'error' | 'cancelled'
+  receivedBytes: number
+  totalBytes: number | null
+  percent: number | null
+  bytesPerSecond: number
+  etaSeconds: number | null
+  message?: string
+}
+
+/** Прервать загрузку установщика. Скачанный кусок удаляется. */
+export const appCancelUpdateDownload = (): Promise<void> =>
+  invoke('app:cancelUpdateDownload')
 /**
  * Отложить обновление. `forever` — «Пропустить эту версию»: спросим только
  * когда выйдет следующий релиз. Без него — тишина на сутки.
