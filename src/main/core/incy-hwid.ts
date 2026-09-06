@@ -83,6 +83,47 @@ export async function getDeviceHwid(): Promise<string> {
   return cached
 }
 
+/** Кириллица → латиница, чтобы имя машины осталось узнаваемым. */
+const TRANSLIT: Record<string, string> = {
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z',
+  и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r',
+  с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch',
+  ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya'
+}
+
+/**
+ * Привести значение к тому, что вообще можно положить в HTTP-заголовок.
+ *
+ * Node отвергает заголовки с символами вне latin1 — а имя компьютера у людей
+ * сплошь и рядом кириллицей. Живой отчёт от пользователя: подписка перестала
+ * обновляться с «Invalid character in header content [x-device-model]», то
+ * есть запрос не уходил вовсе.
+ *
+ * Просто выбросить нелатинские символы мало: из «ПК-Алексей» осталось бы
+ * «-», и в списке устройств у провайдера человек себя не узнал бы. Поэтому
+ * кириллица транслитерируется, а всё остальное непечатаемое отбрасывается.
+ */
+function headerSafe(value: string, fallback: string): string {
+  const translit = value
+    .split('')
+    .map((ch) => {
+      const lower = ch.toLowerCase()
+      const mapped = TRANSLIT[lower]
+      if (mapped === undefined) return ch
+      // Сохраняем регистр: «Алексей» → «Aleksey», а не «aleksey».
+      return ch === lower ? mapped : mapped.charAt(0).toUpperCase() + mapped.slice(1)
+    })
+    .join('')
+
+  const cleaned = translit
+    .replace(/[^\x20-\x7e]/g, '') // остальное непечатаемое — за борт
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 64)
+
+  return cleaned || fallback
+}
+
 /**
  * Заголовки, которые уходят вместе с запросом подписки.
  *
@@ -96,7 +137,7 @@ export async function getHwidHeaders(): Promise<HwidHeaders> {
   return {
     'x-hwid': await getDeviceHwid(),
     'x-device-os': platform,
-    'x-ver-os': os.release(),
-    'x-device-model': os.hostname() || 'PC'
+    'x-ver-os': headerSafe(os.release(), 'unknown'),
+    'x-device-model': headerSafe(os.hostname() || '', 'PC')
   }
 }

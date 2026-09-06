@@ -1106,13 +1106,23 @@ function fetchHttpRaw(
     const u = new URL(urlStr)
     const client = u.protocol === 'https:' ? https : http
 
+    // Подстраховка: Node роняет весь запрос, если в значении заголовка есть
+    // символ вне печатаемого ASCII. Такой заголовок у нас всегда
+    // необязательный (сведения об устройстве), и терять из-за него подписку
+    // нельзя — выбрасываем только его.
+    const safeExtra: Record<string, string> = {}
+    for (const [k, v] of Object.entries(extraHeaders)) {
+      if (/^[\x20-\x7e]*$/.test(v)) safeExtra[k] = v
+      else appendLog(`Заголовок ${k} пропущен: недопустимые символы в значении`)
+    }
+
     const req = client.get(
       urlStr,
       {
         headers: {
           'User-Agent': userAgent,
           Accept: '*/*',
-          ...extraHeaders
+          ...safeExtra
         },
         timeout: 10000
       },
