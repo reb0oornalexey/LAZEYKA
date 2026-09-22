@@ -1,5 +1,5 @@
 type AppTheme = 'light' | 'dark'
-type CoreSource = 'tgws' | 'zapret' | 'app'
+type CoreSource = 'tgws' | 'zapret' | 'app' | 'incy' | 'exitlag'
 
 // Unified log line shown in the Logs page. Type is the severity-ish level,
 // payload is the text, source distinguishes which subsystem produced it.

@@ -32,6 +32,7 @@ import { getHwidHeaders } from './incy-hwid'
 import { showSystemNotification } from '../utils/notifications'
 import { getAllBypassDomains } from './split-tunneling'
 import { setWindowsSystemProxy, clearWindowsSystemProxy } from '../utils/system-proxy'
+import { logToFile } from '../utils/file-logger'
 
 export interface IncyNode {
   id: string
@@ -455,12 +456,47 @@ const MAX_LOG_LINES = 250
 // eslint-disable-next-line no-control-regex
 const ANSI_ESCAPE = / \[[0-9;]*[A-Za-z]/g
 
-export function appendLog(line: string): void {
+function broadcastLogEntry(entry: ControllerLog): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) {
+      w.webContents.send('log', entry)
+    }
+  }
+}
+
+export function appendLog(line: string, customSource?: CoreSource): void {
   const ts = new Date().toLocaleTimeString('ru-RU')
   const clean = line.replace(ANSI_ESCAPE, '').trim()
   if (!clean) return
   ringLogs.push(`[${ts}] ${clean}`)
   if (ringLogs.length > MAX_LOG_LINES) ringLogs.shift()
+
+  const isErr = clean.includes('[ERR]') || clean.includes('ERROR') || clean.includes('fatal') || clean.includes('FATAL')
+  const isWarn = clean.includes('WARN') || clean.includes('warn')
+  const type: ControllerLog['type'] = isErr ? 'error' : isWarn ? 'warn' : 'info'
+
+  let isExitLag = false
+  try {
+    const settings = loadIncySettings()
+    isExitLag =
+      clean.includes('ExitLag') ||
+      clean.includes('приложений') ||
+      (Boolean(settings.perAppProxy) && (clean.includes('process') || clean.includes('router:')))
+  } catch {
+    /* fallback to incy */
+  }
+
+  const source: CoreSource = customSource || (isExitLag ? 'exitlag' : 'incy')
+
+  const entry: ControllerLog = {
+    time: Date.now(),
+    type,
+    source,
+    payload: clean
+  }
+
+  logToFile(entry)
+  broadcastLogEntry(entry)
 }
 
 export function getIncyLogs(): string[] {
@@ -1878,7 +1914,23 @@ export async function pingIncyNode(
     return pingTcp(node.server, node.port)
   }
 
-  // 1. For standard TCP protocols (VLESS, Trojan, SS)
+  // 1. For WireGuard (UDP tunnel)
+  if (node.protocol === 'wireguard') {
+    if (!existsSync(incyBinaryPath())) return null
+    try {
+      const outbound = buildSingBoxOutbound(node, loadIncySettings())
+      const [through, baseline] = await Promise.all([
+        spawnProbe([outbound], testUrl, timeoutMs),
+        probeBaseline(testUrl, timeoutMs)
+      ])
+      if (through === null) return null
+      return Math.max(1, Math.round(through - baseline))
+    } catch {
+      return null
+    }
+  }
+
+  // 2. For standard TCP protocols (VLESS, Trojan, SS)
   //
   // 'tcp' asks for exactly this and nothing more; 'incy' is the same probe
   // plus the QUIC handshake fallback below for Hysteria2.
@@ -2084,11 +2136,31 @@ function reuseProviderOutbound(node: IncyNode, settings: IncySettings): any | nu
   if (!clone || typeof clone !== 'object' || typeof clone.type !== 'string') return null
 
   clone.tag = 'proxy'
+
+  if (clone.type === 'wireguard') {
+    // Normalize sing-box 1.11 WireGuard outbound fields
+    if (!clone.local_address && clone.address) {
+      clone.local_address = Array.isArray(clone.address) ? clone.address : [clone.address]
+      delete clone.address
+    }
+    if (Array.isArray(clone.peers) && clone.peers.length > 0) {
+      const p = clone.peers[0]
+      if (!clone.peer_public_key && p.public_key) clone.peer_public_key = p.public_key
+      if (!clone.server && p.address) clone.server = p.address
+      if (!clone.server_port && p.port) clone.server_port = p.port
+      delete clone.peers
+    }
+    if (!clone.server && node.server) clone.server = node.server
+    if (!clone.server_port && node.port) clone.server_port = node.port
+    delete clone.multiplex
+    return clone
+  }
+
   // No `domain_strategy` here — see the note on domainStrategyFor(). Forcing
   // local resolution on a proxy outbound deadlocks against remote-dns.
   // Never override a multiplex block the provider tuned themselves, and never
-  // add one to hysteria2 (sing-box rejects it there).
-  if (clone.multiplex === undefined && clone.type !== 'hysteria2') {
+  // add one to hysteria2 or wireguard (sing-box rejects it there).
+  if (clone.multiplex === undefined && clone.type !== 'hysteria2' && clone.type !== 'wireguard') {
     applyMultiplex(clone, settings)
   }
   return clone
@@ -2097,6 +2169,20 @@ function reuseProviderOutbound(node: IncyNode, settings: IncySettings): any | nu
 function buildSingBoxOutbound(node: IncyNode, settings: IncySettings): any {
   const verbatim = reuseProviderOutbound(node, settings)
   if (verbatim) return verbatim
+
+  // Explicit WireGuard outbound when no rawOutbound is present
+  if (node.protocol === 'wireguard') {
+    return {
+      type: 'wireguard',
+      tag: 'proxy',
+      server: node.server,
+      server_port: node.port,
+      local_address: ['172.16.0.2/32'],
+      private_key: '',
+      peer_public_key: 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=',
+      mtu: 1280
+    }
+  }
 
   if (node.protocol === 'hysteria2') {
     return {
@@ -2710,14 +2796,18 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       perAppProcessNames.push(...pSet)
     }
 
-    // ExitLag DNS Isolation:
-    // If ExitLag mode (proxy_only) is active, unlisted processes MUST resolve via local-dns
-    // directly so no non-game DNS lookups leak through the VPN tunnel.
+    // ExitLag DNS:
+    // In proxy_only mode, whitelisted processes resolve via remote-dns (through
+    // proxy), everything else uses local-dns by default. We must NOT use
+    // `invert: true` on process_name — on Windows, sing-box frequently fails
+    // to identify process PID ("process not found"), and inverted rules catch
+    // all unidentified packets (including svchost.exe DNS), breaking all DNS.
     if (isPerAppActive && perAppProcessNames.length > 0) {
       if (settings.perAppMode === 'bypass_only') {
+        // Blacklist: bypassed apps resolve via local-dns
         dnsRules.unshift({ process_name: perAppProcessNames, server: 'local-dns' })
       } else {
-        dnsRules.unshift({ invert: true, process_name: perAppProcessNames, server: 'local-dns' })
+        // Whitelist (ExitLag): only listed apps resolve via remote-dns
         dnsRules.push({ process_name: perAppProcessNames, server: 'remote-dns' })
       }
     }
@@ -2847,8 +2937,16 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     }
 
     // Per-App Routing (ExitLag-style whitelist or blacklist)
-    // Placed at the very top of route rules (right after direct DNS IPs) to guarantee zero leak:
-    // in ExitLag mode, any process NOT in the whitelist is routed direct immediately!
+    //
+    // IMPORTANT: We must NOT use `invert: true` with process_name on Windows!
+    // sing-box frequently cannot identify the source process ("process not found"),
+    // and an inverted rule matches ALL unidentified packets — redirecting system
+    // DNS (svchost.exe), background services, and kernel traffic through wrong
+    // outbound, breaking the entire network.
+    //
+    // Instead, we use simple positive matching:
+    //   proxy_only: listed processes → proxy, route.final → direct
+    //   bypass_only: listed processes → direct, route.final → proxy (unchanged)
     if (isPerAppActive && perAppProcessNames.length > 0) {
       if (settings.perAppMode === 'bypass_only') {
         // Blacklist mode: selected apps bypass proxy completely and go direct
@@ -2859,18 +2957,12 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         appendLog(`Режим приложений: ${settings.perAppProcesses!.length} приложений исключены (напрямую)`)
       } else {
         // Whitelist mode (ExitLag):
-        // 1. Force ANY process NOT in whitelist to DIRECT immediately!
-        config.route.rules.push({
-          invert: true,
-          process_name: perAppProcessNames,
-          outbound: 'direct'
-        })
-        // 2. Whitelisted processes go to proxy
+        // Only listed processes go through proxy, everything else stays direct.
         config.route.rules.push({
           process_name: perAppProcessNames,
           outbound: 'proxy'
         })
-        // 3. Unidentified packets / system kernel traffic default to direct
+        // All unidentified packets and unlisted processes default to direct
         config.route.final = 'direct'
         appendLog(
           `Режим ExitLag: через VPN идут ТОЛЬКО ${settings.perAppProcesses!.length} приложений (${settings.perAppProcesses!.join(', ')}), все остальные 100% напрямую`

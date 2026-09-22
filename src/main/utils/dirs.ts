@@ -1,5 +1,5 @@
 import { is } from '@electron-toolkit/utils'
-import { existsSync, mkdirSync, statSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
 import { app } from 'electron'
 import path from 'path'
 
@@ -77,11 +77,9 @@ export function tgwsRuntimeDir(): string {
 }
 
 export function tgwsBinaryPath(): string {
-  // Check runtime dir first (downloaded updates), fall back to bundled resources/.
+  // Check runtime dir first (downloaded auto-updates), fall back to bundled resources/.
   const rt = path.join(tgwsRuntimeDir(), 'TgWsProxy_windows.exe')
-  try {
-    if (existsSync(rt) && statSync(rt).size > 1024 * 1024) return rt
-  } catch { /* fallback */ }
+  if (existsSync(rt)) return rt
   return path.join(resourcesDir(), 'tgws', 'TgWsProxy_windows.exe')
 }
 

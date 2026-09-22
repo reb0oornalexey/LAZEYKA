@@ -1,6 +1,6 @@
 import { ChildProcess, spawn, exec } from 'child_process'
 import { createConnection, createServer } from 'net'
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import path from 'path'
 import { randomBytes } from 'crypto'
 import os from 'os'
@@ -95,13 +95,21 @@ async function killStaleTgws(): Promise<boolean> {
   if (process.platform !== 'win32') return false
   try {
     await new Promise<void>((resolve) => {
-      const p = spawn('taskkill.exe', ['/F', '/IM', 'TgWsProxy_windows.exe', '/T'], {
+      const p = spawn('taskkill.exe', ['/F', '/IM', 'TgWsProxy*', '/T'], {
         windowsHide: true
       })
       p.on('exit', () => resolve())
       p.on('error', () => resolve())
     })
-    log('info', 'stale TgWsProxy_windows.exe instances killed')
+    // Fallback via PowerShell / CIM in case taskkill lacked elevation permissions
+    await new Promise<void>((resolve) => {
+      exec(
+        `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name LIKE 'TgWsProxy%'\\" | Invoke-CimMethod -MethodName Terminate"`,
+        { windowsHide: true },
+        () => resolve()
+      )
+    })
+    log('info', 'stale TgWsProxy instances killed')
     await new Promise((r) => setTimeout(r, 500))
     return true
   } catch {
@@ -139,6 +147,50 @@ function ensureFirewallRule(port: number): void {
       { windowsHide: true }
     )
   } catch { /* best effort */ }
+}
+
+// ---- Flowseal Headless Helpers (Zero GUI, Zero Tray) -----------------------
+
+function preseedFlowsealConfig(t: AppConfig['tgws'], secret: string): void {
+  if (process.platform !== 'win32') return
+  try {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')
+    const dir = path.join(appData, 'TgWsProxy')
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true })
+    }
+    // Touch first-run marker so Flowseal NEVER opens the introductory dialog window
+    const firstRunMarker = path.join(dir, '.first_run_done_mtproto')
+    if (!existsSync(firstRunMarker)) {
+      writeFileSync(firstRunMarker, 'done', 'utf8')
+    }
+    // Touch IPv6 marker so Flowseal NEVER opens the IPv6 warning dialog
+    const ipv6Marker = path.join(dir, '.ipv6_warned')
+    if (!existsSync(ipv6Marker)) {
+      writeFileSync(ipv6Marker, 'warned', 'utf8')
+    }
+    // Pre-seed matching config.json with check_updates: false to prevent update popups
+    const configPath = path.join(dir, 'config.json')
+    const flowsealConfig = {
+      host: t?.host || '127.0.0.1',
+      port: t?.port || 1443,
+      secret,
+      dc_ip: t?.dcIp && t.dcIp.length > 0 ? t.dcIp : ['2:149.154.167.220', '4:149.154.167.220'],
+      verbose: Boolean(t?.verbose),
+      buf_kb: t?.bufKb || 256,
+      pool_size: t?.poolSize || 4,
+      check_updates: false,
+      autostart: false,
+      cfproxy: t?.cfproxy !== false
+    }
+    writeFileSync(configPath, JSON.stringify(flowsealConfig, null, 2), 'utf8')
+  } catch {
+    /* best effort */
+  }
+}
+
+function suppressTrayIcon(_pid: number): void {
+  // Pure headless binary never creates a tray icon
 }
 
 // ---- pre-flight: cold-boot network wait -----------------------------------
@@ -242,13 +294,15 @@ async function startTgwsImpl(): Promise<void> {
     const cfg = await getAppConfig()
     const t = cfg.tgws!
 
-    // 2) Bind host: Always bind to 0.0.0.0 so local network devices (phones) can connect!
-    const bindHost = '0.0.0.0'
+    // 2) Bind host: use configured host (default 127.0.0.1 for local security)
+    const host = t.host || '127.0.0.1'
     const dcIp = (t.dcIp && t.dcIp.length > 0 ? t.dcIp : [...DEFAULT_DC_IPS])
 
-    // 3) Port pre-check & Windows Firewall
-    await ensurePortFree(bindHost, t.port)
-    ensureFirewallRule(t.port)
+    // 3) Port pre-check & Windows Firewall (if listening on all interfaces)
+    await ensurePortFree(host, t.port)
+    if (host === '0.0.0.0') {
+      ensureFirewallRule(t.port)
+    }
 
     // 4) Cold-boot network check
     if (isColdBoot()) {
@@ -259,7 +313,7 @@ async function startTgwsImpl(): Promise<void> {
 
     // 5) Spawn binary
     const args: string[] = [
-      '--host', bindHost,
+      '--host', host,
       '--port', String(t.port),
       '--secret', secret
     ]
@@ -271,11 +325,18 @@ async function startTgwsImpl(): Promise<void> {
     if (t.cfproxyUserDomain) args.push('--cfproxy-domain', t.cfproxyUserDomain)
     if (t.fakeTlsDomain) args.push('--fake-tls-domain', t.fakeTlsDomain)
 
+    // Ensure Flowseal config and first-run markers are primed so zero GUI windows open
+    preseedFlowsealConfig(t, secret)
+
     log('info', `spawning: ${bin} ${args.join(' ')}`)
     child = spawn(bin, args, {
       windowsHide: true,
       cwd: path.dirname(bin)
     })
+
+    if (child.pid) {
+      suppressTrayIcon(child.pid)
+    }
 
     child.stdout?.on('data', (buf) => log('info', buf.toString().trimEnd()))
     child.stderr?.on('data', (buf) => log('warn', buf.toString().trimEnd()))
@@ -397,27 +458,30 @@ export function getLocalNetworkIps(): string[] {
 export async function getTgwsShareLinks(): Promise<TgwsShareInfo> {
   const cfg = await getAppConfig()
   const t = cfg.tgws || { host: '127.0.0.1', port: 1443, secret: '' }
-  const secret = isValidSecret(t.secret) ? t.secret : await ensureSecret(t.secret)
+  const rawSecret = isValidSecret(t.secret) ? t.secret : await ensureSecret(t.secret)
+  // Telegram MTProto proxy link requires the 'dd' prefix for randomized padded intermediate protocol
+  const clientSecret = rawSecret.startsWith('dd') ? rawSecret : `dd${rawSecret}`
+  const localHost = t.host && t.host !== '0.0.0.0' ? t.host : '127.0.0.1'
 
-  const localLink = `tg://proxy?server=${encodeURIComponent(t.host || '127.0.0.1')}&port=${t.port}&secret=${encodeURIComponent(secret)}`
-  const httpLink = `https://t.me/proxy?server=${encodeURIComponent(t.host || '127.0.0.1')}&port=${t.port}&secret=${encodeURIComponent(secret)}`
+  const localLink = `tg://proxy?server=${encodeURIComponent(localHost)}&port=${t.port}&secret=${encodeURIComponent(clientSecret)}`
+  const httpLink = `https://t.me/proxy?server=${encodeURIComponent(localHost)}&port=${t.port}&secret=${encodeURIComponent(clientSecret)}`
 
   const lanIps = getLocalNetworkIps()
   const lanIp = lanIps[0] || null
   const lanLink = lanIp
-    ? `tg://proxy?server=${encodeURIComponent(lanIp)}&port=${t.port}&secret=${encodeURIComponent(secret)}`
+    ? `tg://proxy?server=${encodeURIComponent(lanIp)}&port=${t.port}&secret=${encodeURIComponent(clientSecret)}`
     : null
   const httpLanLink = lanIp
-    ? `https://t.me/proxy?server=${encodeURIComponent(lanIp)}&port=${t.port}&secret=${encodeURIComponent(secret)}`
+    ? `https://t.me/proxy?server=${encodeURIComponent(lanIp)}&port=${t.port}&secret=${encodeURIComponent(clientSecret)}`
     : null
 
   return {
     localLink,
     lanLink,
     lanIp,
-    host: t.host || '127.0.0.1',
+    host: localHost,
     port: t.port || 1443,
-    secret,
+    secret: clientSecret,
     httpLink,
     httpLanLink
   }

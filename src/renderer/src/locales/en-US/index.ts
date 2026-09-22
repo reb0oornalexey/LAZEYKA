@@ -8,6 +8,7 @@ export default {
     telegram: 'Telegram',
     zapret: 'Zapret',
     incy: 'INCY Proxy',
+    exitlag: 'ExitLag',
     logs: 'Logs',
     settings: 'Settings',
     about: 'About',

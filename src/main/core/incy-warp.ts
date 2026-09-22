@@ -8,11 +8,13 @@ import { loadIncyNodes, saveIncyNodes, loadIncySettings, saveIncySettings, broad
  */
 export const WARP_ENDPOINTS = [
   { ip: '162.159.192.1', port: 2408 },
-  { ip: '162.159.192.5', port: 2408 },
-  { ip: '162.159.193.1', port: 2408 },
-  { ip: '162.159.193.5', port: 2408 },
+  { ip: '162.159.192.1', port: 500 },
+  { ip: '162.159.192.1', port: 4500 },
+  { ip: '162.159.193.10', port: 2408 },
+  { ip: '162.159.193.10', port: 500 },
   { ip: '188.114.96.1', port: 2408 },
-  { ip: '188.114.97.1', port: 2408 }
+  { ip: '188.114.97.1', port: 2408 },
+  { ip: 'engage.cloudflareclient.com', port: 2408 }
 ]
 
 interface CloudflareRegResponse {
@@ -130,16 +132,11 @@ export async function generateCloudflareWarpNode(): Promise<{ node: IncyNode; al
     rawOutbound: {
       type: 'wireguard',
       tag: 'proxy',
-      address: addressList,
+      server: endpoint.ip,
+      server_port: endpoint.port,
+      local_address: addressList,
       private_key: privateKeyBase64,
-      peers: [
-        {
-          address: endpoint.ip,
-          port: endpoint.port,
-          public_key: peerPublicKey,
-          allowed_ips: ['0.0.0.0/0', '::/0']
-        }
-      ],
+      peer_public_key: peerPublicKey,
       mtu: 1280
     }
   }

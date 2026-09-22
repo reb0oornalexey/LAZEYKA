@@ -3,6 +3,7 @@ import Home from '@renderer/pages/home'
 import Telegram from '@renderer/pages/telegram'
 import Zapret from '@renderer/pages/zapret'
 import Incy from '@renderer/pages/incy'
+import ExitLag from '@renderer/pages/exitlag'
 import Logs from '@renderer/pages/logs'
 import Settings from '@renderer/pages/settings'
 import About from '@renderer/pages/about'
@@ -14,6 +15,7 @@ const routes = [
   { path: '/telegram', element: <Telegram /> },
   { path: '/zapret', element: <Zapret /> },
   { path: '/incy', element: <Incy /> },
+  { path: '/exitlag', element: <ExitLag /> },
   { path: '/logs', element: <Logs /> },
   { path: '/settings', element: <Settings /> },
   { path: '/about', element: <About /> },

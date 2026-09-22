@@ -8,6 +8,7 @@ export default {
     telegram: 'Telegram',
     zapret: 'Zapret',
     incy: 'INCY 代理',
+    exitlag: 'ExitLag',
     logs: '日志',
     settings: '设置',
     about: '关于',

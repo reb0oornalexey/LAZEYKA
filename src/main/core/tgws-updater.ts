@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, renameSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs'
 import path from 'path'
 import { spawn } from 'child_process'
 import { tgwsRuntimeDir, resourcesDir } from '../utils/dirs'
@@ -127,7 +127,7 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
     winAsset?.browser_download_url ??
     (tag ? `https://github.com/${REPO}/releases/download/${tag}/TgWsProxy_windows.exe` : undefined)
 
-  const hasUpdate = !!latest && compareVersion(latest, compareBaseline(installed)) > 0
+  const hasUpdate = latest ? compareVersion(latest, compareBaseline(installed)) > 0 : false
 
   const info: TgwsUpdateInfo = {
     installed,
@@ -138,7 +138,7 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
     assetSize: winAsset?.size,
     releaseUrl: release.html_url ?? (tag ? `https://github.com/${REPO}/releases/tag/${tag}` : undefined),
     publishedAt: release.published_at,
-    dismissed: !!latest && dismissedTag === latest
+    dismissed: dismissedTag === latest
   }
 
   cache = { at: Date.now(), data: info }
@@ -146,12 +146,12 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
   return info
 }
 
-// Best-effort kill of any leftover TgWsProxy_windows.exe so we can overwrite
-// the binary on Windows (where a running .exe holds an exclusive write lock).
+// Best-effort kill of any leftover TgWsProxy* processes so we can cleanly
+// overwrite/manage files without Windows file locking errors.
 async function killStaleTgwsBinary(): Promise<void> {
   if (process.platform !== 'win32') return
   await new Promise<void>((resolve) => {
-    const p = spawn('taskkill.exe', ['/F', '/IM', 'TgWsProxy_windows.exe', '/T'], {
+    const p = spawn('taskkill.exe', ['/F', '/IM', 'TgWsProxy*', '/T'], {
       windowsHide: true
     })
     p.on('exit', () => resolve())
@@ -187,39 +187,21 @@ export async function installTgwsUpdate(
     throw new Error(`Загруженный файл слишком маленький (${buf.length} байт)`)
   }
 
+  // Validate PE header in-memory without spawning process
+  if (buf[0] !== 0x4d || buf[1] !== 0x5a) {
+    throw new Error('Файл не является исполняемым файлом Windows (нет сигнатуры MZ)')
+  }
+  const peOffset = buf.readUInt32LE(0x3c)
+  if (buf.subarray(peOffset, peOffset + 4).toString('ascii') !== 'PE\0\0') {
+    throw new Error('Повреждённый PE-заголовок файла')
+  }
+  const machine = buf.readUInt16LE(peOffset + 4)
+  if (machine !== 0x8664) {
+    throw new Error('Несовместимая архитектура (требуется x64)')
+  }
+
   const dir = tgwsRuntimeDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-
-  // Write to a temporary file first and validate executable health
-  const tmpDest = path.join(dir, `TgWsProxy_new_${Date.now()}.exe`)
-  writeFileSync(tmpDest, buf)
-
-  const isHealthy = await new Promise<boolean>((resolve) => {
-    const p = spawn(tmpDest, ['--help'], { windowsHide: true })
-    let ok = false
-    let hasError = false
-
-    p.stdout?.on('data', () => { ok = true })
-    p.stderr?.on('data', (d) => {
-      const s = d.toString()
-      if (s.includes('ModuleNotFoundError') || s.includes('Fatal Python error') || s.includes('Failed to execute script')) {
-        hasError = true
-      }
-    })
-    p.on('exit', (code) => {
-      resolve(!hasError && (ok || code === 0 || code === 2))
-    })
-    p.on('error', () => resolve(false))
-    setTimeout(() => {
-      try { p.kill() } catch { /* ok */ }
-      resolve(ok && !hasError)
-    }, 4000)
-  })
-
-  if (!isHealthy) {
-    try { unlinkSync(tmpDest) } catch { /* ignore */ }
-    throw new Error('Скачанный бинарник TgWsProxy повреждён или несовместим с вашей системой')
-  }
 
   const dest = path.join(dir, 'TgWsProxy_windows.exe')
   try {
@@ -229,12 +211,7 @@ export async function installTgwsUpdate(
     try { if (existsSync(dest)) unlinkSync(dest) } catch { /* ok */ }
   }
 
-  try {
-    renameSync(tmpDest, dest)
-  } catch {
-    writeFileSync(dest, buf)
-    try { unlinkSync(tmpDest) } catch { /* ok */ }
-  }
+  writeFileSync(dest, buf)
 
   // Also update bundled binary if writable in development
   try {

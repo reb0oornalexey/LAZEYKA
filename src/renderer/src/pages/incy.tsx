@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useMemo, useRef } from 'react'
+import React, { useEffect, useState, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
   Power,
@@ -12,7 +13,6 @@ import {
   Lock,
   Wifi,
   BarChart2,
-  Terminal,
   Link as LinkIcon,
   Copy,
   Trash2,
@@ -64,8 +64,6 @@ import {
   incySetConnectionMode,
   incySetRoutingMode,
   incyPingNode,
-  incyGetLogs,
-  incyClearLogs,
   incyGetStats,
   incyResetStats,
   incyExportBackup,
@@ -1359,8 +1357,9 @@ const UrlSchemesTab: React.FC = () => {
 let launchPingDone = false
 
 export default function IncyPage(): React.ReactElement {
+  const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<
-    'main' | 'servers' | 'routing' | 'settings' | 'stats' | 'logs' | 'backup' | 'urls'
+    'main' | 'servers' | 'routing' | 'settings' | 'stats' | 'backup' | 'urls'
   >('main')
   const [nodes, setNodes] = useState<IncyNode[]>([])
   /** «Текущая» подписка — та, которой принадлежит выбранный сервер. */
@@ -1376,7 +1375,6 @@ export default function IncyPage(): React.ReactElement {
   const storeStatus = useIncyStore((s) => s.status)
   const [status, setStatus] = useState<IncyStatus>(storeStatus)
   const [stats, setStats] = useState<IncyStats | null>(null)
-  const [logs, setLogs] = useState<string[]>([])
 
   useEffect(() => {
     setStatus(storeStatus)
@@ -1403,18 +1401,15 @@ export default function IncyPage(): React.ReactElement {
   const [measuringGamePing, setMeasuringGamePing] = useState(false)
   const [gamePingResult, setGamePingResult] = useState<GamePingResult | null>(null)
 
-  const logEndRef = useRef<HTMLDivElement>(null)
-
   const loadData = async (): Promise<void> => {
     try {
-      const [n, s, sub, subs, st, stData, lgs] = await Promise.all([
+      const [n, s, sub, subs, st, stData] = await Promise.all([
         incyGetNodes(),
         incyGetSettings(),
         incyGetSubscription(),
         incyGetSubscriptions(),
         incyGetStatus(),
-        incyGetStats(),
-        incyGetLogs()
+        incyGetStats()
       ])
       setNodes(n)
       setSettings(s)
@@ -1425,7 +1420,6 @@ export default function IncyPage(): React.ReactElement {
       else if (subs.length === 0) setSubscription(null)
       setStatus(st)
       setStats(stData)
-      setLogs(lgs)
     } catch { /* ignore */ }
   }
 
@@ -1438,9 +1432,6 @@ export default function IncyPage(): React.ReactElement {
       // updating after a reset) even with the tunnel down.
       if (status.state === 'running' || activeTab === 'stats') {
         void incyGetStats().then(setStats).catch(() => {})
-      }
-      if (activeTab === 'logs') {
-        void incyGetLogs().then(setLogs).catch(() => {})
       }
     }, 3000)
     return () => clearInterval(timer)
@@ -2030,27 +2021,6 @@ export default function IncyPage(): React.ReactElement {
     }, true)
   }
 
-  const handleCopyLogs = (): void => {
-    navigator.clipboard.writeText(logs.join('\n'))
-    toast.success('Логи скопированы в буфер обмена')
-  }
-
-  const handleClearLogs = async (): Promise<void> => {
-    await incyClearLogs()
-    setLogs([])
-    toast.success('Логи очищены')
-  }
-
-  const handleExportLogs = (): void => {
-    const blob = new Blob([logs.join('\n')], { type: 'text/plain;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `incy-logs-${Date.now()}.txt`
-    a.click()
-    URL.revokeObjectURL(url)
-    toast.success('Файл логов сохранён')
-  }
 
   const handleResetStats = async (scope: 'all' | 'today' = 'all'): Promise<void> => {
     const res = await incyResetStats(scope)
@@ -2368,18 +2338,7 @@ export default function IncyPage(): React.ReactElement {
               <BarChart2 className="size-3.5" />
               Статистика
             </Button>
-            <Button
-              size="sm"
-              variant={activeTab === 'logs' ? 'default' : 'ghost'}
-              onClick={() => setActiveTab('logs')}
-              className={cn(
-                'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'logs' && 'bg-primary text-primary-foreground shadow-[0_0_12px_rgba(99,102,241,0.3)]'
-              )}
-            >
-              <Terminal className="size-3.5" />
-              Логи
-            </Button>
+
             <Button
               size="sm"
               variant={activeTab === 'backup' ? 'default' : 'ghost'}
@@ -3141,6 +3100,54 @@ export default function IncyPage(): React.ReactElement {
               </Button>
             </div>
 
+            {/* Filter Pills and Search — наверху, над всеми подписками */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-1">
+              <div className="flex items-center gap-1.5 w-full sm:w-auto flex-wrap">
+                <Button
+                  size="sm"
+                  variant={protocolFilter === 'all' ? 'default' : 'outline'}
+                  onClick={() => setProtocolFilter('all')}
+                  className="text-xs h-7"
+                >
+                  Все ({nodes.length})
+                </Button>
+                <Button
+                  size="sm"
+                  variant={protocolFilter === 'vless' ? 'default' : 'outline'}
+                  onClick={() => setProtocolFilter('vless')}
+                  className="text-xs h-7"
+                >
+                  VLESS ({nodes.filter((n) => n.protocol === 'vless').length})
+                </Button>
+                <Button
+                  size="sm"
+                  variant={protocolFilter === 'hysteria2' ? 'default' : 'outline'}
+                  onClick={() => setProtocolFilter('hysteria2')}
+                  className="text-xs h-7"
+                >
+                  ⚡ Hysteria2 ({nodes.filter((n) => n.protocol === 'hysteria2').length})
+                </Button>
+                <Button
+                  size="sm"
+                  variant={protocolFilter === 'wireguard' ? 'default' : 'outline'}
+                  onClick={() => setProtocolFilter('wireguard')}
+                  className="text-xs h-7"
+                >
+                  🛡 WARP ({nodes.filter((n) => n.protocol === 'wireguard').length})
+                </Button>
+              </div>
+
+              <div className="relative w-full sm:w-64">
+                <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Поиск серверов..."
+                  className="pl-8 text-xs h-7.5"
+                />
+              </div>
+            </div>
+
             {/* Подписки: по карточке на провайдера.
                 Раньше карточка была одна и показывала общее число серверов —
                 с двумя подписками это враньё: она приписывала себе чужие узлы.
@@ -3321,45 +3328,7 @@ export default function IncyPage(): React.ReactElement {
               )
             })}
 
-            {/* Filter Pills and Search */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-1">
-              <div className="flex items-center gap-1.5 w-full sm:w-auto">
-                <Button
-                  size="sm"
-                  variant={protocolFilter === 'all' ? 'default' : 'outline'}
-                  onClick={() => setProtocolFilter('all')}
-                  className="text-xs h-7"
-                >
-                  Все ({nodes.length})
-                </Button>
-                <Button
-                  size="sm"
-                  variant={protocolFilter === 'vless' ? 'default' : 'outline'}
-                  onClick={() => setProtocolFilter('vless')}
-                  className="text-xs h-7"
-                >
-                  VLESS ({nodes.filter((n) => n.protocol === 'vless').length})
-                </Button>
-                <Button
-                  size="sm"
-                  variant={protocolFilter === 'hysteria2' ? 'default' : 'outline'}
-                  onClick={() => setProtocolFilter('hysteria2')}
-                  className="text-xs h-7"
-                >
-                  ⚡ Hysteria2 ({nodes.filter((n) => n.protocol === 'hysteria2').length})
-                </Button>
-              </div>
 
-              <div className="relative w-full sm:w-64">
-                <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
-                <Input
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Поиск серверов..."
-                  className="pl-8 text-xs h-7.5"
-                />
-              </div>
-            </div>
 
             {/* Серверы вне подписок: добавленные ссылкой вручную. Их не
                 удаляет и не перезаписывает ни одно обновление подписки. */}
@@ -3424,10 +3393,21 @@ export default function IncyPage(): React.ReactElement {
                     </p>
                   </div>
                 </div>
-                <Switch
-                  checked={Boolean(settings.perAppProxy)}
-                  onCheckedChange={handleTogglePerAppProxy}
-                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    type="button"
+                    onClick={() => navigate('/exitlag')}
+                    className="text-xs h-7 px-2 text-primary hover:bg-primary/10 gap-1 hidden sm:flex"
+                  >
+                    В отдельную вкладку ExitLag →
+                  </Button>
+                  <Switch
+                    checked={Boolean(settings.perAppProxy)}
+                    onCheckedChange={handleTogglePerAppProxy}
+                  />
+                </div>
               </CardHeader>
 
               {settings.perAppProxy && (
@@ -4667,42 +4647,7 @@ export default function IncyPage(): React.ReactElement {
         {/* TAB 4: STATS */}
         {activeTab === 'stats' && <StatsTab stats={stats} isConnected={isConnected} onReset={handleResetStats} />}
 
-        {/* TAB 5: LOGS */}
-        {activeTab === 'logs' && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-xs text-muted-foreground">
-                Логи туннеля sing-box / INCY в реальном времени:
-              </div>
-              <div className="flex items-center gap-2">
-                <Button size="sm" variant="outline" onClick={handleExportLogs} className="gap-1.5 text-xs h-7">
-                  <Download className="h-3 w-3" /> Экспорт
-                </Button>
-                <Button size="sm" variant="outline" onClick={handleCopyLogs} className="gap-1.5 text-xs h-7">
-                  <Copy className="h-3 w-3" /> Копировать
-                </Button>
-                <Button size="sm" variant="ghost" onClick={handleClearLogs} className="gap-1.5 text-xs h-7 text-destructive">
-                  <Trash2 className="h-3 w-3" /> Очистить
-                </Button>
-              </div>
-            </div>
 
-            <div className="p-3 rounded-xl border border-border bg-zinc-950 text-zinc-300 font-mono text-[11px] h-96 overflow-y-auto space-y-1 select-text">
-              {logs.length > 0 ? (
-                logs.map((line, idx) => (
-                  <div key={idx} className="leading-relaxed break-all">
-                    {line}
-                  </div>
-                ))
-              ) : (
-                <div className="text-center py-20 text-zinc-600">
-                  Подключитесь к серверу для начала записи логов
-                </div>
-              )}
-              <div ref={logEndRef} />
-            </div>
-          </div>
-        )}
 
         {/* TAB 6: BACKUP */}
         {activeTab === 'backup' && <BackupTab onRestored={loadData} />}

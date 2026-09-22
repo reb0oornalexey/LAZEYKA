@@ -3,21 +3,87 @@ import { Virtuoso, VirtuosoHandle } from 'react-virtuoso'
 import { useLogsStore, formatLogTime } from '@renderer/store/logs-store'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { MapPin, Trash2 } from 'lucide-react'
+import { MapPin, Trash2, ClipboardCopy, Download } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
 import BasePage from '@renderer/components/base/base-page'
+import { toast } from 'sonner'
 
 const sourceColor: Record<CoreSource, string> = {
   tgws: 'text-sky-700 dark:text-sky-400 font-semibold',
   zapret: 'text-indigo-400 font-semibold',
-  app: 'text-muted-foreground'
+  app: 'text-muted-foreground',
+  incy: 'text-emerald-600 dark:text-emerald-400 font-semibold',
+  exitlag: 'text-amber-600 dark:text-amber-400 font-semibold'
 }
 
 const sourceLabels: Record<'all' | CoreSource, string> = {
   all: 'все каналы',
   tgws: 'telegram',
   zapret: 'zapret',
-  app: 'система'
+  app: 'система',
+  incy: 'incy',
+  exitlag: 'exitlag'
+}
+
+async function generateDiagnosticReport(): Promise<string> {
+  const lines: string[] = []
+
+  lines.push('# 📋 Диагностический отчёт LAZEYKA')
+  lines.push(`**Дата:** ${new Date().toLocaleString('ru-RU')}`)
+  lines.push(`**ОС:** ${navigator.platform}`)
+  lines.push(`**User-Agent:** ${navigator.userAgent}`)
+  lines.push('')
+
+  // Gather statuses
+  try {
+    const zapretStatus = await window.electron.ipcRenderer.invoke('zapret:getStatus')
+    lines.push('## Zapret')
+    lines.push(`- Состояние: ${zapretStatus?.state ?? 'неизвестно'}`)
+    if (zapretStatus?.lastError) lines.push(`- Ошибка: ${zapretStatus.lastError}`)
+    lines.push('')
+  } catch { lines.push('## Zapret\n- Не удалось получить статус\n') }
+
+  try {
+    const tgwsStatus = await window.electron.ipcRenderer.invoke('tgws:getStatus')
+    lines.push('## TgWsProxy')
+    lines.push(`- Состояние: ${tgwsStatus?.state ?? 'неизвестно'}`)
+    if (tgwsStatus?.lastError) lines.push(`- Ошибка: ${tgwsStatus.lastError}`)
+    lines.push('')
+  } catch { lines.push('## TgWsProxy\n- Не удалось получить статус\n') }
+
+  try {
+    const incyStatus = await window.electron.ipcRenderer.invoke('incy:getStatus')
+    lines.push('## INCY')
+    lines.push(`- Состояние: ${incyStatus?.state ?? 'неизвестно'}`)
+    lines.push(`- Выбранный узел: ${incyStatus?.selectedNodeId ?? 'нет'}`)
+    lines.push(`- Активный узел: ${incyStatus?.activeNodeId ?? 'нет'}`)
+    if (incyStatus?.lastError) lines.push(`- Ошибка: ${incyStatus.lastError}`)
+    lines.push('')
+  } catch { lines.push('## INCY\n- Не удалось получить статус\n') }
+
+  try {
+    const settings = await window.electron.ipcRenderer.invoke('incy:getSettings')
+    lines.push('## Настройки INCY')
+    lines.push(`- Режим: ${settings?.routingMode ?? 'неизвестно'}`)
+    lines.push(`- TUN: ${settings?.mode ?? 'неизвестно'}`)
+    lines.push(`- Per-App: ${settings?.perAppProxy ? `вкл (${settings.perAppMode}, ${(settings.perAppProcesses ?? []).join(', ')})` : 'выкл'}`)
+    lines.push(`- DNS: ${settings?.vpnDns ?? 'неизвестно'}`)
+    lines.push(`- Мультиплекс: ${settings?.multiplexing ? 'вкл' : 'выкл'}`)
+    lines.push('')
+  } catch { lines.push('## Настройки INCY\n- Не удалось получить настройки\n') }
+
+  // Recent logs
+  const allLogs = useLogsStore.getState().logs
+  const lastLogs = allLogs.slice(-100)
+  lines.push('## Последние 100 записей логов')
+  lines.push('```')
+  for (const log of lastLogs) {
+    const ts = formatLogTime(log.time)
+    lines.push(`${ts} [${log.type}] [${log.source}] ${log.payload}`)
+  }
+  lines.push('```')
+
+  return lines.join('\n')
 }
 
 const Logs: React.FC = () => {
@@ -28,6 +94,7 @@ const Logs: React.FC = () => {
   const [trace, setTrace] = useState(true)
   const traceRef = useRef(trace)
   const virtuosoRef = useRef<VirtuosoHandle>(null)
+  const [generatingReport, setGeneratingReport] = useState(false)
 
   const filteredLogs = useMemo(() => {
     const fl = filter.toLowerCase()
@@ -62,34 +129,90 @@ const Logs: React.FC = () => {
     })
   }, [])
 
+  const handleGenerateReport = async (): Promise<void> => {
+    setGeneratingReport(true)
+    try {
+      const report = await generateDiagnosticReport()
+      await navigator.clipboard.writeText(report)
+      toast.success('Отчёт скопирован в буфер обмена', {
+        description: 'Вставьте его в чат поддержки (Ctrl+V)'
+      })
+    } catch (err: any) {
+      toast.error('Не удалось создать отчёт', { description: err?.message || String(err) })
+    } finally {
+      setGeneratingReport(false)
+    }
+  }
+
+  const handleSaveReport = async (): Promise<void> => {
+    setGeneratingReport(true)
+    try {
+      const report = await generateDiagnosticReport()
+      const blob = new Blob([report], { type: 'text/markdown' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `lazeyka-report-${Date.now()}.md`
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.success('Отчёт сохранён в файл')
+    } catch (err: any) {
+      toast.error('Не удалось сохранить отчёт', { description: err?.message || String(err) })
+    } finally {
+      setGeneratingReport(false)
+    }
+  }
+
   return (
     <BasePage
       title="Консоль логов (Cyber Terminal)"
       contentClassName="flex flex-col"
       header={
-        <button
-          type="button"
-          title="Очистить логи"
-          aria-label="Очистить логи"
-          className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-rose-700 dark:hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
-          onClick={() => {
-            clearLogs()
-            setLogs([])
-          }}
-        >
-          <Trash2 className="size-4" />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            title="Скопировать отчёт для поддержки"
+            aria-label="Скопировать отчёт для поддержки"
+            className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-emerald-700 dark:hover:text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+            onClick={() => { void handleGenerateReport() }}
+            disabled={generatingReport}
+          >
+            <ClipboardCopy className={cn('size-4', generatingReport && 'animate-spin')} />
+          </button>
+          <button
+            type="button"
+            title="Сохранить отчёт в файл"
+            aria-label="Сохранить отчёт в файл"
+            className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-sky-700 dark:hover:text-sky-400 hover:bg-sky-500/10 transition-colors"
+            onClick={() => { void handleSaveReport() }}
+            disabled={generatingReport}
+          >
+            <Download className="size-4" />
+          </button>
+          <button
+            type="button"
+            title="Очистить логи"
+            aria-label="Очистить логи"
+            className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-rose-700 dark:hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+            onClick={() => {
+              clearLogs()
+              setLogs([])
+            }}
+          >
+            <Trash2 className="size-4" />
+          </button>
+        </div>
       }
     >
       <div className="flex flex-col h-full px-4 pb-4">
-        <div className="py-2.5 flex items-center gap-2">
+        <div className="py-2.5 flex items-center gap-2 flex-wrap">
           <Input
-            className="h-8.5 text-xs font-mono bg-card/60 border-border/70 rounded-xl"
+            className="h-8.5 text-xs font-mono bg-card/60 border-border/70 rounded-xl flex-1 min-w-[150px]"
             value={filter}
             placeholder="Поиск по тексту или уровню..."
             onChange={(e) => setFilter(e.target.value)}
           />
-          {(['all', 'tgws', 'zapret', 'app'] as const).map((s) => (
+          {(['all', 'tgws', 'zapret', 'incy', 'exitlag', 'app'] as const).map((s) => (
             <Button
               key={s}
               size="sm"
@@ -119,6 +242,14 @@ const Logs: React.FC = () => {
           >
             <MapPin className="size-3.5" />
           </Button>
+        </div>
+
+        {/* Report banner */}
+        <div className="mb-2 flex items-center gap-2 bg-primary/5 border border-primary/20 rounded-xl px-3 py-2">
+          <ClipboardCopy className="size-4 text-primary shrink-0" />
+          <span className="text-xs text-foreground/80">
+            Нажмите <strong>📋</strong> в правом верхнем углу — отчёт со всеми логами и статусами будет скопирован в буфер обмена для поддержки.
+          </span>
         </div>
 
         <div className="flex-1 min-h-0 font-mono text-xs rounded-2xl border border-border/60 bg-black/40 backdrop-blur-xl p-2 overflow-hidden shadow-inner">
