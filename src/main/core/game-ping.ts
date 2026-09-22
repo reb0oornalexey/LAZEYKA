@@ -2,7 +2,7 @@ import net from 'net'
 import dgram from 'dgram'
 import dns from 'dns'
 import { execFile } from 'child_process'
-import { loadIncyNodes, type IncyNode } from './incy-engine'
+import { loadIncyNodes, pingIncyNode, type IncyNode } from './incy-engine'
 
 export interface GameServerGeoInfo {
   ip: string
@@ -453,9 +453,12 @@ export async function measureGameServerPing(input: string): Promise<GamePingResu
   const pingPromises = allNodes.map(async (node) => {
     let userToNode = node.latencyMs
 
-    // If node latency is missing or very stale, do a fast TCP probe
+    // If node latency is missing or very stale, do a fast probe
     if (typeof userToNode !== 'number' || userToNode <= 0) {
-      userToNode = await probeTcp(node.server, node.port, 500)
+      userToNode = await pingIncyNode(node, 800).catch(() => null)
+      if (typeof userToNode !== 'number' || userToNode <= 0) {
+        userToNode = await probeTcp(node.server, node.port, 500)
+      }
     }
 
     const [nodeLat, nodeLon] = getNodeCoordinates(node)
