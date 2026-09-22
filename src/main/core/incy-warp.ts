@@ -132,11 +132,16 @@ export async function generateCloudflareWarpNode(): Promise<{ node: IncyNode; al
     rawOutbound: {
       type: 'wireguard',
       tag: 'proxy',
-      server: endpoint.ip,
-      server_port: endpoint.port,
-      local_address: addressList,
+      address: addressList,
       private_key: privateKeyBase64,
-      peer_public_key: peerPublicKey,
+      peers: [
+        {
+          address: endpoint.ip,
+          port: endpoint.port,
+          public_key: peerPublicKey,
+          allowed_ips: ['0.0.0.0/0', '::/0']
+        }
+      ],
       mtu: 1280
     }
   }

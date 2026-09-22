@@ -57,7 +57,7 @@ const XRAY_PROTOCOLS: ReadonlySet<IncyNode['protocol']> = new Set([
 ])
 
 /** Protocols only sing-box can carry. */
-const SINGBOX_ONLY_PROTOCOLS: ReadonlySet<IncyNode['protocol']> = new Set(['hysteria2'])
+const SINGBOX_ONLY_PROTOCOLS: ReadonlySet<IncyNode['protocol']> = new Set(['hysteria2', 'wireguard'])
 
 export type IncyCore = 'xray' | 'sing-box'
 export type IncyTopologyKind = 'SINGBOX_ONLY' | 'XRAY_ONLY' | 'CHAINED'
@@ -175,6 +175,8 @@ export function planTopology(
       reason:
         node.protocol === 'hysteria2'
           ? 'Hysteria2 поддерживает только sing-box — Xray не запускается'
+          : node.protocol === 'wireguard'
+          ? 'WireGuard/WARP обслуживается ядром sing-box'
           : `Протокол ${node.protocol} обслуживается ядром sing-box`
     }
   }

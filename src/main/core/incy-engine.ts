@@ -2125,36 +2125,44 @@ function applyMultiplex(outbound: Record<string, unknown>, settings: IncySetting
  * Only the tag is forced (the routing rules reference `proxy`), and mux /
  * domain strategy are filled in when the provider did not express an opinion.
  */
-function reuseProviderOutbound(node: IncyNode, settings: IncySettings): any | null {
-  if (node.rawOutboundDialect !== 'sing-box' || !node.rawOutbound) return null
-  let clone: any
-  try {
-    clone = JSON.parse(JSON.stringify(node.rawOutbound))
-  } catch {
-    return null
+export function buildWireGuardEndpoint(node: IncyNode): any {
+  const raw = node.rawOutbound ?? {}
+  const rawPeers = Array.isArray(raw.peers) && raw.peers.length > 0 ? raw.peers : []
+  const serverIp = rawPeers[0]?.address || rawPeers[0]?.server || raw.server || node.server || '162.159.192.1'
+  const serverPort = rawPeers[0]?.port || rawPeers[0]?.server_port || raw.server_port || node.port || 2408
+  const peerPubKey = rawPeers[0]?.public_key || rawPeers[0]?.peer_public_key || raw.peer_public_key || 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo='
+  const privateKey = raw.private_key || ''
+
+  const rawAddr = raw.address || raw.local_address || ['172.16.0.2/32']
+  const addressList = Array.isArray(rawAddr) ? rawAddr : [rawAddr]
+
+  return {
+    type: 'wireguard',
+    tag: 'proxy',
+    address: addressList,
+    private_key: privateKey,
+    peers: [
+      {
+        address: serverIp,
+        port: serverPort,
+        public_key: peerPubKey,
+        allowed_ips: ['0.0.0.0/0', '::/0']
+      }
+    ],
+    mtu: raw.mtu || 1280
   }
-  if (!clone || typeof clone !== 'object' || typeof clone.type !== 'string') return null
+}
+
+function reuseProviderOutbound(node: IncyNode, settings: IncySettings): any {
+  const raw = node.rawOutbound
+  if (!raw || typeof raw !== 'object' || typeof raw.type !== 'string') return null
+  const clone = JSON.parse(JSON.stringify(raw))
+
+  if (clone.type === 'wireguard' || node.protocol === 'wireguard') {
+    return buildWireGuardEndpoint(node)
+  }
 
   clone.tag = 'proxy'
-
-  if (clone.type === 'wireguard') {
-    // Normalize sing-box 1.11 WireGuard outbound fields
-    if (!clone.local_address && clone.address) {
-      clone.local_address = Array.isArray(clone.address) ? clone.address : [clone.address]
-      delete clone.address
-    }
-    if (Array.isArray(clone.peers) && clone.peers.length > 0) {
-      const p = clone.peers[0]
-      if (!clone.peer_public_key && p.public_key) clone.peer_public_key = p.public_key
-      if (!clone.server && p.address) clone.server = p.address
-      if (!clone.server_port && p.port) clone.server_port = p.port
-      delete clone.peers
-    }
-    if (!clone.server && node.server) clone.server = node.server
-    if (!clone.server_port && node.port) clone.server_port = node.port
-    delete clone.multiplex
-    return clone
-  }
 
   // No `domain_strategy` here — see the note on domainStrategyFor(). Forcing
   // local resolution on a proxy outbound deadlocks against remote-dns.
@@ -2172,16 +2180,7 @@ function buildSingBoxOutbound(node: IncyNode, settings: IncySettings): any {
 
   // Explicit WireGuard outbound when no rawOutbound is present
   if (node.protocol === 'wireguard') {
-    return {
-      type: 'wireguard',
-      tag: 'proxy',
-      server: node.server,
-      server_port: node.port,
-      local_address: ['172.16.0.2/32'],
-      private_key: '',
-      peer_public_key: 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=',
-      mtu: 1280
-    }
+    return buildWireGuardEndpoint(node)
   }
 
   if (node.protocol === 'hysteria2') {
@@ -2688,12 +2687,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         }
       ]
     } else if (isWireguard) {
-      const verbatim = reuseProviderOutbound(target, settings) || target.rawOutbound
-      endpointsConfig.push({
-        ...verbatim,
-        type: 'wireguard',
-        tag: 'proxy'
-      })
+      endpointsConfig.push(buildWireGuardEndpoint(target))
       outboundsList = [
         {
           type: 'direct',
