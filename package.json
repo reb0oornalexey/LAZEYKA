@@ -1,6 +1,6 @@
 {
   "name": "lazeyka",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "LAZEYKA - Next-Gen Network Routing & DPI Bypass",
   "main": "./out/main/index.js",
   "author": "reb0oorn",
@@ -34,6 +34,7 @@
     "clsx": "^2.1.1",
     "dayjs": "^1.11.20",
     "i18next": "^26.0.6",
+    "jsqr": "^1.4.0",
     "lucide-react": "^0.563.0",
     "motion": "^12.38.0",
     "qrcode.react": "^4.2.0",

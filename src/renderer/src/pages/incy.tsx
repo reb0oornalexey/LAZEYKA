@@ -27,7 +27,14 @@ import {
   Send,
   Split,
   Globe2,
-  ShieldOff
+  ShieldOff,
+  QrCode,
+  Zap,
+  Gamepad2,
+  Monitor,
+  FolderOpen,
+  Target,
+  X
 } from 'lucide-react'
 import BasePage from '@renderer/components/base/base-page'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
@@ -70,6 +77,15 @@ import {
   incyCaptureRoutingProfile,
   incyGeoCategories,
   incyCheckGeoUpdate,
+  incyGenerateWarpNode,
+  incyPingGameServer,
+  systemGetRunningProcesses,
+  dialogPickExecutable,
+  dialogPickImageFile,
+  clipboardReadImage,
+  systemCaptureScreen,
+  type GamePingResult,
+  type RunningProcessInfo,
   type GeoCategoryInfo,
   type GeoUpdateInfo,
   type IncyHwidHeaders,
@@ -81,11 +97,13 @@ import {
   type IncyStatus,
   type IncyStats
 } from '@renderer/utils/ipc'
+import { decodeQrFromDataUrl } from '@renderer/utils/qr-scanner'
 import { useIncyStore } from '@renderer/store/incy-store'
 import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
 
 function getFlagEmoji(name: string): string {
   const n = name.toLowerCase()
+  if (n.includes('⚡') || n.includes('warp') || n.includes('cloudflare')) return '⚡'
   if (n.includes('🇳🇱') || n.includes('нидерланд') || n.includes('.nl') || n.includes('nl-')) return '🇳🇱'
   if (n.includes('🇩🇪') || n.includes('германи') || n.includes('.de') || n.includes('de-') || n.includes('франкфурт')) return '🇩🇪'
   if (n.includes('🇷🇺') || n.includes('росси') || n.includes('.ru') || n.includes('ru-') || n.includes('москв')) return '🇷🇺'
@@ -1371,8 +1389,19 @@ export default function IncyPage(): React.ReactElement {
   const [pingingNodeIds, setPingingNodeIds] = useState<Set<string>>(new Set())
   const [coreMemory, setCoreMemory] = useState<CoreMemoryUsage | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
-  const [protocolFilter, setProtocolFilter] = useState<'all' | 'vless' | 'hysteria2'>('all')
+  const [protocolFilter, setProtocolFilter] = useState<'all' | 'vless' | 'hysteria2' | 'wireguard'>('all')
   const [showServerSelectModal, setShowServerSelectModal] = useState(false)
+  const [loadingWarp, setLoadingWarp] = useState(false)
+  const [showQrModal, setShowQrModal] = useState(false)
+  const [scanningQr, setScanningQr] = useState(false)
+  const [showProcessPickerModal, setShowProcessPickerModal] = useState(false)
+  const [runningProcesses, setRunningProcesses] = useState<RunningProcessInfo[]>([])
+  const [loadingProcesses, setLoadingProcesses] = useState(false)
+  const [processFilterText, setProcessFilterText] = useState('')
+  const [newAppInput, setNewAppInput] = useState('')
+  const [gameServerTarget, setGameServerTarget] = useState('')
+  const [measuringGamePing, setMeasuringGamePing] = useState(false)
+  const [gamePingResult, setGamePingResult] = useState<GamePingResult | null>(null)
 
   const logEndRef = useRef<HTMLDivElement>(null)
 
@@ -1490,6 +1519,220 @@ export default function IncyPage(): React.ReactElement {
       toast.error('Ошибка импорта', { description: e?.message || String(e) })
     } finally {
       setLoadingImport(false)
+    }
+  }
+
+  const handleGenerateWarp = async (): Promise<void> => {
+    setLoadingWarp(true)
+    try {
+      const res = await incyGenerateWarpNode()
+      setNodes(res.allNodes)
+      setStatus(await incyGetStatus().catch(() => status))
+      toast.success('Узел Cloudflare WARP успешно добавлен!', {
+        description: 'Официальный бесплатный туннель Cloudflare готов к подключению.',
+        style: POWER_ON_BANNER_STYLE
+      })
+      void handlePingAll(res.allNodes)
+    } catch (err: any) {
+      toast.error('Не удалось сгенерировать узел WARP', {
+        description: err?.message || String(err)
+      })
+    } finally {
+      setLoadingWarp(false)
+    }
+  }
+
+  const handleScanQrFromClipboard = async (): Promise<void> => {
+    setScanningQr(true)
+    try {
+      const dataUrl = await clipboardReadImage()
+      if (!dataUrl) {
+        toast.info('В буфере обмена нет изображения', {
+          description: 'Скопируйте картинку с QR-кодом (например, через Win+Shift+S) и нажмите кнопку снова.'
+        })
+        return
+      }
+      const code = await decodeQrFromDataUrl(dataUrl)
+      if (!code) {
+        toast.error('QR-код не распознан', {
+          description: 'На изображении из буфера не удалось обнаружить QR-код.'
+        })
+        return
+      }
+      setShowQrModal(false)
+      setInputUrl(code)
+      await handleImport(code)
+    } catch (err: any) {
+      toast.error('Ошибка сканирования QR-кода', { description: err?.message || String(err) })
+    } finally {
+      setScanningQr(false)
+    }
+  }
+
+  const handleScanQrFromScreen = async (): Promise<void> => {
+    setScanningQr(true)
+    try {
+      toast.info('Сканирование экрана...', { duration: 1500 })
+      const dataUrl = await systemCaptureScreen()
+      if (!dataUrl) {
+        toast.error('Не удалось сделать снимок экрана')
+        return
+      }
+      const code = await decodeQrFromDataUrl(dataUrl)
+      if (!code) {
+        toast.error('QR-код не найден на экране', {
+          description: 'Убедитесь, что QR-код виден на мониторе, или скопируйте его область в буфер обмена.'
+        })
+        return
+      }
+      setShowQrModal(false)
+      setInputUrl(code)
+      await handleImport(code)
+    } catch (err: any) {
+      toast.error('Ошибка сканирования экрана', { description: err?.message || String(err) })
+    } finally {
+      setScanningQr(false)
+    }
+  }
+
+  const handleScanQrFromFile = async (): Promise<void> => {
+    setScanningQr(true)
+    try {
+      const dataUrl = await dialogPickImageFile()
+      if (!dataUrl) return
+      const code = await decodeQrFromDataUrl(dataUrl)
+      if (!code) {
+        toast.error('QR-код не найден в файле', {
+          description: 'Попробуйте изображение с более высоким качеством.'
+        })
+        return
+      }
+      setShowQrModal(false)
+      setInputUrl(code)
+      await handleImport(code)
+    } catch (err: any) {
+      toast.error('Ошибка распознавания файла', { description: err?.message || String(err) })
+    } finally {
+      setScanningQr(false)
+    }
+  }
+
+  // ---- Per-App Routing (ExitLag-style) --------------------------------------
+  const handleTogglePerAppProxy = async (enabled: boolean): Promise<void> => {
+    await handleUpdateSettings({ perAppProxy: enabled })
+    if (isConnected) {
+      toast.info('Настройки применены', {
+        description: 'Переподключитесь к серверу для обновления маршрутов ядра.'
+      })
+    }
+  }
+
+  const handleSetPerAppMode = async (mode: 'proxy_only' | 'bypass_only'): Promise<void> => {
+    await handleUpdateSettings({ perAppMode: mode })
+    if (isConnected) {
+      toast.info('Режим изменён', {
+        description: 'Переподключитесь к серверу для применения.'
+      })
+    }
+  }
+
+  const handleAddPerAppProcess = async (processName: string): Promise<void> => {
+    const raw = processName.trim()
+    if (!raw || !settings) return
+    const cleaned = raw.toLowerCase().endsWith('.exe') ? raw.toLowerCase() : `${raw.toLowerCase()}.exe`
+    const current = settings.perAppProcesses ?? []
+    if (current.some((p) => p.toLowerCase() === cleaned)) {
+      toast.info('Это приложение уже в списке')
+      return
+    }
+    await handleUpdateSettings({ perAppProcesses: [...current, cleaned] })
+    setNewAppInput('')
+  }
+
+  const handleRemovePerAppProcess = async (proc: string): Promise<void> => {
+    if (!settings) return
+    const current = settings.perAppProcesses ?? []
+    await handleUpdateSettings({
+      perAppProcesses: current.filter((p) => p.toLowerCase() !== proc.toLowerCase())
+    })
+  }
+
+  const handleClearPerAppProcesses = async (): Promise<void> => {
+    await handleUpdateSettings({ perAppProcesses: [] })
+    toast.success('Список приложений очищен')
+  }
+
+  const handleOpenProcessPicker = async (): Promise<void> => {
+    setLoadingProcesses(true)
+    setShowProcessPickerModal(true)
+    try {
+      const list = await systemGetRunningProcesses()
+      setRunningProcesses(list)
+    } catch (err: any) {
+      toast.error('Не удалось получить список процессов', { description: err?.message || String(err) })
+    } finally {
+      setLoadingProcesses(false)
+    }
+  }
+
+  const handlePickExeFile = async (): Promise<void> => {
+    try {
+      const fileName = await dialogPickExecutable()
+      if (fileName) {
+        await handleAddPerAppProcess(fileName)
+        toast.success(`Добавлено: ${fileName}`)
+      }
+    } catch (err: any) {
+      toast.error('Ошибка выбора файла', { description: err?.message || String(err) })
+    }
+  }
+
+  const handleApplyPreset = async (presetApps: string[]): Promise<void> => {
+    if (!settings) return
+    const current = new Set((settings.perAppProcesses ?? []).map((p) => p.toLowerCase()))
+    for (const app of presetApps) {
+      current.add(app.toLowerCase())
+    }
+    await handleUpdateSettings({ perAppProcesses: Array.from(current) })
+    toast.success('Пресет применён')
+  }
+
+  const handleMeasureGamePing = async (targetOverride?: string): Promise<void> => {
+    const targetToMeasure = (targetOverride || gameServerTarget).trim()
+    if (!targetToMeasure) {
+      toast.error('Введите IP-адрес или строку подключения сервера Faceit / CS2')
+      return
+    }
+    setMeasuringGamePing(true)
+    try {
+      const res = await incyPingGameServer(targetToMeasure)
+      setGamePingResult(res)
+      toast.success(
+        `Замер выполнен: ${res.geo.city ? `${res.geo.city}, ` : ''}${res.geo.country || ''} (${res.nodes.length} серверов)`,
+        { style: POWER_ON_BANNER_STYLE }
+      )
+    } catch (err: any) {
+      toast.error('Ошибка замера пинга до сервера', {
+        description: err?.message || String(err)
+      })
+    } finally {
+      setMeasuringGamePing(false)
+    }
+  }
+
+  const handlePasteGameServerFromClipboard = async (): Promise<void> => {
+    try {
+      const text = await navigator.clipboard.readText()
+      if (text && text.trim()) {
+        const val = text.trim()
+        setGameServerTarget(val)
+        toast.info('Адрес сервера вставлен из буфера')
+        void handleMeasureGamePing(val)
+      } else {
+        toast.info('Буфер обмена пуст')
+      }
+    } catch {
+      toast.error('Не удалось прочитать буфер обмена')
     }
   }
 
@@ -1933,10 +2176,11 @@ export default function IncyPage(): React.ReactElement {
                 variant="outline"
                 className={cn(
                   'text-[9px] px-1.5 py-0 font-mono uppercase',
-                  node.protocol === 'hysteria2' && 'border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-500/10'
+                  node.protocol === 'hysteria2' && 'border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-500/10',
+                  node.protocol === 'wireguard' && 'border-blue-500/40 text-blue-600 dark:text-blue-400 bg-blue-500/10'
                 )}
               >
-                {node.protocol === 'hysteria2' ? 'HYS2' : node.protocol}
+                {node.protocol === 'hysteria2' ? 'HYS2' : node.protocol === 'wireguard' ? 'WARP' : node.protocol}
               </Badge>
               {node.rawJson && (
                 <Badge variant="secondary" className="text-[9px] px-1 py-0 font-mono opacity-70">
@@ -2727,10 +2971,12 @@ export default function IncyPage(): React.ReactElement {
                             'text-[9px] px-1.5 py-0 font-mono uppercase',
                             activeOrSelectedNode.protocol === 'hysteria2'
                               ? 'border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-500/10'
+                              : activeOrSelectedNode.protocol === 'wireguard'
+                              ? 'border-blue-500/40 text-blue-600 dark:text-blue-400 bg-blue-500/10'
                               : 'border-primary/40 text-primary bg-primary/10'
                           )}
                         >
-                          {activeOrSelectedNode.protocol === 'hysteria2' ? 'HYS2' : activeOrSelectedNode.protocol}
+                          {activeOrSelectedNode.protocol === 'hysteria2' ? 'HYS2' : activeOrSelectedNode.protocol === 'wireguard' ? 'WARP' : activeOrSelectedNode.protocol}
                         </Badge>
                         {activeOrSelectedNode.rawJson && (
                           <Badge variant="secondary" className="text-[9px] px-1 py-0 font-mono opacity-70">
@@ -2851,19 +3097,27 @@ export default function IncyPage(): React.ReactElement {
                 value={inputUrl}
                 onChange={(e) => setInputUrl(e.target.value)}
                 placeholder="Вставьте ссылку на подписку (https://...) или узел (vless://, ss://, hy2://)"
-                className="text-xs font-mono"
+                className="text-xs font-mono flex-1"
               />
-              {/* Вставка из буфера — типичный сценарий: ссылку скопировали в
-                  боте провайдера и приносят сюда. Кнопка сразу запускает
-                  импорт, чтобы не заставлять нажимать ещё раз. */}
               <Button
                 size="sm"
                 variant="outline"
                 disabled={loadingImport}
                 onClick={() => { void handlePasteImport() }}
                 className="gap-1.5 text-xs shrink-0"
+                title="Вставить ссылку из буфера обмена и импортировать"
               >
                 <Copy className="h-3.5 w-3.5" /> Из буфера
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={loadingImport || scanningQr}
+                onClick={() => setShowQrModal(true)}
+                className="gap-1.5 text-xs shrink-0 border-primary/40 hover:bg-primary/10 text-primary"
+                title="Сканировать QR-код с экрана, из буфера или файла"
+              >
+                <QrCode className="h-3.5 w-3.5" /> QR-код
               </Button>
               <Button
                 size="sm"
@@ -2873,6 +3127,17 @@ export default function IncyPage(): React.ReactElement {
               >
                 <Plus className="h-3.5 w-3.5" />
                 {loadingImport ? 'Загрузка...' : 'Импортировать'}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={loadingWarp}
+                onClick={() => { void handleGenerateWarp() }}
+                className="gap-1.5 text-xs shrink-0 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 border border-blue-500/30"
+                title="Создать бесплатный официальный узел Cloudflare WARP в 1 клик"
+              >
+                <Zap className={cn('h-3.5 w-3.5 text-blue-500 fill-blue-500', loadingWarp && 'animate-spin')} />
+                {loadingWarp ? 'Генерация...' : 'Бесплатный WARP'}
               </Button>
             </div>
 
@@ -3139,6 +3404,386 @@ export default function IncyPage(): React.ReactElement {
             />
 
             <GeoCategoriesCard settings={settings} onUpdate={handleUpdateSettings} />
+
+            {/* PER-APP ROUTING CARD (EXITLAG STYLE) */}
+            <Card className="cyber-card border-primary/40 bg-gradient-to-br from-card/90 via-card/70 to-primary/5 shadow-md">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-8 w-8 rounded-lg bg-primary/20 border border-primary/40 flex items-center justify-center">
+                    <Gamepad2 className="h-4 w-4 text-primary" />
+                  </div>
+                  <div>
+                    <CardTitle className="text-sm font-bold flex items-center gap-2">
+                      Режим приложений (ExitLag-style)
+                      <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-primary/50 text-primary font-mono uppercase">
+                        Киллер-фича
+                      </Badge>
+                    </CardTitle>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      Туннелируйте только выбранные игры и программы или исключайте их из VPN
+                    </p>
+                  </div>
+                </div>
+                <Switch
+                  checked={Boolean(settings.perAppProxy)}
+                  onCheckedChange={handleTogglePerAppProxy}
+                />
+              </CardHeader>
+
+              {settings.perAppProxy && (
+                <CardContent className="space-y-4 pt-1">
+                  {/* Mode Selector */}
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+                      Режим работы:
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleSetPerAppMode('proxy_only')}
+                        className={cn(
+                          'p-3 rounded-xl border text-left transition-all cursor-pointer',
+                          settings.perAppMode !== 'bypass_only'
+                            ? 'border-primary bg-primary/15 shadow-sm'
+                            : 'border-border/60 bg-card/40 hover:bg-card/80'
+                        )}
+                      >
+                        <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                          🎯 Только выбранные (ExitLag)
+                        </div>
+                        <div className="text-[10px] text-muted-foreground mt-1 leading-relaxed">
+                          Через VPN идут <b>только</b> указанные игры/программы. Весь остальной трафик Windows идёт напрямую без задержек.
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => void handleSetPerAppMode('bypass_only')}
+                        className={cn(
+                          'p-3 rounded-xl border text-left transition-all cursor-pointer',
+                          settings.perAppMode === 'bypass_only'
+                            ? 'border-primary bg-primary/15 shadow-sm'
+                            : 'border-border/60 bg-card/40 hover:bg-card/80'
+                        )}
+                      >
+                        <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                          🛡️ Все, кроме выбранных (Исключения)
+                        </div>
+                        <div className="text-[10px] text-muted-foreground mt-1 leading-relaxed">
+                          Весь ПК работает через VPN, а указанные приложения соединяются напрямую в обход туннеля.
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Quick Presets */}
+                  <div className="space-y-1.5 pt-1 border-t border-border/40">
+                    <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+                      Быстрые пресеты:
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        type="button"
+                        onClick={() => void handleApplyPreset(['cs2.exe', 'dota2.exe', 'steam.exe', 'epicgameslauncher.exe', 'riotclientservices.exe', 'valorant-win64-shipping.exe'])}
+                        className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/10"
+                      >
+                        🎮 Игры (CS2, Dota 2, Steam, Riot)
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        type="button"
+                        onClick={() => void handleApplyPreset(['discord.exe', 'telegram.exe'])}
+                        className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/10"
+                      >
+                        💬 Связь (Discord, Telegram)
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        type="button"
+                        onClick={() => void handleApplyPreset(['chrome.exe', 'msedge.exe', 'firefox.exe', 'browser.exe'])}
+                        className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/10"
+                      >
+                        🌐 Браузеры (Chrome, Edge, Firefox, Yandex)
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Add App & Selection Controls */}
+                  <div className="space-y-2 pt-1 border-t border-border/40">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+                        Список приложений ({settings.perAppProcesses?.length ?? 0}):
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          type="button"
+                          onClick={() => { void handleOpenProcessPicker() }}
+                          className="text-xs h-7 gap-1.5 border-primary/40 hover:bg-primary/10 text-primary"
+                        >
+                          <Monitor className="h-3.5 w-3.5" /> Из запущенных...
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          type="button"
+                          onClick={() => { void handlePickExeFile() }}
+                          className="text-xs h-7 gap-1.5 border-primary/40 hover:bg-primary/10"
+                        >
+                          <FolderOpen className="h-3.5 w-3.5" /> Обзор .exe
+                        </Button>
+                        {(settings.perAppProcesses?.length ?? 0) > 0 && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            type="button"
+                            onClick={() => { void handleClearPerAppProcesses() }}
+                            className="text-xs h-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                          >
+                            Очистить
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Manual Input */}
+                    <div className="flex gap-2">
+                      <Input
+                        value={newAppInput}
+                        onChange={(e) => setNewAppInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') void handleAddPerAppProcess(newAppInput) }}
+                        placeholder="Название процесса, например: cs2.exe или discord.exe"
+                        className="text-xs font-mono"
+                      />
+                      <Button
+                        size="sm"
+                        type="button"
+                        onClick={() => void handleAddPerAppProcess(newAppInput)}
+                        disabled={!newAppInput.trim()}
+                        className="text-xs h-9 shrink-0 gap-1"
+                      >
+                        <Plus className="h-3.5 w-3.5" /> Добавить
+                      </Button>
+                    </div>
+
+                    {/* Active Apps Badges */}
+                    {(settings.perAppProcesses?.length ?? 0) > 0 ? (
+                      <div className="flex flex-wrap gap-1.5 p-2 rounded-xl border border-border/50 bg-background/50 max-h-48 overflow-y-auto">
+                        {settings.perAppProcesses!.map((proc) => (
+                          <div
+                            key={proc}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-card/80 border border-primary/30 text-xs font-mono text-foreground shadow-sm"
+                          >
+                            <span>{proc}</span>
+                            <button
+                              type="button"
+                              onClick={() => void handleRemovePerAppProcess(proc)}
+                              className="text-muted-foreground hover:text-destructive transition-colors ml-0.5"
+                              title="Удалить"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="p-4 rounded-xl border border-dashed border-border/60 text-center text-xs text-muted-foreground">
+                        Приложения не выбраны. Добавьте процесс выше или воспользуйтесь быстрыми пресетами.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Game Server / Faceit CS2 Ping & Route Optimizer */}
+                  {settings.perAppMode !== 'bypass_only' && (
+                    <div className="space-y-3 pt-3 border-t border-border/50">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Target className="h-4 w-4 text-primary" />
+                          <div className="text-xs font-bold text-foreground">
+                            🎯 Пинг до сервера Faceit / CS2
+                          </div>
+                        </div>
+                        <Badge variant="outline" className="text-[10px] text-primary border-primary/40 bg-primary/10">
+                          Route Optimizer
+                        </Badge>
+                      </div>
+
+                      <p className="text-[11px] text-muted-foreground leading-relaxed">
+                        Вставьте IP-адрес или строку подключения матча (например: <span className="font-mono text-foreground">connect 162.19.141.22:27015</span>). LAZEYKA рассчитает задержку через каждый ваш сервер подписки до датацентра игры и выберет наилучший узел для матча.
+                      </p>
+
+                      {/* Input and Buttons */}
+                      <div className="space-y-2">
+                        <div className="flex gap-2">
+                          <div className="relative flex-1">
+                            <Input
+                              value={gameServerTarget}
+                              onChange={(e) => setGameServerTarget(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') void handleMeasureGamePing()
+                              }}
+                              placeholder="connect 162.19.141.22:27015 или 162.19.141.22..."
+                              className="text-xs font-mono pr-20"
+                            />
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              type="button"
+                              onClick={() => { void handlePasteGameServerFromClipboard() }}
+                              className="absolute right-1 top-1 h-7 px-2 text-[11px] text-primary hover:bg-primary/10 gap-1"
+                            >
+                              <Copy className="h-3 w-3" /> Вставить
+                            </Button>
+                          </div>
+                          <Button
+                            size="sm"
+                            type="button"
+                            onClick={() => void handleMeasureGamePing()}
+                            disabled={measuringGamePing || !gameServerTarget.trim()}
+                            className="text-xs h-9 shrink-0 gap-1.5"
+                          >
+                            <Zap className="h-3.5 w-3.5" />
+                            {measuringGamePing ? 'Замер...' : 'Замерить пинг'}
+                          </Button>
+                        </div>
+
+                        {/* Regional Presets */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          <span className="text-[10px] text-muted-foreground mr-1">Быстрый выбор региона:</span>
+                          {[
+                            { label: '🇩🇪 Франкфурт', ip: '162.19.141.22:27015' },
+                            { label: '🇫🇮 Хельсинки', ip: '65.109.112.50:27015' },
+                            { label: '🇸🇪 Стокгольм', ip: '185.242.115.14:27015' },
+                            { label: '🇵🇱 Варшава', ip: '51.83.136.20:27015' },
+                            { label: '🇬🇧 Лондон', ip: '51.89.234.12:27015' },
+                            { label: '🇰🇿 Казахстан', ip: '185.100.233.10:27015' },
+                            { label: '🇷🇺 Москва', ip: '185.178.208.50:27015' }
+                          ].map((preset) => (
+                            <button
+                              key={preset.ip}
+                              type="button"
+                              onClick={() => {
+                                setGameServerTarget(preset.ip)
+                                void handleMeasureGamePing(preset.ip)
+                              }}
+                              className="text-[10px] px-2 py-0.5 rounded-md border border-border/60 bg-card/60 hover:bg-primary/15 hover:border-primary/50 text-foreground transition-colors cursor-pointer"
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Result Box */}
+                      {gamePingResult && (
+                        <div className="space-y-2.5 p-3 rounded-xl border border-primary/30 bg-primary/5 backdrop-blur-sm animate-in fade-in duration-200">
+                          {/* Geo and Direct Ping Header */}
+                          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-border/40 text-xs">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-foreground">
+                                📍 {gamePingResult.geo.city ? `${gamePingResult.geo.city}, ` : ''}{gamePingResult.geo.country || 'Европа'}
+                              </span>
+                              {gamePingResult.geo.isp && (
+                                <Badge variant="secondary" className="text-[10px] font-mono px-1.5 py-0">
+                                  {gamePingResult.geo.isp}
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-muted-foreground flex items-center gap-1.5 font-mono">
+                              <span>Прямой пинг ПК:</span>
+                              <span className="font-bold text-foreground">
+                                {gamePingResult.directPing ? `${gamePingResult.directPing} мс` : '—'}
+                              </span>
+                              {gamePingResult.directPingEstimated && (
+                                <span className="text-[9px] text-muted-foreground">(оценка BGP)</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Node List */}
+                          <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+                            {gamePingResult.nodes.length === 0 ? (
+                              <div className="text-center py-4 text-xs text-muted-foreground">
+                                В вашей подписке нет доступных серверов
+                              </div>
+                            ) : (
+                              gamePingResult.nodes.map((n) => {
+                                const isConnectedNode = status.state === 'running' && status.selectedNodeId === n.nodeId
+                                return (
+                                  <div
+                                    key={n.nodeId}
+                                    className={cn(
+                                      'flex items-center justify-between p-2.5 rounded-xl border transition-all text-xs',
+                                      n.isBest
+                                        ? 'border-emerald-500/50 bg-emerald-500/10 shadow-[0_0_15px_rgba(16,185,129,0.15)]'
+                                        : 'border-border/50 bg-card/60 hover:bg-card/90'
+                                    )}
+                                  >
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="font-semibold text-foreground truncate">
+                                          {cleanServerName(n.nodeName)}
+                                        </span>
+                                        <Badge variant="outline" className="text-[9px] uppercase px-1 py-0">
+                                          {n.protocol}
+                                        </Badge>
+                                        {n.isBest && (
+                                          <Badge className="text-[9px] px-1.5 py-0 bg-emerald-500 text-white font-bold animate-pulse">
+                                            🏆 ТОП ПИНГ
+                                          </Badge>
+                                        )}
+                                      </div>
+                                      <div className="flex items-center gap-3 text-[10px] text-muted-foreground mt-1 font-mono">
+                                        <span>ПК → VPN: <b className="text-foreground">{n.userToNodePing ?? '—'} мс</b></span>
+                                        <span>VPN → Игра: <b className="text-foreground">{n.nodeToGamePing} мс</b></span>
+                                        {typeof n.savingMs === 'number' && n.savingMs > 0 && (
+                                          <span className="text-emerald-500 font-bold">
+                                            ⚡ -{n.savingMs} мс быстрее!
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-3 shrink-0 ml-2">
+                                      <div className="text-right">
+                                        <div className={cn(
+                                          'font-mono text-sm font-bold',
+                                          n.isBest ? 'text-emerald-500' : 'text-foreground'
+                                        )}>
+                                          {n.totalPing ? `${n.totalPing} мс` : '—'}
+                                        </div>
+                                      </div>
+
+                                      <Button
+                                        size="sm"
+                                        variant={isConnectedNode ? 'secondary' : n.isBest ? 'default' : 'outline'}
+                                        disabled={isConnectedNode}
+                                        onClick={() => void handleConnect(n.nodeId)}
+                                        className={cn(
+                                          'h-7 text-xs font-semibold px-2.5',
+                                          n.isBest && !isConnectedNode && 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                                        )}
+                                      >
+                                        {isConnectedNode ? 'Активен' : 'Подключить'}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                )
+                              })
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              )}
+            </Card>
 
             <Card className="cyber-card">
               <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -4064,6 +4709,179 @@ export default function IncyPage(): React.ReactElement {
 
         {/* TAB 7: URL SCHEMES */}
         {activeTab === 'urls' && <UrlSchemesTab />}
+
+        {/* MODAL: Pick Running Process */}
+        {showProcessPickerModal && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in duration-200"
+            onClick={() => setShowProcessPickerModal(false)}
+          >
+            <div
+              className="w-full max-w-lg border border-primary/40 bg-card/95 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col max-h-[85vh] backdrop-blur-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-4 border-b border-border/60 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Monitor className="h-4 w-4 text-primary" />
+                  <div className="text-sm font-bold text-foreground">Выберите запущенное приложение</div>
+                </div>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={() => setShowProcessPickerModal(false)}
+                  className="h-7 w-7"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+
+              <div className="p-3 border-b border-border/40 bg-background/40">
+                <Input
+                  value={processFilterText}
+                  onChange={(e) => setProcessFilterText(e.target.value)}
+                  placeholder="Поиск процесса или названия окна (например: Discord, CS2, Chrome)..."
+                  className="text-xs"
+                  autoFocus
+                />
+              </div>
+
+              <div className="p-3 flex-1 overflow-y-auto space-y-1.5 min-h-[250px]">
+                {loadingProcesses ? (
+                  <div className="py-16 text-center text-xs text-muted-foreground animate-pulse">
+                    Получение списка процессов Windows...
+                  </div>
+                ) : runningProcesses.length === 0 ? (
+                  <div className="py-16 text-center text-xs text-muted-foreground">
+                    Запущенные процессы не найдены
+                  </div>
+                ) : (
+                  runningProcesses
+                    .filter((p) => {
+                      if (!processFilterText.trim()) return true
+                      const q = processFilterText.toLowerCase()
+                      return p.name.toLowerCase().includes(q) || (p.title && p.title.toLowerCase().includes(q))
+                    })
+                    .map((p) => {
+                      const isAlreadyAdded = settings?.perAppProcesses?.some((proc) => proc.toLowerCase() === p.name.toLowerCase())
+                      return (
+                        <div
+                          key={p.name}
+                          onClick={() => {
+                            void handleAddPerAppProcess(p.name)
+                            setShowProcessPickerModal(false)
+                          }}
+                          className={cn(
+                            'flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer',
+                            isAlreadyAdded
+                              ? 'border-emerald-500/40 bg-emerald-500/10'
+                              : 'border-border/50 bg-card/40 hover:bg-primary/10 hover:border-primary/50'
+                          )}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-mono font-semibold text-foreground flex items-center gap-1.5">
+                              {p.name}
+                              {isAlreadyAdded && (
+                                <Badge variant="secondary" className="text-[9px] px-1 py-0 bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+                                  в списке
+                                </Badge>
+                              )}
+                            </div>
+                            {p.title && (
+                              <div className="text-[10px] text-muted-foreground truncate mt-0.5">
+                                {p.title}
+                              </div>
+                            )}
+                          </div>
+                          <Button size="sm" variant="ghost" className="h-6 text-xs text-primary px-2">
+                            {isAlreadyAdded ? 'Добавлено' : 'Выбрать'}
+                          </Button>
+                        </div>
+                      )
+                    })
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL: QR Code Import */}
+        {showQrModal && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in duration-200"
+            onClick={() => setShowQrModal(false)}
+          >
+            <div
+              className="w-full max-w-md border border-primary/40 bg-card/95 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden p-5 space-y-4 backdrop-blur-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <QrCode className="h-4 w-4 text-primary" />
+                  <div className="text-sm font-bold text-foreground">Импорт через QR-код</div>
+                </div>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={() => setShowQrModal(false)}
+                  className="h-7 w-7"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Выберите удобный способ распознавания QR-кода с ссылкой на сервер или подписку:
+              </p>
+
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => { void handleScanQrFromScreen() }}
+                  disabled={scanningQr}
+                  className="w-full flex items-center gap-3 p-3 rounded-xl border border-primary/30 bg-card/50 hover:bg-primary/10 hover:border-primary transition-all text-left cursor-pointer"
+                >
+                  <Monitor className="h-5 w-5 text-primary shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-foreground">Снимок экрана</div>
+                    <div className="text-[10px] text-muted-foreground">Сканировать QR-код, открытый на вашем мониторе</div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { void handleScanQrFromClipboard() }}
+                  disabled={scanningQr}
+                  className="w-full flex items-center gap-3 p-3 rounded-xl border border-primary/30 bg-card/50 hover:bg-primary/10 hover:border-primary transition-all text-left cursor-pointer"
+                >
+                  <Copy className="h-5 w-5 text-primary shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-foreground">Из буфера обмена</div>
+                    <div className="text-[10px] text-muted-foreground">Скопированное изображение (Win+Shift+S / PrtSc)</div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { void handleScanQrFromFile() }}
+                  disabled={scanningQr}
+                  className="w-full flex items-center gap-3 p-3 rounded-xl border border-primary/30 bg-card/50 hover:bg-primary/10 hover:border-primary transition-all text-left cursor-pointer"
+                >
+                  <FolderOpen className="h-5 w-5 text-primary shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-foreground">Выбрать файл изображения</div>
+                    <div className="text-[10px] text-muted-foreground">Открыть PNG, JPG, WebP с вашего диска</div>
+                  </div>
+                </button>
+              </div>
+
+              {scanningQr && (
+                <div className="text-center py-2 text-xs text-primary animate-pulse font-medium">
+                  Распознавание QR-кода...
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Подтверждение удаления подписки. Спрашиваем всегда: вместе с ней
             исчезают все её серверы, а вернуть их можно только повторным

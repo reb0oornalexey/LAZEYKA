@@ -422,7 +422,7 @@ export interface IncyNode {
   id: string
   name: string
   description?: string
-  protocol: 'vless' | 'vmess' | 'trojan' | 'shadowsocks' | 'hysteria2'
+  protocol: 'vless' | 'vmess' | 'trojan' | 'shadowsocks' | 'hysteria2' | 'wireguard'
   server: string
   port: number
   uuid?: string
@@ -573,6 +573,8 @@ export interface IncySettings {
   xudpProxy443: 'reject' | 'allow'
   sniffing: boolean
   perAppProxy: boolean
+  perAppMode?: 'proxy_only' | 'bypass_only'
+  perAppProcesses?: string[]
   preferredIp: 'AUTO' | 'IPV4' | 'IPV6'
   vpnDns: 'Cloudflare + Google' | 'Google DNS' | 'Cloudflare DNS' | 'Quad9' | 'Xbox DNS' | 'Custom'
   customDns?: string
@@ -797,4 +799,65 @@ export const splitTunnelingSaveConfig = (cfg: SplitTunnelingConfig): Promise<voi
 
 export const systemGetNetworkSpeed = (): Promise<{ rxKbps: number; txKbps: number }> =>
   invoke('system:getNetworkSpeed')
+
+// ---- WARP, Running Processes, Pickers & QR ----------------------------------
+export const incyGenerateWarpNode = (): Promise<{ node: IncyNode; allNodes: IncyNode[] }> =>
+  invoke('incy:generateWarpNode')
+
+export interface RunningProcessInfo {
+  name: string
+  title?: string
+}
+export const systemGetRunningProcesses = (): Promise<RunningProcessInfo[]> =>
+  invoke('system:getRunningProcesses')
+export const dialogPickExecutable = (): Promise<string | null> =>
+  invoke('dialog:pickExecutable')
+export const dialogPickImageFile = (): Promise<string | null> =>
+  invoke('dialog:pickImageFile')
+export const clipboardReadImage = (): Promise<string | null> =>
+  invoke('clipboard:readImage')
+export const systemCaptureScreen = (): Promise<string | null> =>
+  invoke('system:captureScreen')
+
+// ---- Game Server / Faceit Ping (ExitLag) ------------------------------------
+export interface GameServerGeoInfo {
+  ip: string
+  host: string
+  port: number
+  country?: string
+  countryCode?: string
+  city?: string
+  regionName?: string
+  isp?: string
+  org?: string
+  lat?: number
+  lon?: number
+}
+
+export interface NodeGamePingInfo {
+  nodeId: string
+  nodeName: string
+  protocol: string
+  server: string
+  userToNodePing: number | null
+  nodeToGamePing: number
+  totalPing: number | null
+  savingMs: number | null
+  isBest: boolean
+}
+
+export interface GamePingResult {
+  targetHost: string
+  targetPort: number
+  targetIp: string
+  geo: GameServerGeoInfo
+  directPing: number | null
+  directPingEstimated: boolean
+  nodes: NodeGamePingInfo[]
+}
+
+export const incyPingGameServer = (target: string): Promise<GamePingResult> =>
+  invoke('incy:pingGameServer', target)
+
+
 

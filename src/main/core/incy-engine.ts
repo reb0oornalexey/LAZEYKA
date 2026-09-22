@@ -37,7 +37,7 @@ export interface IncyNode {
   id: string
   name: string
   description?: string
-  protocol: 'vless' | 'vmess' | 'trojan' | 'shadowsocks' | 'hysteria2'
+  protocol: 'vless' | 'vmess' | 'trojan' | 'shadowsocks' | 'hysteria2' | 'wireguard'
   server: string
   port: number
   uuid?: string
@@ -294,6 +294,8 @@ export interface IncySettings {
   xudpProxy443: 'reject' | 'allow'
   sniffing: boolean
   perAppProxy: boolean
+  perAppMode?: 'proxy_only' | 'bypass_only'
+  perAppProcesses?: string[]
   preferredIp: 'AUTO' | 'IPV4' | 'IPV6'
   vpnDns: 'Cloudflare + Google' | 'Google DNS' | 'Cloudflare DNS' | 'Quad9' | 'Xbox DNS' | 'Custom'
   customDns?: string
@@ -378,6 +380,8 @@ export const DEFAULT_INCY_SETTINGS: IncySettings = {
   xudpProxy443: 'reject',
   sniffing: true,
   perAppProxy: false,
+  perAppMode: 'proxy_only',
+  perAppProcesses: [],
   preferredIp: 'AUTO',
   vpnDns: 'Cloudflare + Google',
   remoteDns: 'https://1.1.1.1/dns-query',
@@ -427,7 +431,7 @@ let currentStatus: IncyStatus = {
   routingMode: 'bypass-ru'
 }
 
-function broadcastStatus(next?: Partial<IncyStatus>): IncyStatus {
+export function broadcastStatus(next?: Partial<IncyStatus>): IncyStatus {
   if (next) {
     currentStatus = { ...currentStatus, ...next }
   }
@@ -449,9 +453,9 @@ const MAX_LOG_LINES = 250
  * instead of readable text. Strip them at the entry point.
  */
 // eslint-disable-next-line no-control-regex
-const ANSI_ESCAPE = /\[[0-9;]*[A-Za-z]/g
+const ANSI_ESCAPE = / \[[0-9;]*[A-Za-z]/g
 
-function appendLog(line: string): void {
+export function appendLog(line: string): void {
   const ts = new Date().toLocaleTimeString('ru-RU')
   const clean = line.replace(ANSI_ESCAPE, '').trim()
   if (!clean) return
@@ -1063,6 +1067,10 @@ function parseJsonConfigItem(item: any, idx: number): IncyNode | null {
       security = 'tls'
       sni = stream.tlsSettings?.serverName || proxyOut.tls?.server_name || ''
     }
+  } else if (proxyOut.protocol === 'wireguard' || proxyOut.type === 'wireguard') {
+    protocol = 'wireguard'
+    server = proxyOut.server || proxyOut.peers?.[0]?.address || ''
+    port = proxyOut.server_port || proxyOut.peers?.[0]?.port || 51820
   }
 
   // A JSON subscription entry that yielded no address is unusable for ping and
@@ -2575,6 +2583,47 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // poller does not sit hammering a port nothing is listening on.
     let statsClashPort = clashPort
 
+    const isWireguard = target.protocol === 'wireguard' || target.rawOutbound?.type === 'wireguard'
+    const endpointsConfig: any[] = []
+    let outboundsList: any[]
+
+    if (topology.chained) {
+      outboundsList = [
+        {
+          type: 'socks',
+          tag: 'proxy',
+          server: '127.0.0.1',
+          server_port: topology.ports.bridge,
+          version: '5'
+        },
+        {
+          type: 'direct',
+          tag: 'direct'
+        }
+      ]
+    } else if (isWireguard) {
+      const verbatim = reuseProviderOutbound(target, settings) || target.rawOutbound
+      endpointsConfig.push({
+        ...verbatim,
+        type: 'wireguard',
+        tag: 'proxy'
+      })
+      outboundsList = [
+        {
+          type: 'direct',
+          tag: 'direct'
+        }
+      ]
+    } else {
+      outboundsList = [
+        buildSingBoxOutbound(target, settings),
+        {
+          type: 'direct',
+          tag: 'direct'
+        }
+      ]
+    }
+
     const config: any = {
       log: {
         level: 'info'
@@ -2589,39 +2638,13 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         servers: dnsServers,
         rules: dnsRules,
         strategy: domainStrategyFor(settings),
-        // Keeps per-server cache entries separate, so a name answered by
-        // local-dns cannot be served later from a remote-dns cache entry (or
-        // the reverse) once routing rules send it elsewhere.
         independent_cache: true
       },
       inbounds,
-      outbounds: [
-        // In CHAINED mode sing-box does not dial the node itself — it owns the
-        // TUN adapter and hands everything to Xray over a loopback SOCKS
-        // bridge, so fragmentation and noises still apply under TUN.
-        topology.chained
-          ? {
-              type: 'socks',
-              tag: 'proxy',
-              server: '127.0.0.1',
-              server_port: topology.ports.bridge,
-              version: '5'
-            }
-          : buildSingBoxOutbound(target, settings),
-        {
-          type: 'direct',
-          tag: 'direct'
-        }
-        // No `block` / `dns` outbounds here on purpose: sing-box 1.11 marked
-        // those "legacy special outbounds" as deprecated (removed in 1.13) in
-        // favour of rule actions — `action: "reject"` and
-        // `action: "hijack-dns"` are used in route.rules below instead.
-      ],
+      ...(endpointsConfig.length > 0 ? { endpoints: endpointsConfig } : {}),
+      outbounds: outboundsList,
       route: {
         rules: [],
-        // Explicit default outbound. Without it sing-box picks the first
-        // outbound implicitly, which made the 'direct' routing mode below a
-        // no-op — every mode behaved like 'global'.
         final: routingMode === 'direct' ? 'direct' : 'proxy',
         auto_detect_interface: true,
         /**
@@ -2660,6 +2683,43 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // query.
     if (routingMode === 'bypass-ru' && rawDomains.length > 0) {
       dnsRules.push({ domain_suffix: rawDomains, server: 'local-dns' })
+    }
+
+    // Per-App Routing process list normalization
+    const isPerAppActive = Boolean(
+      settings.perAppProxy &&
+      Array.isArray(settings.perAppProcesses) &&
+      settings.perAppProcesses.length > 0
+    )
+    const perAppProcessNames: string[] = []
+    if (isPerAppActive) {
+      const rawList = (settings.perAppProcesses ?? [])
+        .map((p) => path.basename(p.trim()))
+        .filter(Boolean)
+      const pSet = new Set<string>()
+      for (const p of rawList) {
+        pSet.add(p)
+        pSet.add(p.toLowerCase())
+        pSet.add(p.toUpperCase())
+        if (!p.toLowerCase().endsWith('.exe')) {
+          pSet.add(`${p}.exe`)
+          pSet.add(`${p.toLowerCase()}.exe`)
+          pSet.add(`${p.toUpperCase()}.EXE`)
+        }
+      }
+      perAppProcessNames.push(...pSet)
+    }
+
+    // ExitLag DNS Isolation:
+    // If ExitLag mode (proxy_only) is active, unlisted processes MUST resolve via local-dns
+    // directly so no non-game DNS lookups leak through the VPN tunnel.
+    if (isPerAppActive && perAppProcessNames.length > 0) {
+      if (settings.perAppMode === 'bypass_only') {
+        dnsRules.unshift({ process_name: perAppProcessNames, server: 'local-dns' })
+      } else {
+        dnsRules.unshift({ invert: true, process_name: perAppProcessNames, server: 'local-dns' })
+        dnsRules.push({ process_name: perAppProcessNames, server: 'remote-dns' })
+      }
     }
 
     // FakeIP is intentionally NOT wired up.
@@ -2783,6 +2843,38 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         .map((ip) => `${ip}/${net.isIPv6(ip) ? 128 : 32}`)
       if (directDnsIps.length > 0) {
         config.route.rules.push({ ip_cidr: directDnsIps, outbound: 'direct' })
+      }
+    }
+
+    // Per-App Routing (ExitLag-style whitelist or blacklist)
+    // Placed at the very top of route rules (right after direct DNS IPs) to guarantee zero leak:
+    // in ExitLag mode, any process NOT in the whitelist is routed direct immediately!
+    if (isPerAppActive && perAppProcessNames.length > 0) {
+      if (settings.perAppMode === 'bypass_only') {
+        // Blacklist mode: selected apps bypass proxy completely and go direct
+        config.route.rules.push({
+          process_name: perAppProcessNames,
+          outbound: 'direct'
+        })
+        appendLog(`Режим приложений: ${settings.perAppProcesses!.length} приложений исключены (напрямую)`)
+      } else {
+        // Whitelist mode (ExitLag):
+        // 1. Force ANY process NOT in whitelist to DIRECT immediately!
+        config.route.rules.push({
+          invert: true,
+          process_name: perAppProcessNames,
+          outbound: 'direct'
+        })
+        // 2. Whitelisted processes go to proxy
+        config.route.rules.push({
+          process_name: perAppProcessNames,
+          outbound: 'proxy'
+        })
+        // 3. Unidentified packets / system kernel traffic default to direct
+        config.route.final = 'direct'
+        appendLog(
+          `Режим ExitLag: через VPN идут ТОЛЬКО ${settings.perAppProcesses!.length} приложений (${settings.perAppProcesses!.join(', ')}), все остальные 100% напрямую`
+        )
       }
     }
 
@@ -3056,6 +3148,17 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
           apply: () => {
             delete config.experimental
             statsClashPort = 0
+          }
+        },
+        {
+          id: 'wg-outbound-legacy',
+          matches: /endpoint/i,
+          note: 'Переключение WireGuard на устаревшую схему outbounds для старых версий sing-box.',
+          apply: () => {
+            if (config.endpoints && config.endpoints.length > 0) {
+              config.outbounds.unshift(...config.endpoints)
+              delete config.endpoints
+            }
           }
         }
       ]

@@ -1,4 +1,7 @@
-import { ipcMain, app, shell, clipboard, BrowserWindow } from 'electron'
+import { ipcMain, app, shell, clipboard, BrowserWindow, dialog, desktopCapturer } from 'electron'
+import { generateCloudflareWarpNode } from '../core/incy-warp'
+import { measureGameServerPing } from '../core/game-ping'
+import { listRunningProcesses } from './process-helper'
 import { getAppConfig, patchAppConfig } from '../config'
 import { applyTheme, setNativeTheme } from '../resolve/theme'
 import {
@@ -132,7 +135,7 @@ import {
 import { checkAppUpdateFromUi } from '../core/app-update-watcher'
 import { getHwidHeaders } from '../core/incy-hwid'
 import { execFile } from 'node:child_process'
-import { writeFileSync, unlinkSync } from 'node:fs'
+import { writeFileSync, unlinkSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
 //
@@ -475,6 +478,49 @@ export function registerIpcMainHandlers(): void {
     h((filePath, parts) => applyIncyBackup(String(filePath), parts as any))
   )
   ipcMain.handle('incy:backupLink', h(() => buildIncyBackupLink()))
+
+  // ---- Cloudflare WARP ---------------------------------------------------
+  ipcMain.handle('incy:generateWarpNode', h(() => generateCloudflareWarpNode()))
+
+  // ---- Game Server / Faceit CS2 Ping (ExitLag) ---------------------------
+  ipcMain.handle('incy:pingGameServer', h((target) => measureGameServerPing(String(target))))
+
+  // ---- Process & Dialog Helpers (Per-App Routing & QR Import) ------------
+  ipcMain.handle('system:getRunningProcesses', h(() => listRunningProcesses()))
+  ipcMain.handle('dialog:pickExecutable', h(async () => {
+    const res = await dialog.showOpenDialog({
+      title: 'Выберите исполняемый файл приложения',
+      filters: [{ name: 'Программы (.exe)', extensions: ['exe'] }],
+      properties: ['openFile']
+    })
+    if (res.canceled || res.filePaths.length === 0) return null
+    return path.basename(res.filePaths[0])
+  }))
+  ipcMain.handle('dialog:pickImageFile', h(async () => {
+    const res = await dialog.showOpenDialog({
+      title: 'Выберите изображение с QR-кодом',
+      filters: [{ name: 'Изображения', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }],
+      properties: ['openFile']
+    })
+    if (res.canceled || res.filePaths.length === 0) return null
+    const filePath = res.filePaths[0]
+    const ext = path.extname(filePath).replace('.', '').toLowerCase() || 'png'
+    const buf = readFileSync(filePath)
+    return `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${buf.toString('base64')}`
+  }))
+  ipcMain.handle('clipboard:readImage', h(() => {
+    const img = clipboard.readImage()
+    if (img.isEmpty()) return null
+    return img.toDataURL()
+  }))
+  ipcMain.handle('system:captureScreen', h(async () => {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 1920, height: 1080 }
+    })
+    if (!sources || sources.length === 0) return null
+    return sources[0].thumbnail.toDataURL()
+  }))
 
   // ---- Strategy Builder --------------------------------------------------
   ipcMain.handle('builder:generateStrategy', h((config) => generateCustomStrategyBat(config as any)))
