@@ -471,7 +471,11 @@ export function appendLog(line: string, customSource?: CoreSource): void {
   ringLogs.push(`[${ts}] ${clean}`)
   if (ringLogs.length > MAX_LOG_LINES) ringLogs.shift()
 
-  const isErr = clean.includes('[ERR]') || clean.includes('ERROR') || clean.includes('fatal') || clean.includes('FATAL')
+  const isErr =
+    clean.includes('ERROR') ||
+    clean.includes('fatal') ||
+    clean.includes('FATAL') ||
+    (clean.includes('[ERR]') && !clean.includes('INFO') && !clean.includes('WARN'))
   const isWarn = clean.includes('WARN') || clean.includes('warn')
   const type: ControllerLog['type'] = isErr ? 'error' : isWarn ? 'warn' : 'info'
 
@@ -2545,6 +2549,30 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       )
     }
 
+    const resolvedServerIps: string[] = []
+    const resolveHost = async (host: string): Promise<void> => {
+      if (!host) return
+      if (net.isIP(host)) {
+        if (!resolvedServerIps.includes(host)) resolvedServerIps.push(host)
+        return
+      }
+      try {
+        const records = await dns.promises.resolve4(host)
+        for (const ip of records) {
+          if (net.isIP(ip) && !resolvedServerIps.includes(ip)) resolvedServerIps.push(ip)
+        }
+      } catch {
+        /* best effort */
+      }
+    }
+
+    if (target.server) await resolveHost(target.server)
+    if (target.rawOutbound) {
+      const ro = target.rawOutbound as any
+      const cand = ro.server || ro.settings?.vnext?.[0]?.address || ro.peers?.[0]?.address
+      if (typeof cand === 'string') await resolveHost(cand)
+    }
+
     const inbounds: any[] = [mixedInbound]
     if (mode === 'tun') {
       const tunInbound: any = {
@@ -2629,29 +2657,50 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
      * адреса этих серверов к direct — тот же смысл, выраженный тем способом,
      * который ядро принимает.
      */
-    const dnsServersModern = [
-      buildModernDnsServer('remote-dns', dnsPair.remote, 'proxy', needsResolver(dnsPair.remote)),
-      buildModernDnsServer('local-dns', dnsPair.local, null, needsResolver(dnsPair.local)),
-      // Bootstrap only: plain UDP to a literal IP. Nothing uses it except
-      // resolving the hostnames of the two servers above, so it sits last
-      // where it can never become the default.
-      { tag: 'dns-bootstrap', type: 'udp', server: bootstrapIp }
-    ]
-    const dnsServersLegacy = [
-      {
-        tag: 'remote-dns',
-        address: dnsPair.remote,
-        detour: 'proxy',
-        ...(needsResolver(dnsPair.remote) ? { address_resolver: 'dns-bootstrap' } : {})
-      },
-      {
-        tag: 'local-dns',
-        address: dnsPair.local,
-        detour: 'direct',
-        ...(needsResolver(dnsPair.local) ? { address_resolver: 'dns-bootstrap' } : {})
-      },
-      { tag: 'dns-bootstrap', address: bootstrapIp, detour: 'direct' }
-    ]
+    const isExitLagWhitelist = Boolean(settings.perAppProxy && settings.perAppMode === 'proxy_only')
+
+    const dnsServersModern = isExitLagWhitelist
+      ? [
+          buildModernDnsServer('local-dns', dnsPair.local, null, needsResolver(dnsPair.local)),
+          buildModernDnsServer('remote-dns', dnsPair.remote, 'proxy', needsResolver(dnsPair.remote)),
+          { tag: 'dns-bootstrap', type: 'udp', server: bootstrapIp }
+        ]
+      : [
+          buildModernDnsServer('remote-dns', dnsPair.remote, 'proxy', needsResolver(dnsPair.remote)),
+          buildModernDnsServer('local-dns', dnsPair.local, null, needsResolver(dnsPair.local)),
+          { tag: 'dns-bootstrap', type: 'udp', server: bootstrapIp }
+        ]
+    const dnsServersLegacy = isExitLagWhitelist
+      ? [
+          {
+            tag: 'local-dns',
+            address: dnsPair.local,
+            detour: 'direct',
+            ...(needsResolver(dnsPair.local) ? { address_resolver: 'dns-bootstrap' } : {})
+          },
+          {
+            tag: 'remote-dns',
+            address: dnsPair.remote,
+            detour: 'proxy',
+            ...(needsResolver(dnsPair.remote) ? { address_resolver: 'dns-bootstrap' } : {})
+          },
+          { tag: 'dns-bootstrap', address: bootstrapIp, detour: 'direct' }
+        ]
+      : [
+          {
+            tag: 'remote-dns',
+            address: dnsPair.remote,
+            detour: 'proxy',
+            ...(needsResolver(dnsPair.remote) ? { address_resolver: 'dns-bootstrap' } : {})
+          },
+          {
+            tag: 'local-dns',
+            address: dnsPair.local,
+            detour: 'direct',
+            ...(needsResolver(dnsPair.local) ? { address_resolver: 'dns-bootstrap' } : {})
+          },
+          { tag: 'dns-bootstrap', address: bootstrapIp, detour: 'direct' }
+        ]
     const dnsServers: any[] = [...dnsServersModern]
     const dnsRules: any[] = []
 
@@ -2725,7 +2774,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       outbounds: outboundsList,
       route: {
         rules: [],
-        final: routingMode === 'direct' ? 'direct' : 'proxy',
+        final: routingMode === 'direct' || isExitLagWhitelist ? 'direct' : 'proxy',
         auto_detect_interface: true,
         /**
          * Чем резолвить имена, когда исходящее соединение набирает хост.
@@ -2761,8 +2810,9 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // Domains that bypass the tunnel must also resolve outside it: routing them
     // direct while still asking the proxy's DNS was both slower and leaked the
     // query.
-    if (routingMode === 'bypass-ru' && rawDomains.length > 0) {
-      dnsRules.push({ domain_suffix: rawDomains, server: 'local-dns' })
+    if (routingMode === 'bypass-ru') {
+      const bypassDomains = rawDomains.length > 0 ? rawDomains : ['ru', 'su', 'рф']
+      dnsRules.push({ domain_suffix: bypassDomains, server: 'local-dns' })
     }
 
     // Per-App Routing process list normalization
@@ -2864,14 +2914,15 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // or port the provider hands out.
     if (topology.chained) {
       config.route.rules.push({ process_name: ['xray.exe'], outbound: 'direct' })
-      // Belt-and-braces for the case where process matching is unavailable
-      // (it needs the packet's owning PID, which Windows occasionally hides):
-      // pin the node's literal address too.
-      if (target.server && net.isIP(target.server)) {
-        config.route.rules.push({ ip_cidr: [`${target.server}/32`], outbound: 'direct' })
-      } else if (target.server) {
-        config.route.rules.push({ domain: [target.server], outbound: 'direct' })
-      }
+    }
+    if (resolvedServerIps.length > 0) {
+      config.route.rules.push({
+        ip_cidr: resolvedServerIps.map((ip) => `${ip}/${net.isIPv6(ip) ? 128 : 32}`),
+        outbound: 'direct'
+      })
+    }
+    if (target.server && !net.isIP(target.server)) {
+      config.route.rules.push({ domain: [target.server], outbound: 'direct' })
     }
 
     // Sniffing must be the first rule: everything below matches on the
@@ -2930,6 +2981,30 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       }
     }
 
+    // LAN clients: when the mixed inbound is exposed to the network, decide
+    // whether their traffic is tunnelled or sent straight out.
+    if (settings.allowLan && !settings.lanViaProxy) {
+      config.route.rules.push({
+        source_ip_cidr: ['192.168.0.0/16', '10.0.0.0/8', '172.16.0.0/12'],
+        outbound: 'direct'
+      })
+    }
+
+    // Routing modes (RU bypass):
+    // MUST evaluate BEFORE Per-App rules!
+    // When a user whitelists a browser in ExitLag mode, Russian sites (.ru, .рф, .su,
+    // Yandex, Gosuslugi, banks) must STILL go direct at native ISP speed rather than
+    // through the overseas VPN tunnel.
+    if (routingMode === 'bypass-ru') {
+      config.route.rules.push({
+        domain_suffix: rawDomains.length > 0 ? rawDomains : ['ru', 'su', 'рф'],
+        outbound: 'direct'
+      })
+    }
+
+    // User custom rules run before per-app rules
+    pushCustomRules()
+
     // Per-App Routing (ExitLag-style whitelist or blacklist)
     //
     // IMPORTANT: We must NOT use `invert: true` with process_name on Windows!
@@ -2964,40 +3039,8 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       }
     }
 
-    pushCustomRules()
-
     if (settings.blockUdp) {
       config.route.rules.push({ network: 'udp', action: 'reject' })
-    }
-    // No QUIC block here.
-    //
-    // `xudpProxy443` was wired up as "reject all UDP on 443", and since it
-    // defaults to 'reject' that silently blocked QUIC for everyone. Browsers
-    // try QUIC first, wait for it to time out, then fall back to TCP — which
-    // is exactly the stuttering, intermittent browsing that was reported.
-    //
-    // The setting belongs to Xray's mux block (`xudpProxyUDP443`), where it
-    // decides how mux handles UDP/443. It is applied there, and only there.
-
-    // LAN clients: when the mixed inbound is exposed to the network, decide
-    // whether their traffic is tunnelled or sent straight out.
-    if (settings.allowLan && !settings.lanViaProxy) {
-      config.route.rules.push({
-        source_ip_cidr: ['192.168.0.0/16', '10.0.0.0/8', '172.16.0.0/12'],
-        outbound: 'direct'
-      })
-    }
-
-    // Routing modes:
-    //   bypass-ru → RU/split-tunnelling domains go direct, the rest via proxy
-    //   global    → everything via proxy (no bypass rule)
-    //   direct    → everything direct (tunnel stays up but carries nothing),
-    //               handled by route.final above
-    if (routingMode === 'bypass-ru') {
-      config.route.rules.push({
-        domain_suffix: rawDomains.length > 0 ? rawDomains : ['ru', 'su', 'рф'],
-        outbound: 'direct'
-      })
     }
 
     // ---- Start Xray first, so its inbound is already listening before
@@ -3330,7 +3373,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
 
     spawned.stderr?.on('data', (data) => {
       const text = data.toString().trim()
-      if (text) appendLog(`[ERR] ${text}`)
+      if (text) appendLog(text)
     })
 
     spawned.on('error', (err) => {

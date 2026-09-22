@@ -19,7 +19,14 @@ let stopRequested = false
 
 // ---- defaults --------------------------------------------------------------
 
-const DEFAULT_DC_IPS = ['2:149.154.167.220', '4:149.154.167.220'] as const
+const DEFAULT_DC_IPS = [
+  '1:149.154.175.50',
+  '2:149.154.167.51',
+  '3:149.154.175.100',
+  '4:149.154.167.91',
+  '5:149.154.171.5',
+  '203:91.105.192.100'
+] as const
 const COLD_BOOT_THRESHOLD_S = 180
 const NETWORK_WAIT_TIMEOUT_MS = 30_000
 const SECRET_HEX_LEN = 32
@@ -101,16 +108,8 @@ async function killStaleTgws(): Promise<boolean> {
       p.on('exit', () => resolve())
       p.on('error', () => resolve())
     })
-    // Fallback via PowerShell / CIM in case taskkill lacked elevation permissions
-    await new Promise<void>((resolve) => {
-      exec(
-        `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name LIKE 'TgWsProxy%'\\" | Invoke-CimMethod -MethodName Terminate"`,
-        { windowsHide: true },
-        () => resolve()
-      )
-    })
     log('info', 'stale TgWsProxy instances killed')
-    await new Promise((r) => setTimeout(r, 500))
+    await new Promise((r) => setTimeout(r, 300))
     return true
   } catch {
     return false
@@ -151,6 +150,25 @@ function ensureFirewallRule(port: number): void {
 
 // ---- Flowseal Headless Helpers (Zero GUI, Zero Tray) -----------------------
 
+function resolveDcIps(configured?: string[]): string[] {
+  const dcMap = new Map<string, string>()
+  for (const d of DEFAULT_DC_IPS) {
+    const [dc, ip] = d.split(':', 2)
+    dcMap.set(dc, ip)
+  }
+  for (const d of configured ?? []) {
+    if (typeof d === 'string' && d.includes(':')) {
+      const [dc, ip] = d.split(':', 2)
+      dcMap.set(dc.trim(), ip.trim())
+    }
+  }
+  const result: string[] = []
+  for (const [dc, ip] of dcMap.entries()) {
+    result.push(`${dc}:${ip}`)
+  }
+  return result
+}
+
 function preseedFlowsealConfig(t: AppConfig['tgws'], secret: string): void {
   if (process.platform !== 'win32') return
   try {
@@ -175,7 +193,7 @@ function preseedFlowsealConfig(t: AppConfig['tgws'], secret: string): void {
       host: t?.host || '127.0.0.1',
       port: t?.port || 1443,
       secret,
-      dc_ip: t?.dcIp && t.dcIp.length > 0 ? t.dcIp : ['2:149.154.167.220', '4:149.154.167.220'],
+      dc_ip: resolveDcIps(t?.dcIp),
       verbose: Boolean(t?.verbose),
       buf_kb: t?.bufKb || 256,
       pool_size: t?.poolSize || 4,
@@ -296,7 +314,7 @@ async function startTgwsImpl(): Promise<void> {
 
     // 2) Bind host: use configured host (default 127.0.0.1 for local security)
     const host = t.host || '127.0.0.1'
-    const dcIp = (t.dcIp && t.dcIp.length > 0 ? t.dcIp : [...DEFAULT_DC_IPS])
+    const dcIp = resolveDcIps(t.dcIp)
 
     // 3) Port pre-check & Windows Firewall (if listening on all interfaces)
     await ensurePortFree(host, t.port)

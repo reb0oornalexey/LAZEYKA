@@ -7,6 +7,7 @@ import { MapPin, Trash2, ClipboardCopy, Download } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
 import BasePage from '@renderer/components/base/base-page'
 import { toast } from 'sonner'
+import { zapretStatus, tgwsStatus, incyGetStatus, incyGetSettings } from '@renderer/utils/ipc'
 
 const sourceColor: Record<CoreSource, string> = {
   tgws: 'text-sky-700 dark:text-sky-400 font-semibold',
@@ -36,25 +37,26 @@ async function generateDiagnosticReport(): Promise<string> {
 
   // Gather statuses
   try {
-    const zapretStatus = await window.electron.ipcRenderer.invoke('zapret:getStatus')
+    const status = await zapretStatus()
     lines.push('## Zapret')
-    lines.push(`- Состояние: ${zapretStatus?.state ?? 'неизвестно'}`)
-    if (zapretStatus?.lastError) lines.push(`- Ошибка: ${zapretStatus.lastError}`)
+    lines.push(`- Состояние: ${status?.state ?? 'неизвестно'}`)
+    if (status?.lastError) lines.push(`- Ошибка: ${status.lastError}`)
     lines.push('')
   } catch { lines.push('## Zapret\n- Не удалось получить статус\n') }
 
   try {
-    const tgwsStatus = await window.electron.ipcRenderer.invoke('tgws:getStatus')
+    const status = await tgwsStatus()
     lines.push('## TgWsProxy')
-    lines.push(`- Состояние: ${tgwsStatus?.state ?? 'неизвестно'}`)
-    if (tgwsStatus?.lastError) lines.push(`- Ошибка: ${tgwsStatus.lastError}`)
+    lines.push(`- Состояние: ${status?.state ?? 'неизвестно'}`)
+    if (status?.lastError) lines.push(`- Ошибка: ${status.lastError}`)
     lines.push('')
   } catch { lines.push('## TgWsProxy\n- Не удалось получить статус\n') }
 
   try {
-    const incyStatus = await window.electron.ipcRenderer.invoke('incy:getStatus')
+    const incyStatus = await incyGetStatus()
     lines.push('## INCY')
     lines.push(`- Состояние: ${incyStatus?.state ?? 'неизвестно'}`)
+    lines.push(`- Режим подключения: ${incyStatus?.connectionMode ?? 'неизвестно'}`)
     lines.push(`- Выбранный узел: ${incyStatus?.selectedNodeId ?? 'нет'}`)
     lines.push(`- Активный узел: ${incyStatus?.activeNodeId ?? 'нет'}`)
     if (incyStatus?.lastError) lines.push(`- Ошибка: ${incyStatus.lastError}`)
@@ -62,10 +64,9 @@ async function generateDiagnosticReport(): Promise<string> {
   } catch { lines.push('## INCY\n- Не удалось получить статус\n') }
 
   try {
-    const settings = await window.electron.ipcRenderer.invoke('incy:getSettings')
+    const settings = await incyGetSettings()
     lines.push('## Настройки INCY')
     lines.push(`- Режим: ${settings?.routingMode ?? 'неизвестно'}`)
-    lines.push(`- TUN: ${settings?.mode ?? 'неизвестно'}`)
     lines.push(`- Per-App: ${settings?.perAppProxy ? `вкл (${settings.perAppMode}, ${(settings.perAppProcesses ?? []).join(', ')})` : 'выкл'}`)
     lines.push(`- DNS: ${settings?.vpnDns ?? 'неизвестно'}`)
     lines.push(`- Мультиплекс: ${settings?.multiplexing ? 'вкл' : 'выкл'}`)
