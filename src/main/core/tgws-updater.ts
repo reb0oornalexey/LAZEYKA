@@ -6,8 +6,9 @@ import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 import { stopTgws, getTgwsStatus } from './tgws'
 
-const REPO = 'reb0oornalexey/LAZEYKA'
-const RELEASES_LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`
+import { fetchLatestGithubRelease, type GhRelease } from '../utils/github-release'
+
+const REPO = 'Flowseal/tg-ws-proxy'
 const REQUEST_HEADERS: Record<string, string> = {
   'User-Agent': 'LAZEYKA-Updater',
   Accept: 'application/vnd.github+json'
@@ -50,19 +51,6 @@ function compareVersion(a: string, b: string): number {
   return 0
 }
 
-interface GhAsset {
-  name: string
-  browser_download_url: string
-  size: number
-}
-interface GhRelease {
-  tag_name?: string
-  name?: string
-  html_url?: string
-  published_at?: string
-  assets?: GhAsset[]
-}
-
 let cache: { at: number; data: TgwsUpdateInfo } | null = null
 let cacheHydrated = false
 const CACHE_TTL_MS = 12 * 60 * 60 * 1000
@@ -90,11 +78,6 @@ function backgroundRefresh(): void {
  * Version currently installed into runtime/tgws, or `undefined` when the user
  * has never installed an update and is still running the binary that shipped
  * inside the installer.
- *
- * No bundled-version constant on purpose — a baked-in number goes stale as
- * soon as a new release lands and made LAZEYKA report "up to date" while
- * running an older binary. `undefined` falls back to the `0.0.0` baseline,
- * so a fresh install always sees the newest release as an available update.
  */
 function installedVersion(cfgInstalled?: string): string | undefined {
   const v = cfgInstalled?.trim()
@@ -124,15 +107,14 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
 
   let release: GhRelease
   try {
-    const res = await fetch(RELEASES_LATEST_URL, { headers: REQUEST_HEADERS })
-    if (!res.ok) throw new Error(`GitHub API ${res.status}`)
-    release = (await res.json()) as GhRelease
+    release = await fetchLatestGithubRelease(REPO)
   } catch (e) {
     throw new Error(`Не удалось проверить обновления TgWsProxy: ${e instanceof Error ? e.message : String(e)}`)
   }
 
   const latestRaw = release.tag_name ?? release.name ?? ''
   const latest = latestRaw.replace(/^v/i, '').trim() || undefined
+  const tag = release.tag_name || (latest ? `v${latest}` : '')
 
   // Strict 64-bit Windows binary match: prioritize official TgWsProxy_windows.exe
   const assets = release.assets ?? []
@@ -141,16 +123,20 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
     assets.find((a) => /^TgWsProxy_windows\.exe$/i.test(a.name)) ??
     assets.find((a) => /^TgWsProxy_windows.*\.exe$/i.test(a.name) && !/32bit|7_|arm64/i.test(a.name))
 
+  const assetDownloadUrl =
+    winAsset?.browser_download_url ??
+    (tag ? `https://github.com/${REPO}/releases/download/${tag}/TgWsProxy_windows.exe` : undefined)
+
   const hasUpdate = !!latest && compareVersion(latest, compareBaseline(installed)) > 0
 
   const info: TgwsUpdateInfo = {
     installed,
     latest,
     hasUpdate,
-    assetName: winAsset?.name,
-    assetUrl: winAsset?.browser_download_url,
+    assetName: winAsset?.name ?? 'TgWsProxy_windows.exe',
+    assetUrl: assetDownloadUrl,
     assetSize: winAsset?.size,
-    releaseUrl: release.html_url,
+    releaseUrl: release.html_url ?? (tag ? `https://github.com/${REPO}/releases/tag/${tag}` : undefined),
     publishedAt: release.published_at,
     dismissed: !!latest && dismissedTag === latest
   }

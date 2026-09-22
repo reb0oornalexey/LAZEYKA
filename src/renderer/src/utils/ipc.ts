@@ -616,6 +616,8 @@ export interface IncyStatus {
 
 export const incyGetNodes = (): Promise<IncyNode[]> => invoke('incy:getNodes')
 export const incySaveNodes = (nodes: IncyNode[]): Promise<void> => invoke('incy:saveNodes', nodes)
+export const incyRemoveNode = (nodeId: string): Promise<IncyNode[]> => invoke('incy:removeNode', nodeId)
+export const incyClearManualNodes = (): Promise<IncyNode[]> => invoke('incy:clearManualNodes')
 export const incyGetSubscription = (): Promise<IncySubscription | null> => invoke('incy:getSubscription')
 export const incyGetSettings = (): Promise<IncySettings> => invoke('incy:getSettings')
 export const incySaveSettings = (settings: IncySettings): Promise<void> => invoke('incy:saveSettings', settings)

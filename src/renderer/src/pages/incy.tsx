@@ -39,6 +39,8 @@ import { Label } from '@renderer/components/ui/label'
 import {
   incyGetNodes,
   incySaveNodes,
+  incyRemoveNode,
+  incyClearManualNodes,
   incyGetSubscription,
   incyGetSettings,
   incySaveSettings,
@@ -1570,6 +1572,30 @@ export default function IncyPage(): React.ReactElement {
     }
   }
 
+  /** Удалить отдельный сервер (ручной или сохранённый). */
+  const handleRemoveNode = async (node: IncyNode): Promise<void> => {
+    try {
+      const updatedNodes = await incyRemoveNode(node.id)
+      setNodes(updatedNodes)
+      setStatus(await incyGetStatus().catch(() => status))
+      toast.success(`Сервер «${cleanServerName(node.name)}» удалён`)
+    } catch (e: any) {
+      toast.error('Не удалось удалить сервер', { description: e?.message || String(e) })
+    }
+  }
+
+  /** Удалить все ручные/не привязанные серверы. */
+  const handleClearManualNodes = async (): Promise<void> => {
+    try {
+      const updatedNodes = await incyClearManualNodes()
+      setNodes(updatedNodes)
+      setStatus(await incyGetStatus().catch(() => status))
+      toast.success('Все ручные серверы удалены')
+    } catch (e: any) {
+      toast.error('Не удалось очистить серверы', { description: e?.message || String(e) })
+    }
+  }
+
   const handleConnect = async (nodeId?: string): Promise<void> => {
     const targetId = nodeId || status.selectedNodeId || nodes[0]?.id
     if (!targetId) {
@@ -1877,7 +1903,7 @@ export default function IncyPage(): React.ReactElement {
    * внутри карточки каждой подписки и отдельно для добавленных вручную.
    * Копия разметки на каждую группу разъехалась бы при первой же правке.
    */
-  const renderServerRow = (node: IncyNode): React.ReactElement => {
+  const renderServerRow = (node: IncyNode, isManual = false): React.ReactElement => {
     const isNodeActive = isConnected && status.activeNodeId === node.id
     const isNodeSelected = (status.selectedNodeId || nodes[0]?.id) === node.id
     const flag = getFlagEmoji(node.name)
@@ -1950,6 +1976,21 @@ export default function IncyPage(): React.ReactElement {
           >
             {isNodeActive ? 'Активен' : 'Подключить'}
           </Button>
+
+          {isManual && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={(e) => {
+                e.stopPropagation()
+                void handleRemoveNode(node)
+              }}
+              title="Удалить сервер"
+              className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
         </div>
       </div>
     )
@@ -3059,10 +3100,22 @@ export default function IncyPage(): React.ReactElement {
                 удаляет и не перезаписывает ни одно обновление подписки. */}
             {manualNodes.length > 0 && (
               <div className="space-y-2">
-                <div className="px-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Добавлены вручную ({manualNodes.length})
+                <div className="flex items-center justify-between px-0.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Добавлены вручную ({manualNodes.length})
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => { void handleClearManualNodes() }}
+                    className="h-6 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 gap-1"
+                    title="Удалить все серверы, добавленные вручную или оставшиеся от старых подписок"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    Очистить все
+                  </Button>
                 </div>
-                {manualNodes.map((node) => renderServerRow(node))}
+                {manualNodes.map((node) => renderServerRow(node, true))}
               </div>
             )}
 

@@ -142,15 +142,13 @@ function fileSize(p: string | null): number | undefined {
   }
 }
 
+import { fetchLatestGithubRelease } from '../utils/github-release'
+
 /** Latest release tag for a repo, or undefined when the API is unreachable. */
 async function fetchLatestTag(repo: string): Promise<string | undefined> {
   try {
-    const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-      headers: REQUEST_HEADERS
-    })
-    if (!res.ok) return undefined
-    const json = (await res.json()) as { tag_name?: string }
-    return json.tag_name?.trim() || undefined
+    const rel = await fetchLatestGithubRelease(repo)
+    return rel?.tag_name?.trim() || undefined
   } catch {
     return undefined
   }

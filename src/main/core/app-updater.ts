@@ -9,8 +9,9 @@ import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 import { appLog } from '../utils/app-logger'
 
+import { fetchLatestGithubRelease, type GhRelease } from '../utils/github-release'
+
 const REPO = 'reb0oornalexey/LAZEYKA'
-const RELEASES_LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`
 const REQUEST_HEADERS: Record<string, string> = {
   'User-Agent': 'LAZEYKA-Updater',
   Accept: 'application/vnd.github+json'
@@ -62,22 +63,6 @@ export function isUpdateDismissed(
   return { dismissed: false, snoozedUntil: until, skipped: false }
 }
 
-interface GhAsset {
-  name: string
-  browser_download_url: string
-  size: number
-}
-interface GhRelease {
-  tag_name?: string
-  name?: string
-  body?: string
-  html_url?: string
-  published_at?: string
-  prerelease?: boolean
-  draft?: boolean
-  assets?: GhAsset[]
-}
-
 function parseVersion(s?: string): string | null {
   if (!s) return null
   const stripped = s.replace(/^v/i, '').trim()
@@ -113,18 +98,6 @@ function compareVersion(a: string, b: string): number {
 
 let cache: { at: number; data: AppUpdateInfo } | null = null
 let cacheHydrated = false
-/**
- * Сколько ответ GitHub считается свежим.
- *
- * Было шесть часов, и это оборачивалось так: выкладываешь релиз, у человека
- * приложение молчит полдня, а перезапуск не помогает — кэш лежит файлом на
- * диске и переживает перезапуск. «Обновлений нет» и «мы не спрашивали» с
- * экрана выглядели одинаково.
- *
- * Полчаса — достаточно редко, чтобы не долбить GitHub (60 запросов в час на
- * IP без авторизации), и достаточно часто, чтобы перезапуск приложения был
- * рабочим способом получить свежий ответ.
- */
 const CACHE_TTL_MS = 30 * 60 * 1000
 const CACHE_NAME = 'app'
 
@@ -160,13 +133,8 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
 
   let release: GhRelease
   try {
-    const res = await fetch(RELEASES_LATEST_URL, { headers: REQUEST_HEADERS })
-    if (!res.ok) throw new Error(`GitHub API ${res.status}`)
-    release = (await res.json()) as GhRelease
+    release = await fetchLatestGithubRelease(REPO)
   } catch (e) {
-    // Сеть отвалилась или GitHub упёрся в лимит запросов. Если человек нажал
-    // «Проверить обновления» сам — он должен увидеть причину, а не бодрое
-    // «всё свежее». В фоне же лучше отдать вчерашний ответ, чем ничего.
     if (!force && cache?.data.tag) return fromCache()
     throw new Error(`Не удалось проверить обновления LAZEYKA: ${describeNetworkError(e)}`)
   }
@@ -189,6 +157,10 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
     assets.find((a) => /^LAZEYKA_x64\.exe$/i.test(a.name)) ??
     assets.find((a) => /^LAZEYKA.*\.exe$/i.test(a.name) && !/portable/i.test(a.name))
 
+  const assetDownloadUrl =
+    installerAsset?.browser_download_url ??
+    (tag ? `https://github.com/${REPO}/releases/download/${tag}/LAZEYKA_x64.exe` : undefined)
+
   const hasUpdate = !!latest && compareVersion(latest, installed) > 0
 
   const info: AppUpdateInfo = {
@@ -196,10 +168,10 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
     latest,
     hasUpdate,
     tag,
-    assetName: installerAsset?.name,
-    assetUrl: installerAsset?.browser_download_url,
+    assetName: installerAsset?.name ?? 'LAZEYKA_x64.exe',
+    assetUrl: assetDownloadUrl,
     assetSize: installerAsset?.size,
-    releaseUrl: release.html_url,
+    releaseUrl: release.html_url ?? (tag ? `https://github.com/${REPO}/releases/tag/${tag}` : undefined),
     releaseNotes: release.body?.trim() || undefined,
     publishedAt: release.published_at,
     ...isUpdateDismissed(tag, dismissedTag, dismissedUntil)

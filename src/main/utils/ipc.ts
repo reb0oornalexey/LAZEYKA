@@ -24,6 +24,8 @@ import { pingDiscordVoiceRegions } from '../core/discord-ping'
 import {
   loadIncyNodes,
   saveIncyNodes,
+  removeIncyNode,
+  clearManualIncyNodes,
   loadIncySubscription,
   saveIncySubscription,
   loadIncySettings,
@@ -385,6 +387,8 @@ export function registerIpcMainHandlers(): void {
   // ---- INCY Proxy / VPN --------------------------------------------------
   ipcMain.handle('incy:getNodes', h(() => loadIncyNodes()))
   ipcMain.handle('incy:saveNodes', h((nodes) => saveIncyNodes(nodes as any)))
+  ipcMain.handle('incy:removeNode', h((nodeId) => removeIncyNode(String(nodeId))))
+  ipcMain.handle('incy:clearManualNodes', h(() => clearManualIncyNodes()))
   ipcMain.handle('incy:getSubscription', h(() => loadIncySubscription()))
   ipcMain.handle('incy:saveSubscription', h((sub) => saveIncySubscription(sub as any)))
   ipcMain.handle('incy:fetchSubscription', h((url) => fetchIncySubscription(String(url))))

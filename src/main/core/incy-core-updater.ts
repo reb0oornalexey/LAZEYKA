@@ -161,22 +161,11 @@ export async function probeCoreVersion(spec: CoreSpec): Promise<string | undefin
 // check
 // ---------------------------------------------------------------------------
 
-interface GhAsset { name: string; browser_download_url: string; size: number }
-interface GhRelease {
-  tag_name?: string
-  html_url?: string
-  prerelease?: boolean
-  draft?: boolean
-  assets?: GhAsset[]
-}
+import { fetchLatestGithubRelease, type GhRelease } from '../utils/github-release'
 
 async function fetchLatestRelease(repo: string): Promise<GhRelease | null> {
   try {
-    const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-      headers: REQUEST_HEADERS
-    })
-    if (!res.ok) return null
-    return (await res.json()) as GhRelease
+    return await fetchLatestGithubRelease(repo)
   } catch {
     return null
   }

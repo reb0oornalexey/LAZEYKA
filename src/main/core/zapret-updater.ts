@@ -1,9 +1,9 @@
 import { installZapretBundle } from './zapret'
 import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
+import { fetchLatestGithubRelease, type GhRelease } from '../utils/github-release'
 
 const REPO = 'Flowseal/zapret-discord-youtube'
-const RELEASES_LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`
 const REQUEST_HEADERS: Record<string, string> = {
   'User-Agent': 'LAZEYKA-Updater',
   Accept: 'application/vnd.github+json'
@@ -52,19 +52,6 @@ function compareVersion(a: string, b: string): number {
   return 0
 }
 
-interface GhAsset {
-  name: string
-  browser_download_url: string
-  size: number
-}
-interface GhRelease {
-  tag_name?: string
-  name?: string
-  html_url?: string
-  published_at?: string
-  assets?: GhAsset[]
-}
-
 // 12-hour cache, persisted to disk via update-cache helper so the very
 let cache: { at: number; data: ZapretUpdateInfo } | null = null
 let cacheHydrated = false
@@ -93,13 +80,6 @@ function backgroundRefresh(): void {
  * Version currently installed into runtime/zapret, or `undefined` when the
  * user has never installed an update and is still running the bundle that
  * shipped inside the installer.
- *
- * We deliberately do NOT hard-code the bundled version here. A baked-in
- * constant goes stale the moment upstream ships a release (and drifts out
- * of sync with the copy in resources/), which made LAZEYKA claim to be
- * up to date while running an old bundle. With `undefined` the comparison
- * below falls back to `0.0.0`, so the very first launch always sees the
- * newest upstream release as an update and offers it in one click.
  */
 function installedVersion(cfgInstalled?: string): string | undefined {
   const v = cfgInstalled?.trim()
@@ -134,9 +114,7 @@ export async function checkZapretUpdate(force = false): Promise<ZapretUpdateInfo
 
   let release: GhRelease
   try {
-    const res = await fetch(RELEASES_LATEST_URL, { headers: REQUEST_HEADERS })
-    if (!res.ok) throw new Error(`GitHub API ${res.status}`)
-    release = (await res.json()) as GhRelease
+    release = await fetchLatestGithubRelease(REPO)
   } catch (e) {
     // Network/rate-limit failures are non-fatal — UI just stays quiet.
     throw new Error(`Не удалось проверить обновления: ${e instanceof Error ? e.message : String(e)}`)
@@ -144,6 +122,8 @@ export async function checkZapretUpdate(force = false): Promise<ZapretUpdateInfo
 
   const latestRaw = release.tag_name ?? release.name ?? ''
   const latest = latestRaw.replace(/^v/i, '').trim() || undefined
+  const tag = release.tag_name || (latest ? `v${latest}` : '')
+  const cleanTag = latest || tag.replace(/^v/i, '')
 
   const assets = release.assets ?? []
   // Prefer the canonical "zapret-discord-youtube-*.zip" asset, fall back
@@ -152,16 +132,20 @@ export async function checkZapretUpdate(force = false): Promise<ZapretUpdateInfo
     assets.find((a) => /^zapret-discord-youtube.*\.zip$/i.test(a.name)) ??
     assets.find((a) => /\.zip$/i.test(a.name))
 
+  const assetDownloadUrl =
+    zipAsset?.browser_download_url ??
+    (tag ? `https://github.com/${REPO}/releases/download/${tag}/zapret-discord-youtube-${cleanTag}.zip` : undefined)
+
   const hasUpdate = !!latest && compareVersion(latest, compareBaseline(installed)) > 0
 
   const info: ZapretUpdateInfo = {
     installed,
     latest,
     hasUpdate,
-    assetName: zipAsset?.name,
-    assetUrl: zipAsset?.browser_download_url,
+    assetName: zipAsset?.name ?? `zapret-discord-youtube-${cleanTag}.zip`,
+    assetUrl: assetDownloadUrl,
     assetSize: zipAsset?.size,
-    releaseUrl: release.html_url,
+    releaseUrl: release.html_url ?? (tag ? `https://github.com/${REPO}/releases/tag/${tag}` : undefined),
     publishedAt: release.published_at,
     dismissed: !!latest && dismissedTag === latest
   }

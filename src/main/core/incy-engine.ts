@@ -1507,6 +1507,52 @@ export function removeIncySubscription(subscriptionId: string): {
   return { subscriptions: nextSubs, nodes: nextNodes }
 }
 
+/**
+ * Удалить отдельный узел (сервер) по ID.
+ */
+export function removeIncyNode(nodeId: string): IncyNode[] {
+  const currentNodes = loadIncyNodes()
+  const target = currentNodes.find((n) => n.id === nodeId)
+  const nextNodes = currentNodes.filter((n) => n.id !== nodeId)
+  saveIncyNodes(nextNodes)
+
+  const settings = loadIncySettings()
+  if (settings.selectedNodeId === nodeId) {
+    const nextId = nextNodes[0]?.id ?? null
+    settings.selectedNodeId = nextId
+    saveIncySettings(settings)
+    broadcastStatus({ selectedNodeId: nextId })
+  }
+
+  if (target) {
+    appendLog(`Сервер «${target.name}» удалён`)
+  }
+  return nextNodes
+}
+
+/**
+ * Очистить все узлы, добавленные вручную или не привязанные к активным подпискам.
+ */
+export function clearManualIncyNodes(): IncyNode[] {
+  const subscriptions = loadIncySubscriptions()
+  const validSubIds = new Set(subscriptions.map((s) => s.id))
+  const currentNodes = loadIncyNodes()
+  const nextNodes = currentNodes.filter((n) => n.subscriptionId && validSubIds.has(n.subscriptionId))
+  const removedCount = currentNodes.length - nextNodes.length
+  saveIncyNodes(nextNodes)
+
+  const settings = loadIncySettings()
+  if (settings.selectedNodeId && !nextNodes.some((n) => n.id === settings.selectedNodeId)) {
+    const nextId = nextNodes[0]?.id ?? null
+    settings.selectedNodeId = nextId
+    saveIncySettings(settings)
+    broadcastStatus({ selectedNodeId: nextId })
+  }
+
+  appendLog(`Удалено ${removedCount} ручных/не привязанных серверов`)
+  return nextNodes
+}
+
 export async function importIncyInput(input: string): Promise<{ addedCount: number; subscription: IncySubscription | null; nodes: IncyNode[] }> {
   const trimmed = input.trim()
   if (!trimmed) throw new Error('Пустая ссылка')
