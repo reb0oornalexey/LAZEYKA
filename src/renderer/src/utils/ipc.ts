@@ -577,6 +577,12 @@ export interface IncySettings {
   perAppProcesses?: string[]
   /** Оптимизатор маршрута: подключаться к лучшему узлу сразу после замера. */
   routeAutoConnectBest?: boolean
+  /** Автопереключение при сбое узла. */
+  autoFailover?: boolean
+  /** Узлы, запрещённые для автовыбора (ключ «имя|сервер:порт»). */
+  autoSelectExcludedKeys?: string[]
+  /** Слова в названии, исключающие узел из автовыбора (через запятую). */
+  autoSelectExcludeKeywords?: string
   preferredIp: 'AUTO' | 'IPV4' | 'IPV6'
   vpnDns: 'Cloudflare + Google' | 'Google DNS' | 'Cloudflare DNS' | 'Quad9' | 'Xbox DNS' | 'Custom'
   customDns?: string
@@ -867,6 +873,7 @@ export interface NodeGamePingInfo {
   userToNodePing: number | null
   path?: RoutePathStats
   score?: number | null
+  autoAllowed?: boolean
   error?: string
   nodeToGamePing: number
   totalPing: number | null

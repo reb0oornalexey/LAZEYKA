@@ -37,6 +37,7 @@ import {
   X
 } from 'lucide-react'
 import BasePage from '@renderer/components/base/base-page'
+import AutoSelectCard from '@renderer/components/auto-select-card'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -2710,6 +2711,15 @@ export default function IncyPage(): React.ReactElement {
               </>
             )}
 
+            {/* Автовыбор узла: автопереключение при сбое + правила, какие узлы
+                можно выбирать автоматически. Стоит прямо под кнопкой
+                подключения, чтобы переключатель не терялся. */}
+            <AutoSelectCard
+              settings={settings}
+              nodes={nodes}
+              onPatch={(patch) => handleUpdateSettings(patch, true)}
+            />
+
             {/* ТЕКУЩАЯ ПОДПИСКА (Subscription Card) */}
             <div className="space-y-2">
               <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
@@ -4470,10 +4480,10 @@ export default function IncyPage(): React.ReactElement {
                   </div>
                   <p className="text-[11px] text-muted-foreground">
                     {settings.pingProtocol === 'incy'
-                      ? 'TCP-рукопожатие с портом сервера, а для Hysteria2 — настоящее QUIC-подключение через ядро.'
+                      ? 'Сетевая задержка до сервера: TCP-рукопожатие с его портом (медиана из 3). Для Hysteria2 и WireGuard (UDP) — ICMP, а если он закрыт — реальный запрос через узел. Замер идёт мимо VPN, даже когда включён TUN.'
                       : settings.pingProtocol === 'tcp'
-                      ? 'Только TCP-рукопожатие. Самый быстрый способ, но Hysteria2-серверы без TCP покажут n/a.'
-                      : 'Настоящий запрос по тестовому URL через сам сервер. Медленнее, зато проверяет, что трафик реально идёт.'}
+                      ? 'Только сетевая задержка: TCP-рукопожатие, для UDP-узлов — ICMP. Самый быстрый способ; если ICMP закрыт, Hysteria2/WireGuard покажут n/a.'
+                      : 'Настоящий запрос по тестовому URL через сам узел. Показывает время до первого байта ответа (без времени запуска ядра) — проверяет, что трафик реально идёт.'}
                   </p>
                 </div>
 

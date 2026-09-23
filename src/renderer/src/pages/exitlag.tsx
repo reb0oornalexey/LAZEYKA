@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import BasePage from '@renderer/components/base/base-page'
+import AutoSelectCard from '@renderer/components/auto-select-card'
 import { Card, CardHeader, CardTitle, CardContent } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import { Badge } from '@renderer/components/ui/badge'
@@ -267,9 +268,14 @@ export default function ExitLagPage(): React.ReactElement {
       const res = await incyPingGameServer(targetToMeasure)
       setGamePingResult(res)
       const best = res.nodes.find((n) => n.isBest)
+      // Автоподключение выбирает лучший из РАЗРЕШЁННЫХ узлов — он может не
+      // совпадать с общим лучшим, если тот исключён правилами автовыбора.
+      const connected = res.autoConnectedNodeId
+        ? res.nodes.find((n) => n.nodeId === res.autoConnectedNodeId)
+        : undefined
       toast.success(
-        res.autoConnectedNodeId && best
-          ? `Подключено к лучшему маршруту: ${cleanServerName(best.nodeName)} — ${best.totalPing} мс`
+        connected
+          ? `Подключено: ${cleanServerName(connected.nodeName)} — ${connected.totalPing} мс`
           : best
             ? `Лучший маршрут: ${cleanServerName(best.nodeName)} — ${best.totalPing} мс`
             : 'Замер выполнен: ни один узел не быстрее прямого подключения',
@@ -641,6 +647,8 @@ export default function ExitLagPage(): React.ReactElement {
           </Card>
         )}
 
+        <AutoSelectCard settings={settings} nodes={nodes} onPatch={handleUpdateSettings} />
+
         {/* FACEIT / CS2 GAME SERVER ROUTE OPTIMIZER */}
         <Card className="cyber-card border-primary/30 bg-gradient-to-br from-card/90 via-card/70 to-primary/5 shadow-md">
           <CardHeader className="pb-3">
@@ -703,7 +711,8 @@ export default function ExitLagPage(): React.ReactElement {
                 <span className="text-[11px] leading-snug">
                   <span className="font-semibold text-foreground">Автоподключение к лучшему узлу</span>
                   <span className="block text-muted-foreground">
-                    После замера сразу переключиться на узел с лучшей оценкой. Выключено — только подсказка.
+                    После замера сразу переключиться на лучший узел из разрешённых для автовыбора (см. «Автовыбор узла»).
+                    Выключено — только подсказка.
                   </span>
                 </span>
                 <Switch
@@ -809,6 +818,15 @@ export default function ExitLagPage(): React.ReactElement {
                               {estimated && (
                                 <Badge variant="outline" className="text-[9px] px-1 py-0 text-amber-600 border-amber-500/40">
                                   оценка
+                                </Badge>
+                              )}
+                              {n.autoAllowed === false && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[9px] px-1 py-0 text-muted-foreground"
+                                  title="Узел исключён из автовыбора — вручную подключиться можно"
+                                >
+                                  не для автовыбора
                                 </Badge>
                               )}
                             </div>
