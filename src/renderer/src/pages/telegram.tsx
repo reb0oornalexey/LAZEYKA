@@ -14,6 +14,8 @@ import {
   tgwsDismissUpdate,
   tgwsGetShareLinks,
   tgwsPingDataCenters,
+  incyReapplyTunnel,
+  openExternalUrl,
   type TgwsUpdateInfo,
   type TgwsShareInfo,
   type TelegramDCPing
@@ -22,6 +24,7 @@ import { useAppConfig } from '@renderer/hooks/use-app-config'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
+import { Switch } from '@renderer/components/ui/switch'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import {
   Copy,
@@ -61,6 +64,31 @@ const TelegramPage: React.FC = () => {
   const [pingingDcs, setPingingDcs] = useState(false)
 
   const tgws = appConfig?.tgws
+  const [workerDraft, setWorkerDraft] = useState<string | null>(null)
+
+  /** Пускать TgWsProxy через VPN INCY. Туннель переподключается сам, если поднят. */
+  const handleToggleViaIncy = async (v: boolean): Promise<void> => {
+    await patchAppConfig({ tgws: { ...tgws!, viaIncy: v } })
+    const reapplied = await incyReapplyTunnel().catch(() => false)
+    toast.success(v ? 'Telegram пойдёт через VPN INCY' : 'Telegram идёт по обычным правилам INCY', {
+      description: reapplied
+        ? 'Туннель INCY переподключается, чтобы применить.'
+        : 'Начнёт действовать, когда INCY будет подключён.'
+    })
+  }
+
+  /** Сохранить свой Cloudflare Worker и перезапустить прокси, если он работает. */
+  const handleSaveWorker = async (): Promise<void> => {
+    const value = (workerDraft ?? tgws?.cfproxyWorkerDomain ?? '').trim()
+    await patchAppConfig({ tgws: { ...tgws!, cfproxyWorkerDomain: value } })
+    setWorkerDraft(null)
+    if (status.state === 'running') {
+      await tgwsRestart().catch(() => void 0)
+      toast.success('Cloudflare Worker сохранён, Telegram Proxy перезапущен')
+    } else {
+      toast.success('Cloudflare Worker сохранён')
+    }
+  }
 
   useEffect(() => {
     tgwsGetLink().then(setLink).catch(() => setLink(''))
@@ -501,6 +529,61 @@ const TelegramPage: React.FC = () => {
                 onChange={(e) => patchAppConfig({ tgws: { ...tgws!, secret: e.target.value.trim() } })}
                 className="font-mono text-xs rounded-xl bg-background/50 border-border/70"
               />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Маршрут Telegram: VPN и свой Cloudflare Worker */}
+        <Card className="cyber-card">
+          <CardHeader>
+            <CardTitle className="text-base font-bold">Маршрут Telegram</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <label className="flex items-center justify-between gap-4 cursor-pointer">
+              <span className="text-xs leading-relaxed">
+                <span className="font-semibold text-foreground block">TgWsProxy через VPN INCY</span>
+                <span className="text-muted-foreground">
+                  Когда INCY подключён, Telegram (фото, видео, кружки) идёт через VPN — в том числе в режиме ExitLag. Помогает,
+                  если провайдер режет серверы Telegram и видео зависает.
+                </span>
+              </span>
+              <Switch checked={Boolean(tgws?.viaIncy)} onCheckedChange={(v) => void handleToggleViaIncy(v)} />
+            </label>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Свой Cloudflare Worker (домен)
+              </Label>
+              <div className="flex gap-2">
+                <Input
+                  value={workerDraft ?? tgws?.cfproxyWorkerDomain ?? ''}
+                  onChange={(e) => setWorkerDraft(e.target.value)}
+                  placeholder="my-worker.example.workers.dev"
+                  className="rounded-xl bg-background/50 border-border/70 font-mono text-xs"
+                />
+                <Button
+                  size="sm"
+                  onClick={() => void handleSaveWorker()}
+                  disabled={workerDraft === null}
+                  className="shrink-0"
+                >
+                  Сохранить
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                Официальное решение Flowseal, когда общие серверы Cloudflare отвечают «503» и медиа не грузится: свой
+                бесплатный Worker используется первым среди запасных путей. Инструкция:{' '}
+                <button
+                  type="button"
+                  className="text-primary underline underline-offset-2"
+                  onClick={() =>
+                    void openExternalUrl('https://github.com/Flowseal/tg-ws-proxy/blob/main/docs/RU/CfWorker.md')
+                  }
+                >
+                  CfWorker.md
+                </button>
+                . Несколько доменов — через запятую.
+              </p>
             </div>
           </CardContent>
         </Card>

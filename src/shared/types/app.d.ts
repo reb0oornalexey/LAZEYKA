@@ -80,6 +80,10 @@ interface TgwsConfig {
   cfproxy?: boolean
   cfproxyPriority?: boolean
   cfproxyUserDomain?: string
+  /** Свои домены Cloudflare Worker для запасного пути (через запятую). */
+  cfproxyWorkerDomain?: string
+  /** Пускать TgWsProxy через туннель INCY, когда он поднят. */
+  viaIncy?: boolean
   fakeTlsDomain?: string
   binaryPath?: string     // override path to TgWsProxy_windows.exe
   // Version of the TgWsProxy_windows.exe currently installed in

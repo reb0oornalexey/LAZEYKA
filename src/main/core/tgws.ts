@@ -322,6 +322,14 @@ export function stopTgws(): Promise<void> {
   return withLock(() => stopTgwsImpl())
 }
 
+/** «a.com, b.com» → ['a.com', 'b.com'] без схемы и пути. */
+function splitDomains(v?: string): string[] {
+  return String(v ?? '')
+    .split(/[\s,;]+/)
+    .map((d) => d.trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, ''))
+    .filter((d) => /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(d))
+}
+
 /**
  * Поколение процесса TgWsProxy. Обработчики `exit`/`error` запоминают своё
  * поколение и ничего не делают, если процесс уже заменён: раньше «опоздавший»
@@ -408,7 +416,11 @@ async function startTgwsImpl(): Promise<void> {
     if (t.poolSize) args.push('--pool-size', String(t.poolSize))
     if (t.verbose) args.push('-v')
     if (t.cfproxy === false) args.push('--no-cfproxy')
-    if (t.cfproxyUserDomain) args.push('--cfproxy-domain', t.cfproxyUserDomain)
+    for (const d of splitDomains(t.cfproxyUserDomain)) args.push('--cfproxy-domain', d)
+    // Свой Cloudflare Worker — официальное решение Flowseal для случая, когда
+    // публичные CF-домены отвечают 503 (docs/RU/CfWorker.md). Пробуется
+    // первым среди запасных путей.
+    for (const d of splitDomains(t.cfproxyWorkerDomain)) args.push('--cfproxy-worker-domain', d)
     if (t.fakeTlsDomain) args.push('--fake-tls-domain', t.fakeTlsDomain)
 
     let spawnArgs: string[]

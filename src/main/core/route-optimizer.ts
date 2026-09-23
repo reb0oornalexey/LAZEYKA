@@ -32,6 +32,8 @@ import {
   getIncyStatus,
   buildSingBoxOutbound,
   buildWireGuardEndpoint,
+  connectIncyNode,
+  selectIncyNode,
   type IncyNode
 } from './incy-engine'
 import { corePreferenceFor, computePorts } from './incy-topology'
@@ -94,6 +96,8 @@ export interface RouteOptimizerResult {
   totalNodes: number
   nodes: NodeRouteResult[]
   warnings: string[]
+  /** Узел, к которому оптимизатор подключился сам (настройка «Автоподключение»). */
+  autoConnectedNodeId?: string
   // Поля старого формата.
   directPing: number | null
   directPingEstimated: boolean
@@ -598,6 +602,25 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
     const best = measured.find((m) => m.score != null)
     if (best && (directScore == null || best.score! < directScore)) best.isBest = true
 
+    // Автоподключение — только если пользователь сам включил его и лучший узел
+    // измерен по-настоящему (не «оценка»).
+    let autoConnectedNodeId: string | undefined
+    const bestNode = measured.find((m) => m.isBest)
+    if (
+      loadIncySettings().routeAutoConnectBest &&
+      bestNode &&
+      bestNode.path.method === 'a2s' &&
+      bestNode.nodeId !== getIncyStatus().activeNodeId
+    ) {
+      try {
+        selectIncyNode(bestNode.nodeId)
+        await connectIncyNode(bestNode.nodeId)
+        autoConnectedNodeId = bestNode.nodeId
+      } catch (e) {
+        warnings.push(`Автоподключение к «${bestNode.nodeName}» не удалось: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+
     return {
       targetHost: parsed.host,
       targetPort: parsed.port,
@@ -610,6 +633,7 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
       totalNodes: all.length,
       nodes: measured,
       warnings,
+      autoConnectedNodeId,
       directPing: direct.pingMs,
       directPingEstimated: false
     }

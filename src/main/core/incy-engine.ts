@@ -37,6 +37,7 @@ import { getAllBypassDomains } from './split-tunneling'
 import { setWindowsSystemProxy, clearWindowsSystemProxy } from '../utils/system-proxy'
 import { logToFile } from '../utils/file-logger'
 import { registerChild, unregisterChild } from '../utils/child-registry'
+import { getAppConfig } from '../config'
 
 export interface IncyNode {
   id: string
@@ -303,6 +304,8 @@ export interface IncySettings {
   perAppProcesses?: string[]
   /** Подробный лог ядра (уровень info). По умолчанию выключен — см. log.level. */
   verboseCoreLog?: boolean
+  /** Оптимизатор маршрута: сразу подключаться к лучшему узлу после замера. */
+  routeAutoConnectBest?: boolean
   preferredIp: 'AUTO' | 'IPV4' | 'IPV6'
   vpnDns: 'Cloudflare + Google' | 'Google DNS' | 'Cloudflare DNS' | 'Quad9' | 'Xbox DNS' | 'Custom'
   customDns?: string
@@ -470,7 +473,71 @@ const ringLogs: string[] = []
 
 /** Шумовые «ошибки» закрытия соединения клиентом — см. appendLog. */
 const CLIENT_ABORT_NOISE =
-  /connection (?:download|upload) closed|wsasend|wsarecv|forcibly closed by the remote host|aborted by the software in your host machine|use of closed network connection|context canceled/i
+  /(?:connection (?:download|upload) closed|wsasend|wsarecv)[^]*172\.19\.0\.\d+:\d+->172\.19\.0\.\d+|use of closed network connection|context canceled/i
+
+/**
+ * Повторы одной и той же строки (с точностью до номеров соединений, портов и
+ * длительностей) не чаще раза в 20 с — иначе один сбой давал сотни строк, и в
+ * отчёт попадали только они. При следующем появлении после паузы строка
+ * выводится со счётчиком пропущенных повторов.
+ */
+const DEDUPE_WINDOW_MS = 20_000
+const recentLines = new Map<string, { at: number; skipped: number }>()
+
+function dedupeKey(clean: string): string {
+  return clean
+    .replace(/\[\d+ [\d.]+(?:ms|s|m|µs)[^\]]*\]/g, '')
+    .replace(/ERROR\[\d+\]|WARN\[\d+\]|INFO\[\d+\]/g, '')
+    // «dns: exchange failed for <любое имя> IN A» — одна и та же поломка.
+    .replace(/exchange failed for \S+ IN \w+/g, 'exchange failed for * IN *')
+    .replace(/:\d{2,5}(?=[\s>-]|$)/g, ':P')
+    .replace(/\d+(?:\.\d+)?(?:ms|s)\b/g, 'N')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * Признаки неисправного узла. Раньше они тонули в потоке одинаковых ошибок —
+ * теперь раз за сессию выводится одно понятное предупреждение.
+ */
+let nodeServerIps = new Set<string>()
+const symptomHits = { reset: [] as number[], dns: [] as number[] }
+const symptomWarned = { reset: false, dns: false }
+
+export function resetSymptoms(ips: string[]): void {
+  nodeServerIps = new Set(ips)
+  symptomHits.reset = []
+  symptomHits.dns = []
+  symptomWarned.reset = false
+  symptomWarned.dns = false
+}
+
+function noteSymptoms(clean: string): void {
+  const now = Date.now()
+  const reset = /->([\d.]+):(\d+): An existing connection was forcibly closed by the remote host/.exec(clean)
+  if (reset && nodeServerIps.has(reset[1])) {
+    symptomHits.reset = [...symptomHits.reset.filter((t) => now - t < 60_000), now]
+    if (!symptomWarned.reset && symptomHits.reset.length >= 5) {
+      symptomWarned.reset = true
+      const dur = /\s([\d.]+)s\]/.exec(clean)?.[1]
+      appendLog(
+        `ВНИМАНИЕ: сервер ${reset[1]}:${reset[2]} обрывает соединения${dur ? ` примерно через ${Math.round(Number(dur))} с` : ''}. ` +
+          'Так выглядит блокировка подключения к этому узлу со стороны провайдера — трафик и DNS через него не проходят. ' +
+          'Выберите другой узел (оптимизатор на вкладке ExitLag подскажет лучший) или включите фрагментацию в настройках INCY.'
+      )
+    }
+  }
+  if (/dns: exchange failed .*(?:context deadline exceeded|timeout)/i.test(clean)) {
+    symptomHits.dns = [...symptomHits.dns.filter((t) => now - t < 30_000), now]
+    if (!symptomWarned.dns && symptomHits.dns.length >= 10) {
+      symptomWarned.dns = true
+      appendLog(
+        'ВНИМАНИЕ: DNS-запросы через VPN не получают ответа — выбранный узел не пропускает трафик. ' +
+          'Сайты не будут открываться, пока узел не заработает: смените узел.'
+      )
+    }
+  }
+}
 
 /** Включается на время сессии в режиме ExitLag — для пометки строк лога. */
 let exitLagLogTagging = false
@@ -505,11 +572,25 @@ export function appendLog(line: string, customSource?: CoreSource): void {
   const ts = new Date().toLocaleTimeString('ru-RU')
   const clean = line.replace(ANSI_ESCAPE, '').trim()
   if (!clean) return
-  // Закрытие соединения самим приложением — не ошибка и не полезная
-  // информация: при обычном сёрфинге таких строк десятки в минуту, и они
-  // забивали лог и отчёт. Пропускаем их целиком.
+  // Закрытие соединения самим приложением (ответ ему через NAT TUN-стека,
+  // 172.19.0.x) — не ошибка: при обычном сёрфинге таких строк десятки в минуту.
+  // Обрыв со стороны СЕРВЕРА (другие адреса) оставляем — это диагностика.
   if (CLIENT_ABORT_NOISE.test(clean)) return
-  ringLogs.push(`[${ts}] ${clean}`)
+  noteSymptoms(clean)
+  let text = clean
+  if (!clean.startsWith('ВНИМАНИЕ')) {
+    const key = dedupeKey(clean)
+    const now = Date.now()
+    const seen = recentLines.get(key)
+    if (seen && now - seen.at < DEDUPE_WINDOW_MS) {
+      seen.skipped++
+      return
+    }
+    if (recentLines.size > 500) recentLines.clear()
+    recentLines.set(key, { at: now, skipped: 0 })
+    if (seen && seen.skipped > 0) text = `${clean}  (+${seen.skipped} таких же строк скрыто)`
+  }
+  ringLogs.push(`[${ts}] ${text}`)
   if (ringLogs.length > MAX_LOG_LINES) ringLogs.shift()
 
   // Обрыв соединения со стороны локального приложения (вкладку закрыли,
@@ -538,9 +619,9 @@ export function appendLog(line: string, customSource?: CoreSource): void {
 
   const entry: ControllerLog = {
     time: Date.now(),
-    type,
+    type: text.startsWith('ВНИМАНИЕ') ? 'warn' : type,
     source,
-    payload: clean
+    payload: text
   }
 
   logToFile(entry)
@@ -708,6 +789,13 @@ function scheduleTunnelReapply(): void {
       appendLog(`Новые настройки не применились: ${e instanceof Error ? e.message : String(e)}`)
     })
   }, 700)
+}
+
+/** Переподключить туннель, если он поднят (настройки вне INCY, например Telegram). */
+export function reapplyIncyTunnelIfRunning(): boolean {
+  if (currentStatus.state !== 'running' || !currentStatus.activeNodeId) return false
+  scheduleTunnelReapply()
+  return true
 }
 
 /**
@@ -2736,8 +2824,11 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // LAZEYKA НЕ означает одинаковый sing-box: скачанное автообновлением ядро
     // лежит в runtime/ и имеет приоритет над вшитым в сборку. Без этой строки
     // расхождение «у меня работает, у него нет» неразрешимо.
+    let coreMinor = 13
     {
       const version = await readSingBoxVersion(bin)
+      const vm = /1\.(\d+)\./.exec(String(version))
+      if (vm) coreMinor = Number(vm[1])
       const fromRuntime = bin.startsWith(incyRuntimeDir())
       appendLog(
         `Ядро sing-box ${version} (${fromRuntime ? 'скачано автообновлением' : 'из комплекта'}: ${bin})`
@@ -2825,6 +2916,12 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // process_path_regex: `process_name` в sing-box — точное совпадение по
     // map, и `discord.exe` никогда не совпадал с реальным `Discord.exe`.
     const perAppList = normalizePerAppList(settings.perAppProcesses)
+    let tgwsViaIncy = false
+    try {
+      tgwsViaIncy = Boolean((await getAppConfig()).tgws?.viaIncy)
+    } catch {
+      /* конфиг приложения недоступен — правило просто не добавляется */
+    }
     // ExitLag (белый список) действует, как только он включён — даже с пустым
     // списком: тогда туннель поднят, но через VPN не идёт ничего, пока не
     // добавлено хотя бы одно приложение. Так ExitLag и задуман: «VPN только
@@ -2895,9 +2992,15 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     if (target.server) await resolveHost(target.server)
     if (target.rawOutbound) {
       const ro = target.rawOutbound as any
-      const cand = ro.server || ro.settings?.vnext?.[0]?.address || ro.peers?.[0]?.address
+      const cand =
+        ro.server ||
+        ro.settings?.vnext?.[0]?.address ||
+        ro.settings?.servers?.[0]?.address ||
+        ro.settings?.address ||
+        ro.peers?.[0]?.address
       if (typeof cand === 'string') await resolveHost(cand)
     }
+    resetSymptoms(resolvedServerIps)
 
     const inbounds: any[] = [mixedInbound]
     if (mode === 'tun') {
@@ -3096,7 +3199,9 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         servers: dnsServers,
         rules: dnsRules,
         strategy: domainStrategyFor(settings),
-        independent_cache: true,
+        // С sing-box 1.14 кэш DNS и так раздельный, а поле устарело
+        // (будет удалено в 1.16) — отдаём его только старым ядрам.
+        ...(coreMinor < 14 ? { independent_cache: true } : {}),
         // IP → домен по ответам DNS: доменные правила (обход RU, свои
         // правила) срабатывают и там, где sniff не смог достать имя —
         // UDP игр, QUIC, нестандартный TLS.
@@ -3320,6 +3425,16 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // напрямую. Раньше отдельного правила не было, и в полном VPN такие
     // адреса, не попавшие в on-link маршрут Windows, уезжали в туннель.
     config.route.rules.push({ ip_is_private: true, outbound: 'direct' })
+
+    // «TgWsProxy через VPN» (вкладка Telegram): прокси Telegram выходит в сеть
+    // через туннель в любом режиме — и при полном VPN, и в ExitLag.
+    if (tgwsViaIncy) {
+      const tgwsPaths = [tgwsCliPaths()?.python, tgwsBinaryPath()].filter((p): p is string => Boolean(p))
+      if (tgwsPaths.length > 0) {
+        config.route.rules.push({ process_path_regex: tgwsPaths.map(exactPathRegex), outbound: 'proxy' })
+        appendLog('Telegram (TgWsProxy) идёт через VPN — включено на вкладке Telegram.')
+      }
+    }
 
     // Порядок дальше — от явного к общему:
     //   1. правила пользователя (явный выбор сильнее встроенных списков —

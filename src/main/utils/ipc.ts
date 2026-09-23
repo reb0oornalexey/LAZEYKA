@@ -34,6 +34,7 @@ import {
   loadIncySettings,
   saveIncySettings,
   patchIncySettings,
+  reapplyIncyTunnelIfRunning,
   importIncyInput,
   fetchIncySubscription,
   refreshIncySubscription,
@@ -437,6 +438,7 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('incy:getSettings', h(() => loadIncySettings()))
   ipcMain.handle('incy:saveSettings', h((settings) => saveIncySettings(settings as any)))
   ipcMain.handle('incy:patchSettings', h((patch) => patchIncySettings((patch ?? {}) as any)))
+  ipcMain.handle('incy:reapplyTunnel', h(() => reapplyIncyTunnelIfRunning()))
   ipcMain.handle('incy:connect', h((id) => connectIncyNode(id ? String(id) : undefined)))
   ipcMain.handle('incy:disconnect', h(() => disconnectIncy()))
   ipcMain.handle('incy:selectNode', h((id) => selectIncyNode(String(id))))

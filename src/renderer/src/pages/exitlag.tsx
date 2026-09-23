@@ -268,9 +268,11 @@ export default function ExitLagPage(): React.ReactElement {
       setGamePingResult(res)
       const best = res.nodes.find((n) => n.isBest)
       toast.success(
-        best
-          ? `Лучший маршрут: ${cleanServerName(best.nodeName)} — ${best.totalPing} мс`
-          : 'Замер выполнен: ни один узел не быстрее прямого подключения',
+        res.autoConnectedNodeId && best
+          ? `Подключено к лучшему маршруту: ${cleanServerName(best.nodeName)} — ${best.totalPing} мс`
+          : best
+            ? `Лучший маршрут: ${cleanServerName(best.nodeName)} — ${best.totalPing} мс`
+            : 'Замер выполнен: ни один узел не быстрее прямого подключения',
         { style: POWER_ON_BANNER_STYLE }
       )
     } catch (err: any) {
@@ -697,6 +699,18 @@ export default function ExitLagPage(): React.ReactElement {
                 </Button>
               </div>
 
+              <label className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-card/50 px-3 py-2 cursor-pointer">
+                <span className="text-[11px] leading-snug">
+                  <span className="font-semibold text-foreground">Автоподключение к лучшему узлу</span>
+                  <span className="block text-muted-foreground">
+                    После замера сразу переключиться на узел с лучшей оценкой. Выключено — только подсказка.
+                  </span>
+                </span>
+                <Switch
+                  checked={Boolean(settings?.routeAutoConnectBest)}
+                  onCheckedChange={(v) => void handleUpdateSettings({ routeAutoConnectBest: v })}
+                />
+              </label>
               <p className="text-[10px] text-muted-foreground leading-relaxed">
                 Скопируйте строку <span className="font-mono text-foreground">connect IP:порт</span> из комнаты матча
                 Faceit или из консоли CS2. Замер: по 20 игровых запросов (A2S) напрямую и через каждый быстрый узел

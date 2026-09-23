@@ -575,6 +575,8 @@ export interface IncySettings {
   perAppProxy: boolean
   perAppMode?: 'proxy_only' | 'bypass_only'
   perAppProcesses?: string[]
+  /** Оптимизатор маршрута: подключаться к лучшему узлу сразу после замера. */
+  routeAutoConnectBest?: boolean
   preferredIp: 'AUTO' | 'IPV4' | 'IPV6'
   vpnDns: 'Cloudflare + Google' | 'Google DNS' | 'Cloudflare DNS' | 'Quad9' | 'Xbox DNS' | 'Custom'
   customDns?: string
@@ -626,6 +628,8 @@ export const incyClearManualNodes = (): Promise<IncyNode[]> => invoke('incy:clea
 export const incyGetSubscription = (): Promise<IncySubscription | null> => invoke('incy:getSubscription')
 export const incyGetSettings = (): Promise<IncySettings> => invoke('incy:getSettings')
 export const incySaveSettings = (settings: IncySettings): Promise<void> => invoke('incy:saveSettings', settings)
+/** Переподключить туннель INCY, если он поднят (true — переподключение запущено). */
+export const incyReapplyTunnel = (): Promise<boolean> => invoke('incy:reapplyTunnel')
 /** Частичное обновление; туннель сам переподключится, если изменение его касается. */
 export const incyPatchSettings = (
   patch: Partial<IncySettings>
@@ -881,6 +885,7 @@ export interface GamePingResult {
   measuredNodes?: number
   totalNodes?: number
   warnings?: string[]
+  autoConnectedNodeId?: string
   directPing: number | null
   directPingEstimated: boolean
   nodes: NodeGamePingInfo[]
