@@ -19,27 +19,19 @@
  */
 import net from 'node:net'
 import dgram from 'node:dgram'
-import dns from 'node:dns'
-import path from 'node:path'
-import { execFile, spawn, ChildProcess } from 'node:child_process'
-import { writeFileSync, unlinkSync, existsSync } from 'node:fs'
-import { randomBytes } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { performance } from 'node:perf_hooks'
 import { BrowserWindow } from 'electron'
 import {
   loadIncyNodes,
   loadIncySettings,
   getIncyStatus,
-  buildSingBoxOutbound,
-  buildWireGuardEndpoint,
   connectIncyNode,
   selectIncyNode,
+  isNodeAllowedForAuto,
   type IncyNode
 } from './incy-engine'
-import { corePreferenceFor, computePorts } from './incy-topology'
-import { buildXrayConfig } from './incy-xray'
-import { dataDir, incyBinaryPath, isXrayAvailable, xrayAssetsDir, xrayBinaryPath } from '../utils/dirs'
-import { registerChild, unregisterChild } from '../utils/child-registry'
+import { startTempCore, withCoreSlot, physicalSourceIp, tcpRtt, sleep, type TempCore } from './core-probe'
 import {
   parseGameServerAddress,
   resolveGameServerGeo,
@@ -76,6 +68,8 @@ export interface NodeRouteResult {
   savingMs: number | null
   score: number | null
   isBest: boolean
+  /** Узел разрешён правилами автовыбора. */
+  autoAllowed?: boolean
   error?: string
   // Поля старого формата — чтобы не ломать страницу INCY.
   nodeToGamePing: number
@@ -150,7 +144,6 @@ function scoreOf(p: PathStats): number | null {
   return Math.round(p.pingMs + 2 * (p.jitterMs ?? 0) + 5 * (p.lossPct ?? 0))
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 function isA2sReply(msg: Buffer): boolean {
   // FF FF FF FF + 'I' (info) / 'A' (challenge) / 'E' (multipacket split ответа)
@@ -211,12 +204,14 @@ async function a2sSeries(
 
 // ---- direct path -------------------------------------------------------------
 
-async function directA2s(ip: string, port: number): Promise<(number | null)[]> {
+async function directA2s(ip: string, port: number, sourceIp?: string): Promise<(number | null)[]> {
   const sock = dgram.createSocket('udp4')
   try {
+    // Привязка к физическому адаптеру — прямой замер идёт мимо поднятого TUN.
     await new Promise<void>((resolve, reject) => {
       sock.once('error', reject)
-      sock.bind(0, () => resolve())
+      if (sourceIp) sock.bind(0, sourceIp, () => resolve())
+      else sock.bind(0, () => resolve())
     })
     return await a2sSeries(
       sock,
@@ -231,12 +226,12 @@ async function directA2s(ip: string, port: number): Promise<(number | null)[]> {
 }
 
 /** ICMP-серия (ping.exe -n N). Разбор по «число перед TTL=» — работает в любой локали. */
-function icmpSeries(ip: string, count = 10): Promise<(number | null)[]> {
+function icmpSeries(ip: string, count = 10, sourceIp?: string): Promise<(number | null)[]> {
   return new Promise((resolve) => {
     if (process.platform !== 'win32') return resolve([null])
     execFile(
       'ping.exe',
-      ['-n', String(count), '-w', '1000', ip],
+      ['-n', String(count), '-w', '1000', ...(sourceIp ? ['-S', sourceIp] : []), ip],
       { windowsHide: true, timeout: count * 1500 + 3000, encoding: 'latin1' },
       (_err, stdout) => {
         const text = String(stdout ?? '')
@@ -250,114 +245,6 @@ function icmpSeries(ip: string, count = 10): Promise<(number | null)[]> {
 }
 
 // ---- per-node path via temporary core ---------------------------------------
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer()
-    srv.unref()
-    srv.once('error', reject)
-    srv.listen(0, '127.0.0.1', () => {
-      const addr = srv.address()
-      const port = typeof addr === 'object' && addr ? addr.port : 0
-      srv.close(() => resolve(port))
-    })
-  })
-}
-
-async function waitListening(port: number, cp: ChildProcess, timeoutMs = 6000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (cp.exitCode !== null) return false
-    const ok = await new Promise<boolean>((resolve) => {
-      const s = net.createConnection({ host: '127.0.0.1', port })
-      s.once('connect', () => {
-        s.destroy()
-        resolve(true)
-      })
-      s.once('error', () => resolve(false))
-    })
-    if (ok) return true
-    await sleep(120)
-  }
-  return false
-}
-
-interface TempCore {
-  core: 'xray' | 'sing-box'
-  port: number
-  stop: () => void
-}
-
-/** Поднять временное ядро с SOCKS5 (UDP включён) на loopback для одного узла. */
-async function startTempCore(node: IncyNode): Promise<TempCore> {
-  const settings = {
-    ...loadIncySettings(),
-    // Замер: весь трафик через узел, без блокировок и фрагментации.
-    blockUdp: false,
-    customRoutingRules: [],
-    routingMode: 'global' as const
-  }
-  const port = await freePort()
-  const pref = corePreferenceFor(node, settings)
-  const useXray = pref === 'xray' && isXrayAvailable()
-  const tmp = path.join(dataDir(), `temp-route-${randomBytes(5).toString('hex')}.json`)
-
-  let bin: string
-  let args: string[]
-  let env: NodeJS.ProcessEnv = process.env
-  if (useXray) {
-    const ports = { ...computePorts(port), bridge: port }
-    const cfg = buildXrayConfig(node, settings, {
-      ports,
-      chained: true,
-      bypassDomains: [],
-      routingMode: 'global',
-      geoTier: 'none'
-    }) as Record<string, any> | null
-    if (!cfg) throw new Error('узел не поддерживается ядром Xray')
-    cfg.log = { loglevel: 'none', access: 'none' }
-    writeFileSync(tmp, JSON.stringify(cfg), 'utf-8')
-    bin = xrayBinaryPath()
-    args = ['run', '-c', tmp]
-    env = { ...process.env, XRAY_LOCATION_ASSET: xrayAssetsDir() }
-  } else {
-    const isWg = node.protocol === 'wireguard'
-    const cfg: Record<string, unknown> = {
-      log: { level: 'error' },
-      inbounds: [{ type: 'mixed', tag: 'in', listen: '127.0.0.1', listen_port: port }],
-      ...(isWg ? { endpoints: [buildWireGuardEndpoint(node)] } : {}),
-      outbounds: isWg ? [{ type: 'direct', tag: 'direct' }] : [buildSingBoxOutbound(node, settings), { type: 'direct', tag: 'direct' }],
-      route: { final: 'proxy', auto_detect_interface: true }
-    }
-    writeFileSync(tmp, JSON.stringify(cfg), 'utf-8')
-    bin = incyBinaryPath()
-    args = ['run', '-c', tmp]
-  }
-  if (!existsSync(bin)) throw new Error(`ядро не найдено: ${bin}`)
-
-  const cp = spawn(bin, args, { windowsHide: true, env, cwd: path.dirname(bin), stdio: 'ignore' })
-  registerChild(cp.pid, bin)
-  let stopped = false
-  const stop = (): void => {
-    if (stopped) return
-    stopped = true
-    try {
-      if (process.platform === 'win32' && cp.pid) {
-        spawn('taskkill.exe', ['/F', '/T', '/PID', String(cp.pid)], { windowsHide: true }).on('error', () => void 0)
-      } else {
-        cp.kill('SIGKILL')
-      }
-    } catch { /* noop */ }
-    unregisterChild(cp.pid)
-    try { if (existsSync(tmp)) unlinkSync(tmp) } catch { /* noop */ }
-  }
-  cp.on('exit', () => unregisterChild(cp.pid))
-  if (!(await waitListening(port, cp))) {
-    stop()
-    throw new Error('ядро не запустилось')
-  }
-  return { core: useXray ? 'xray' : 'sing-box', port, stop }
-}
 
 /** SOCKS5 UDP ASSOCIATE → адрес UDP-релея. Управляющее TCP-соединение держим открытым. */
 function socksUdpAssociate(port: number): Promise<{ ctrl: net.Socket; relayPort: number }> {
@@ -424,40 +311,13 @@ async function a2sViaSocks(socksPort: number, ip: string, port: number): Promise
 
 // ---- user → node ----------------------------------------------------------------
 
-async function tcpRtt(host: string, port: number, timeoutMs = 1500): Promise<number | null> {
-  let ip = host
-  if (!net.isIP(host)) {
-    try {
-      ip = (await dns.promises.lookup(host, { family: 4 })).address
-    } catch {
-      return null
-    }
-  }
-  return new Promise((resolve) => {
-    const start = performance.now()
-    const s = net.createConnection({ host: ip, port })
-    const done = (v: number | null): void => {
-      s.destroy()
-      resolve(v)
-    }
-    s.setTimeout(timeoutMs, () => done(null))
-    s.once('connect', () => done(Math.max(1, Math.round(performance.now() - start))))
-    s.once('error', () => done(null))
-  })
-}
-
 async function userToNode(node: IncyNode): Promise<number | null> {
   // UDP-протоколы (Hysteria2, WireGuard) по TCP не ответят — берём последний
   // замер из списка узлов, если он свежий.
   if (node.protocol === 'hysteria2' || node.protocol === 'wireguard') {
     return typeof node.latencyMs === 'number' && node.latencyMs > 0 ? node.latencyMs : null
   }
-  const samples: number[] = []
-  for (let i = 0; i < 3; i++) {
-    const r = await tcpRtt(node.server, node.port)
-    if (r != null) samples.push(r)
-  }
-  return samples.length ? Math.min(...samples) : null
+  return tcpRtt(node.server, node.port, 1500, (await physicalSourceIp()) ?? undefined)
 }
 
 async function pool<T, R>(items: T[], limit: number, fn: (t: T, i: number) => Promise<R>): Promise<R[]> {
@@ -491,9 +351,11 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
     const warnings: string[] = []
 
     const incy = getIncyStatus()
-    const directViaTunnel = incy.state === 'running' && incy.connectionMode === 'tun' && !incy.exitLagActive
+    const tunUp = incy.state === 'running' && incy.connectionMode === 'tun'
+    const sourceIp = tunUp ? ((await physicalSourceIp()) ?? undefined) : undefined
+    const directViaTunnel = tunUp && !incy.exitLagActive && !sourceIp
     if (directViaTunnel) {
-      warnings.push('Сейчас включён полный VPN — «прямой» замер на самом деле идёт через него. Для честного сравнения отключите VPN или включите ExitLag.')
+      warnings.push('Сейчас включён полный VPN, и обойти его для прямого замера не удалось — «прямой» пинг может идти через VPN.')
     }
     if (loadIncySettings().blockUdp) {
       warnings.push('В настройках INCY включена «Блокировка UDP» — CS2 работает по UDP и через VPN не пойдёт. Выключите её.')
@@ -501,10 +363,10 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
 
     // 1) Прямой путь.
     progress(0, 1, 'Замер прямого пути')
-    let directSamples = await directA2s(targetIp, parsed.port)
+    let directSamples = await directA2s(targetIp, parsed.port, sourceIp)
     let direct = summarize('a2s', directSamples)
     if (direct.method === 'failed') {
-      directSamples = await icmpSeries(targetIp)
+      directSamples = await icmpSeries(targetIp, 10, sourceIp)
       direct = summarize('icmp', directSamples)
     }
 
@@ -537,14 +399,16 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
       let pathStats: PathStats = { method: 'failed', pingMs: null, jitterMs: null, lossPct: null, sent: 0, received: 0 }
       let error: string | undefined
       try {
-        const tc = await startTempCore(n)
-        temps.push(tc)
-        base.core = tc.core
-        try {
-          pathStats = summarize('a2s', await a2sViaSocks(tc.port, targetIp, parsed.port))
-        } finally {
-          tc.stop()
-        }
+        await withCoreSlot(async () => {
+          const tc = await startTempCore(n)
+          temps.push(tc)
+          base.core = tc.core
+          try {
+            pathStats = summarize('a2s', await a2sViaSocks(tc.port, targetIp, parsed.port))
+          } finally {
+            tc.stop()
+          }
+        })
       } catch (e) {
         error = e instanceof Error ? e.message : String(e)
       }
@@ -605,9 +469,16 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
     // Автоподключение — только если пользователь сам включил его и лучший узел
     // измерен по-настоящему (не «оценка»).
     let autoConnectedNodeId: string | undefined
-    const bestNode = measured.find((m) => m.isBest)
+    // Для автоподключения — лучший среди узлов, разрешённых правилами автовыбора
+    // (например, без узлов с ограниченным пакетом трафика).
+    const settingsNow = loadIncySettings()
+    const allowed = new Set(all.filter((n) => isNodeAllowedForAuto(n, settingsNow)).map((n) => n.id))
+    const bestAllowed = measured.find((m) => m.score != null && allowed.has(m.nodeId))
+    const bestNode =
+      bestAllowed && (directScore == null || bestAllowed.score! < directScore) ? bestAllowed : undefined
+    for (const m of measured) m.autoAllowed = allowed.has(m.nodeId)
     if (
-      loadIncySettings().routeAutoConnectBest &&
+      settingsNow.routeAutoConnectBest &&
       bestNode &&
       bestNode.path.method === 'a2s' &&
       bestNode.nodeId !== getIncyStatus().activeNodeId

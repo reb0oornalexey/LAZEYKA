@@ -1,10 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
 import dns from 'node:dns'
-import { performance } from 'node:perf_hooks'
 import { randomBytes } from 'node:crypto'
 import { domainToASCII } from 'node:url'
 import { ChildProcess, spawn } from 'node:child_process'
@@ -38,6 +37,7 @@ import { setWindowsSystemProxy, clearWindowsSystemProxy } from '../utils/system-
 import { logToFile } from '../utils/file-logger'
 import { registerChild, unregisterChild } from '../utils/child-registry'
 import { getAppConfig } from '../config'
+import { httpViaCore, physicalSourceIp, tcpRtt, icmpRtt } from './core-probe'
 
 export interface IncyNode {
   id: string
@@ -306,6 +306,12 @@ export interface IncySettings {
   verboseCoreLog?: boolean
   /** Оптимизатор маршрута: сразу подключаться к лучшему узлу после замера. */
   routeAutoConnectBest?: boolean
+  /** Автопереключение: узел рвёт соединения / DNS молчит → переход на рабочий узел. */
+  autoFailover?: boolean
+  /** Узлы, запрещённые для автовыбора (ключ «имя|сервер:порт» — переживает обновление подписки). */
+  autoSelectExcludedKeys?: string[]
+  /** Слова в названии узла, которые исключают его из автовыбора (через запятую). */
+  autoSelectExcludeKeywords?: string
   preferredIp: 'AUTO' | 'IPV4' | 'IPV6'
   vpnDns: 'Cloudflare + Google' | 'Google DNS' | 'Cloudflare DNS' | 'Quad9' | 'Xbox DNS' | 'Custom'
   customDns?: string
@@ -525,6 +531,7 @@ function noteSymptoms(clean: string): void {
           'Так выглядит блокировка подключения к этому узлу со стороны провайдера — трафик и DNS через него не проходят. ' +
           'Выберите другой узел (оптимизатор на вкладке ExitLag подскажет лучший) или включите фрагментацию в настройках INCY.'
       )
+      void runFailover(`узел ${reset[1]} обрывает соединения`)
     }
   }
   if (/dns: exchange failed .*(?:context deadline exceeded|timeout)/i.test(clean)) {
@@ -535,6 +542,7 @@ function noteSymptoms(clean: string): void {
         'ВНИМАНИЕ: DNS-запросы через VPN не получают ответа — выбранный узел не пропускает трафик. ' +
           'Сайты не будут открываться, пока узел не заработает: смените узел.'
       )
+      void runFailover('DNS через узел не отвечает')
     }
   }
 }
@@ -789,6 +797,95 @@ function scheduleTunnelReapply(): void {
       appendLog(`Новые настройки не применились: ${e instanceof Error ? e.message : String(e)}`)
     })
   }, 700)
+}
+
+// ---- Автовыбор узла: правила и автопереключение ----------------------------
+
+/** Устойчивый ключ узла: id меняются при каждом обновлении подписки, а этот — нет. */
+export function nodeAutoKey(n: Pick<IncyNode, 'name' | 'server' | 'port'>): string {
+  return `${n.name}|${n.server}:${n.port}`
+}
+
+/** Можно ли автоматически подключаться к этому узлу (правила пользователя). */
+export function isNodeAllowedForAuto(n: IncyNode, s: IncySettings): boolean {
+  if ((s.autoSelectExcludedKeys ?? []).includes(nodeAutoKey(n))) return false
+  const words = String(s.autoSelectExcludeKeywords ?? '')
+    .split(/[,;\n]+/)
+    .map((w) => w.trim().toLowerCase())
+    .filter(Boolean)
+  const hay = `${n.name} ${n.description ?? ''}`.toLowerCase()
+  return !words.some((w) => hay.includes(w))
+}
+
+/** Узлы, недавно признанные нерабочими, — не выбираем их повторно 10 минут. */
+const failedNodeUntil = new Map<string, number>()
+let failoverRunning = false
+let lastFailoverAt = 0
+
+/**
+ * Переключиться на рабочий узел. Кандидаты — только разрешённые правилами
+ * автовыбора. Сначала быстрый замер задержки, затем трём лучшим — настоящий
+ * запрос через узел: переходим на первый, через который трафик реально идёт.
+ */
+async function runFailover(reason: string): Promise<void> {
+  const s = loadIncySettings()
+  if (!s.autoFailover || failoverRunning || isConnecting) return
+  if (currentStatus.state !== 'running' || !currentStatus.activeNodeId) return
+  if (Date.now() - lastFailoverAt < 120_000) return
+  failoverRunning = true
+  lastFailoverAt = Date.now()
+  const from = currentStatus.activeNodeId
+  try {
+    const nodes = loadIncyNodes()
+    const fromNode = nodes.find((n) => n.id === from)
+    const fromName = fromNode?.name ?? from
+    // Ключ по имени/адресу, а не по id: id меняются при обновлении подписки.
+    if (fromNode) failedNodeUntil.set(nodeAutoKey(fromNode), Date.now() + 10 * 60_000)
+    const now = Date.now()
+    const candidates = nodes.filter(
+      (n) =>
+        n.id !== from &&
+        isNodeAllowedForAuto(n, s) &&
+        (failedNodeUntil.get(nodeAutoKey(n)) ?? 0) < now
+    )
+    if (candidates.length === 0) {
+      appendLog('ВНИМАНИЕ: автопереключение — нет подходящих узлов (проверьте правила автовыбора).')
+      return
+    }
+    appendLog(`Автопереключение: ${reason}. Ищу рабочий узел среди ${candidates.length}…`)
+    const lat: (number | null)[] = new Array(candidates.length).fill(null)
+    let next = 0
+    await Promise.all(
+      Array.from({ length: Math.min(8, candidates.length) }, async () => {
+        while (next < candidates.length) {
+          const i = next++
+          lat[i] = await pingIncyNode(candidates[i], 1500, { protocol: 'tcp' }).catch(() => null)
+        }
+      })
+    )
+    const ranked = candidates
+      .map((n, i) => ({ n, ms: lat[i] }))
+      .filter((x) => x.ms != null)
+      .sort((a, b) => a.ms! - b.ms!)
+      .slice(0, 3)
+    for (const { n } of ranked) {
+      const ok = await httpViaCore(n, s.pingTestUrl || 'https://www.gstatic.com/generate_204', 'HEAD', 6000)
+      if (ok == null) {
+        failedNodeUntil.set(nodeAutoKey(n), Date.now() + 10 * 60_000)
+        continue
+      }
+      appendLog(`Автопереключение: «${fromName}» → «${n.name}» (ответ через узел за ${ok} мс).`)
+      showSystemNotification('LAZEYKA — узел заменён', `«${fromName}» перестал работать. Подключено: «${n.name}».`)
+      selectIncyNode(n.id)
+      await connectIncyNode(n.id)
+      return
+    }
+    appendLog('ВНИМАНИЕ: автопереключение — ни один из лучших узлов не пропустил трафик. Остаёмся на текущем.')
+  } catch (e) {
+    appendLog(`Автопереключение не удалось: ${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    failoverRunning = false
+  }
 }
 
 /** Переподключить туннель, если он поднят (настройки вне INCY, например Telegram). */
@@ -1896,38 +1993,6 @@ export function setIncyConnectionMode(mode: 'tun' | 'system_proxy' | 'only_proxy
   return updated
 }
 
-const MAX_DNS_CACHE_SIZE = 200
-const hostIpCache = new Map<string, { ip: string; exp: number }>()
-
-async function resolveHostFast(host: string): Promise<string> {
-  if (net.isIP(host)) return host
-  const now = Date.now()
-  const cached = hostIpCache.get(host)
-  if (cached && now < cached.exp) return cached.ip
-
-  try {
-    // lookup, а не resolve4 — см. комментарий в connectIncyNode (устаревшие
-    // DNS-серверы c-ares после отключения туннеля).
-    const res = await withTimeout(
-      dns.promises.lookup(host, { all: true, family: 4 }).then((r) => r.map((x) => x.address)),
-      3000,
-      [] as string[]
-    )
-    if (res && res[0]) {
-      if (hostIpCache.size >= MAX_DNS_CACHE_SIZE) {
-        for (const [k, v] of hostIpCache.entries()) {
-          if (now >= v.exp || hostIpCache.size >= MAX_DNS_CACHE_SIZE) {
-            hostIpCache.delete(k)
-          }
-        }
-      }
-      hostIpCache.set(host, { ip: res[0], exp: now + 120000 })
-      return res[0]
-    }
-  } catch { /* ignore */ }
-  return host
-}
-
 /**
  * Забирает ли туннель сейчас весь трафик машины.
  *
@@ -1942,109 +2007,25 @@ function tunnelCapturesTraffic(): boolean {
 }
 
 /**
- * Общая часть измерения через отдельный процесс ядра.
+ * Задержка до узла.
  *
- * `auto_detect_interface` — ключевая строчка. Она заставляет ядро привязать
- * исходящий сокет к физическому интерфейсу (на Windows это `IP_UNICAST_IF`),
- * то есть уйти мимо TUN-адаптера, даже когда туннель поднят. Тем же приёмом
- * сам sing-box не даёт своему соединению с VPN-сервером зациклиться в
- * собственном туннеле.
- */
-function spawnProbe(
-  outbounds: Record<string, unknown>[],
-  testUrl: string,
-  timeoutMs: number
-): Promise<number | null> {
-  const bin = incyBinaryPath()
-  if (!existsSync(bin)) return Promise.resolve(null)
-
-  const tmpFile = path.join(dataDir(), `temp-ping-${randomBytes(6).toString('hex')}.json`)
-  try {
-    writeFileSync(
-      tmpFile,
-      JSON.stringify({ outbounds, route: { auto_detect_interface: true } }),
-      'utf-8'
-    )
-  } catch {
-    return Promise.resolve(null)
-  }
-
-  return new Promise((resolve) => {
-    const start = performance.now()
-    const cp = spawn(bin, ['tools', 'fetch', testUrl, '-c', tmpFile, '-o', 'proxy'], {
-      windowsHide: true
-    })
-    let done = false
-    const finish = (code: number | null): void => {
-      if (done) return
-      done = true
-      try {
-        if (existsSync(tmpFile)) unlinkSync(tmpFile)
-      } catch { /* noop */ }
-      resolve(code === 0 ? performance.now() - start : null)
-    }
-    cp.on('exit', finish)
-    cp.on('error', () => finish(-1))
-    setTimeout(() => {
-      try {
-        cp.kill('SIGTERM')
-      } catch { /* noop */ }
-      finish(-1)
-    }, timeoutMs + 1500)
-  })
-}
-
-/**
- * Сколько стоит сам замер: запуск процесса ядра плюс TLS до тестового адреса.
+ * Режимы (Настройки пинга):
+ *  - «LAZEYKA» (incy) и «TCP»: время TCP-рукопожатия с портом узла (1 RTT,
+ *    медиана трёх попыток). Для UDP-узлов (Hysteria2, WireGuard) — ICMP-пинг,
+ *    а если сервер его не отвечает (только в режиме LAZEYKA) — настоящий
+ *    запрос через узел. Когда поднят TUN, сокет привязывается к физическому
+ *    адаптеру: иначе TUN-стек отвечал на рукопожатие сам, и у всех узлов было
+ *    одно и то же число.
+ *  - «HTTP GET/HEAD»: настоящий запрос к тестовому URL через узел (временное
+ *    ядро, то же, что у туннеля) — время до первого байта ответа, как «URL test»
+ *    в Clash/sing-box. Число больше (в нём рукопожатие с узлом), но оно
+ *    доказывает, что трафик проходит.
  *
- * Раньше здесь стояла константа в 470 мс, вычитаемая из каждого результата.
- * На медленной машине или холодном диске запуск ядра занимает и секунду — и
- * все узлы получали заниженные, а то и упёртые в нижнюю границу числа. Теперь
- * накладные расходы измеряются на месте, через прямой выход, и живут минуту:
- * за это время они не успевают заметно измениться.
+ * Раньше в режиме TUN и для HTTP-режимов время считалось как «(запуск ядра +
+ * запрос через узел) − (запуск ядра + прямой запрос)», а узлы Xray-формата
+ * пересобирались для sing-box с потерей транспорта (xhttp/ws) — отсюда
+ * случайные числа и ложные «нет ответа».
  */
-let baselineCache: { at: number; value: number } | null = null
-const BASELINE_TTL_MS = 60_000
-
-async function probeBaseline(testUrl: string, timeoutMs: number): Promise<number> {
-  const now = Date.now()
-  if (baselineCache && now - baselineCache.at < BASELINE_TTL_MS) return baselineCache.value
-
-  const direct = await spawnProbe([{ type: 'direct', tag: 'proxy' }], testUrl, timeoutMs)
-  // Прямой выход не удался (нет сети до тестового адреса) — считать поправку
-  // не из чего. Ноль честнее выдуманного числа: результат будет завышен, но
-  // не занижен, и узлы всё равно сравнимы между собой.
-  const value = direct ?? 0
-  baselineCache = { at: now, value }
-  return value
-}
-
-/**
- * Measure a URL through a proxy the given core is already exposing.
- *
- * Used by the HTTP ping protocols: instead of just checking that the node's
- * port accepts a TCP connection (which a firewall or a dead-but-listening
- * server also does), this sends a real request through a throwaway sing-box
- * instance and times the response. Slower, but it answers "does this node
- * actually carry traffic", which is what the user is really asking.
- */
-async function pingViaCore(
-  node: IncyNode,
-  testUrl: string,
-  method: 'GET' | 'HEAD',
-  timeoutMs: number
-): Promise<number | null> {
-  void method // `sing-box tools fetch` всегда шлёт GET; выбор влияет на прямой путь ниже
-
-  const outbound = buildSingBoxOutbound(node, DEFAULT_INCY_SETTINGS)
-  const [through, baseline] = await Promise.all([
-    spawnProbe([{ ...outbound, tag: 'proxy' }], testUrl, timeoutMs),
-    probeBaseline(testUrl, timeoutMs)
-  ])
-  if (through === null) return null
-  return Math.max(1, Math.round(through - baseline))
-}
-
 export async function pingIncyNode(
   node: IncyNode,
   timeoutMs = 3000,
@@ -2056,132 +2037,30 @@ export async function pingIncyNode(
   const protocol = options?.protocol ?? 'incy'
   const testUrl = options?.testUrl || 'https://www.gstatic.com/generate_204'
 
-  const pingTcp = async (host: string, port: number): Promise<number | null> => {
-    const ip = await resolveHostFast(host)
-    return new Promise((resolve) => {
-      const start = performance.now()
-      const sock = new net.Socket()
-      let settled = false
-
-      sock.setTimeout(timeoutMs)
-      sock.once('connect', () => {
-        if (!settled) {
-          settled = true
-          const elapsed = Math.max(5, Math.round(performance.now() - start))
-          sock.destroy()
-          resolve(elapsed)
-        }
-      })
-      sock.once('error', () => {
-        if (!settled) {
-          settled = true
-          sock.destroy()
-          resolve(null)
-        }
-      })
-      sock.once('timeout', () => {
-        if (!settled) {
-          settled = true
-          sock.destroy()
-          resolve(null)
-        }
-      })
-      sock.connect(port, ip)
-    })
-  }
-
-  // Туннель поднят в режиме TUN — обычный TCP-замер из Node бессмыслен.
-  //
-  // Виртуальный адаптер перехватывает соединение и отвечает на него сам,
-  // локально: рукопожатие завершается мгновенно, и у всех серверов на экране
-  // оказывается одно и то же минимальное число (у нас — нижняя граница в 5 мс).
-  // Замер через отдельный процесс ядра уходит мимо TUN и меряет настоящий путь
-  // до узла. Дороже по времени, но это единственный способ получить правду,
-  // не отключая VPN.
-  if (tunnelCapturesTraffic() && (protocol === 'incy' || protocol === 'tcp')) {
-    const viaCore = await pingViaCore(node, testUrl, 'GET', timeoutMs)
-    if (viaCore !== null) return viaCore
-    // Ядра нет (портативная установка без скачанного sing-box) — лучше
-    // сомнительное число, чем пустота: узел хотя бы виден как живой.
-    if (!existsSync(incyBinaryPath())) return pingTcp(node.server, node.port)
-    return null
-  }
-
-  // HTTP protocols: measure a real request carried by the node, not just a
-  // handshake with its port. `pingTestUrl` is what the user typed in Settings.
   if (protocol === 'http_get' || protocol === 'http_head') {
-    const viaCore = await pingViaCore(
-      node,
-      testUrl,
-      protocol === 'http_head' ? 'HEAD' : 'GET',
-      timeoutMs
-    )
-    // A node the core cannot carry traffic through is genuinely unreachable —
-    // but falling back to TCP keeps a number on screen when it is the *core*
-    // that is missing (portable install without sing-box yet downloaded).
-    if (viaCore !== null || existsSync(incyBinaryPath())) return viaCore
-    return pingTcp(node.server, node.port)
+    return httpViaCore(node, testUrl, protocol === 'http_head' ? 'HEAD' : 'GET', timeoutMs + 3000)
   }
 
-  // 1. For WireGuard (UDP tunnel)
-  if (node.protocol === 'wireguard') {
-    if (!existsSync(incyBinaryPath())) return null
-    try {
-      const outbound = buildSingBoxOutbound(node, loadIncySettings())
-      const [through, baseline] = await Promise.all([
-        spawnProbe([outbound], testUrl, timeoutMs),
-        probeBaseline(testUrl, timeoutMs)
-      ])
-      if (through === null) return null
-      return Math.max(1, Math.round(through - baseline))
-    } catch {
-      return null
-    }
-  }
+  const underTun = tunnelCapturesTraffic()
+  const sourceIp = underTun ? await physicalSourceIp() : null
+  // TUN поднят, а физический адаптер не нашёлся — прямой замер соврёт;
+  // честнее проверить через узел.
+  if (underTun && !sourceIp) return httpViaCore(node, testUrl, 'HEAD', timeoutMs + 3000)
 
-  // 2. For standard TCP protocols (VLESS, Trojan, SS)
-  //
-  // 'tcp' asks for exactly this and nothing more; 'incy' is the same probe
-  // plus the QUIC handshake fallback below for Hysteria2.
-  if (node.protocol !== 'hysteria2' || protocol === 'tcp') {
-    return pingTcp(node.server, node.port)
-  }
+  // UDP-транспорты: TCP-порта у такого узла может не быть вовсе.
+  const net0 = String((node.rawOutbound as any)?.streamSettings?.network ?? '').toLowerCase()
+  const udpOnly =
+    node.protocol === 'hysteria2' ||
+    node.protocol === 'wireguard' ||
+    (node.rawOutbound as any)?.type === 'tuic' ||
+    net0 === 'kcp' ||
+    net0 === 'mkcp' ||
+    net0 === 'quic'
+  if (!udpOnly) return tcpRtt(node.server, node.port, timeoutMs, sourceIp ?? undefined)
 
-  // 2. For Hysteria2 (QUIC / UDP):
-  // First try direct TCP to port (if server opens TCP fallback)
-  const tcpRes = await pingTcp(node.server, node.port)
-  if (typeof tcpRes === 'number' && tcpRes > 0) return tcpRes
-
-  // If TCP fails (pure UDP/QUIC Hysteria2), use sing-box tools fetch to measure real QUIC handshake!
-  //
-  // Тот же путь, что и у HTTP-протоколов: отдельный процесс ядра с
-  // `auto_detect_interface`, накладные расходы вычитаются измеренные, а не
-  // взятые из головы.
-  if (!existsSync(incyBinaryPath())) return null
-
-  const [through, baseline] = await Promise.all([
-    spawnProbe(
-      [
-        {
-          type: 'hysteria2',
-          tag: 'proxy',
-          server: node.server,
-          server_port: node.port,
-          password: node.password || '',
-          tls: {
-            enabled: true,
-            server_name: node.sni || node.server,
-            alpn: ['h3']
-          }
-        }
-      ],
-      testUrl,
-      timeoutMs
-    ),
-    probeBaseline(testUrl, timeoutMs)
-  ])
-  if (through === null) return null
-  return Math.max(1, Math.round(through - baseline))
+  const icmp = await icmpRtt(node.server, timeoutMs, sourceIp)
+  if (icmp != null || protocol === 'tcp') return icmp
+  return httpViaCore(node, testUrl, 'HEAD', timeoutMs + 3000)
 }
 
 /**
@@ -3241,8 +3120,20 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // which looks exactly like "RU sites work, everything else is dead".
     // Pinning the node's hostname to local-dns breaks the cycle. Skipped when
     // the node is given as a literal IP, where no lookup happens at all.
-    if (target.server && !net.isIP(target.server)) {
-      dnsRules.push({ domain: [target.server], server: 'local-dns' })
+    // Адреса ВСЕХ узлов подписки тоже резолвим напрямую: замеры пинга,
+    // оптимизатор и автопереключение обращаются к другим узлам, пока поднят
+    // туннель. Через remote-dns их имена резолвились бы через текущий узел —
+    // а если он сломан (ради чего и нужно автопереключение), не резолвились
+    // бы вовсе, и ни один запасной узел не прошёл бы проверку.
+    const nodeDomains = [
+      ...new Set(
+        [target.server, ...loadIncyNodes().map((n) => n.server)]
+          .map((h) => String(h ?? '').trim().toLowerCase())
+          .filter((h) => h && !net.isIP(h))
+      )
+    ]
+    if (nodeDomains.length > 0) {
+      dnsRules.push({ domain: nodeDomains, server: 'local-dns' })
     }
 
     // Domains that bypass the tunnel must also resolve outside it: routing them
@@ -3343,17 +3234,20 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // to know a second process must also stay outside the tunnel. Matching on
     // the process name does exactly that, and it holds no matter what address
     // or port the provider hands out.
-    if (topology.chained) {
-      config.route.rules.push({ process_name: ['xray.exe'], outbound: 'direct' })
-    }
+    // xray.exe — всегда напрямую: в связке это ядро туннеля, а без связки —
+    // временные ядра замеров (оптимизатор, пинг, автопереключение), которые
+    // иначе ушли бы в текущий туннель и мерили бы не то.
+    // sing-box.exe — временные ядра замеров для узлов sing-box (Hysteria2,
+    // WireGuard…); собственные соединения основного ядра в TUN не попадают.
+    config.route.rules.push({ process_name: ['xray.exe', 'sing-box.exe'], outbound: 'direct' })
     if (resolvedServerIps.length > 0) {
       config.route.rules.push({
         ip_cidr: resolvedServerIps.map((ip) => `${ip}/${net.isIPv6(ip) ? 128 : 32}`),
         outbound: 'direct'
       })
     }
-    if (target.server && !net.isIP(target.server)) {
-      config.route.rules.push({ domain: [target.server], outbound: 'direct' })
+    if (nodeDomains.length > 0) {
+      config.route.rules.push({ domain: nodeDomains, outbound: 'direct' })
     }
 
     // Sniffing must be the first rule: everything below matches on the
