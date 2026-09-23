@@ -2450,7 +2450,7 @@ function reuseProviderOutbound(node: IncyNode, settings: IncySettings): any {
   return clone
 }
 
-function buildSingBoxOutbound(node: IncyNode, settings: IncySettings): any {
+export function buildSingBoxOutbound(node: IncyNode, settings: IncySettings): any {
   const verbatim = reuseProviderOutbound(node, settings)
   if (verbatim) return verbatim
 

@@ -114,7 +114,19 @@ export interface IncyTopology {
  * the complete truth) or already written for Xray go to Xray.
  */
 export function corePreferenceFor(node: IncyNode, settings?: IncySettings): IncyCore {
-  // Hysteria2 exists only in sing-box, whatever the dialect says.
+  // Hysteria2, записанный провайдером для Xray (`protocol: "hysteria"`,
+  // Xray ≥ 26), воспроизводится Xray как есть — со всеми параметрами QUIC
+  // (finalmask, congestion и т.п.). Пересборка для sing-box из нескольких
+  // полей эти параметры теряла.
+  if (
+    node.protocol === 'hysteria2' &&
+    node.rawOutboundDialect === 'xray' &&
+    (node.rawOutbound as { protocol?: string } | undefined)?.protocol === 'hysteria'
+  ) {
+    return 'xray'
+  }
+
+  // Otherwise Hysteria2 / WireGuard are served by sing-box.
   if (SINGBOX_ONLY_PROTOCOLS.has(node.protocol)) return 'sing-box'
 
   // Provider JSON: follow the dialect it was written in.
@@ -174,7 +186,7 @@ export function planTopology(
       usedPorts: [ports.front, ports.clashApi],
       reason:
         node.protocol === 'hysteria2'
-          ? 'Hysteria2 поддерживает только sing-box — Xray не запускается'
+          ? 'Hysteria2 обслуживается ядром sing-box'
           : node.protocol === 'wireguard'
           ? 'WireGuard/WARP обслуживается ядром sing-box'
           : `Протокол ${node.protocol} обслуживается ядром sing-box`

@@ -8,6 +8,7 @@ import { getAppConfig } from '../config'
 import { showSystemNotification } from '../utils/notifications'
 import { logToFile } from '../utils/file-logger'
 import { getGameFilterMode, getZapretWindowsServiceStatus } from './zapret-service-settings'
+import { createConsoleDecoder } from '../utils/console-decode'
 
 export interface StrategyDescriptor {
   file: string
@@ -541,13 +542,15 @@ async function startZapretImpl(): Promise<void> {
       GameFilter: '1024-65535'
     }
   })
+  const decodeOut = createConsoleDecoder()
+  const decodeErr = createConsoleDecoder()
   child.stdout?.on('data', (buf) => {
-    const s = buf.toString()
+    const s = decodeOut(buf)
     log('info', s.trimEnd())
     for (const line of s.split(/\r?\n/)) ingestWinwsLine(line)
   })
   child.stderr?.on('data', (buf) => {
-    const s = buf.toString()
+    const s = decodeErr(buf)
     log('warn', s.trimEnd())
     for (const line of s.split(/\r?\n/)) ingestWinwsLine(line)
   })

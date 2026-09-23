@@ -37,7 +37,9 @@ import {
   type IncySettings,
   type IncyNode,
   type RunningProcessInfo,
-  type GamePingResult
+  type GamePingResult,
+  type RoutePathStats,
+  type RouteOptimizerProgress
 } from '@renderer/utils/ipc'
 
 const POWER_ON_BANNER_STYLE = {
@@ -48,6 +50,40 @@ const POWER_ON_BANNER_STYLE = {
 
 function cleanServerName(name: string): string {
   return name.replace(/^\[.*?\]\s*/, '').trim() || name
+}
+
+/** Пинг · джиттер · потери одной строкой. Потери > 0 и большой джиттер подсвечиваются. */
+function StatTriple({
+  stats,
+  fallbackPing,
+  highlight
+}: {
+  stats?: RoutePathStats
+  fallbackPing?: number | null
+  highlight?: boolean
+}): React.ReactElement {
+  const ping = stats?.pingMs ?? fallbackPing ?? null
+  if (ping == null) return <span className="font-mono text-sm font-bold text-muted-foreground">—</span>
+  const approx = stats?.method === 'estimate' ? '≈' : ''
+  return (
+    <span className="inline-flex items-baseline gap-2 font-mono">
+      <span className={cn('text-base font-black', highlight ? 'text-emerald-500' : 'text-foreground')}>
+        {approx}
+        {ping} мс
+      </span>
+      {stats && stats.jitterMs != null && (
+        <span className={cn('text-[10px]', stats.jitterMs > 8 ? 'text-amber-500' : 'text-muted-foreground')} title="Джиттер">
+          ±{stats.jitterMs}
+        </span>
+      )}
+      {stats && stats.lossPct != null && stats.method !== 'estimate' && (
+        <span className={cn('text-[10px]', stats.lossPct > 0 ? 'text-destructive' : 'text-muted-foreground')} title="Потери">
+          {stats.lossPct}% потерь
+        </span>
+      )}
+      {stats?.method === 'icmp' && <span className="text-[9px] text-muted-foreground">ICMP</span>}
+    </span>
+  )
 }
 
 export default function ExitLagPage(): React.ReactElement {
@@ -70,6 +106,15 @@ export default function ExitLagPage(): React.ReactElement {
   const [gameServerTarget, setGameServerTarget] = useState('')
   const [measuringGamePing, setMeasuringGamePing] = useState(false)
   const [gamePingResult, setGamePingResult] = useState<GamePingResult | null>(null)
+  const [optimizerProgress, setOptimizerProgress] = useState<RouteOptimizerProgress | null>(null)
+
+  useEffect(() => {
+    const onProgress = (_e: unknown, p: RouteOptimizerProgress): void => setOptimizerProgress(p)
+    window.electron.ipcRenderer.on('exitlag:optimizerProgress', onProgress)
+    return (): void => {
+      window.electron.ipcRenderer.removeAllListeners('exitlag:optimizerProgress')
+    }
+  }, [])
   const [selectingNodeId, setSelectingNodeId] = useState<string | null>(null)
 
   const loadData = async (): Promise<void> => {
@@ -217,11 +262,15 @@ export default function ExitLagPage(): React.ReactElement {
       return
     }
     setMeasuringGamePing(true)
+    setOptimizerProgress({ done: 0, total: 1, stage: 'Подготовка' })
     try {
       const res = await incyPingGameServer(targetToMeasure)
       setGamePingResult(res)
+      const best = res.nodes.find((n) => n.isBest)
       toast.success(
-        `Замер выполнен: ${res.geo.city ? `${res.geo.city}, ` : ''}${res.geo.country || 'Европа'} (${res.nodes.length} серверов)`,
+        best
+          ? `Лучший маршрут: ${cleanServerName(best.nodeName)} — ${best.totalPing} мс`
+          : 'Замер выполнен: ни один узел не быстрее прямого подключения',
         { style: POWER_ON_BANNER_STYLE }
       )
     } catch (err: any) {
@@ -230,6 +279,7 @@ export default function ExitLagPage(): React.ReactElement {
       })
     } finally {
       setMeasuringGamePing(false)
+      setOptimizerProgress(null)
     }
   }
 
@@ -605,7 +655,7 @@ export default function ExitLagPage(): React.ReactElement {
                     </Badge>
                   </CardTitle>
                   <p className="text-[11px] text-muted-foreground mt-0.5">
-                    Рассчитайте задержку до IP игрового сервера через каждый ваш прокси и выберите сервер с минимальным пингом
+                    Реальный пинг, джиттер и потери до игрового сервера — напрямую и через каждый ваш узел
                   </p>
                 </div>
               </div>
@@ -647,31 +697,29 @@ export default function ExitLagPage(): React.ReactElement {
                 </Button>
               </div>
 
-              {/* Regional Presets */}
-              <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                <span className="text-[10px] text-muted-foreground mr-1">Популярные локации Faceit:</span>
-                {[
-                  { label: '🇩🇪 Франкфурт', ip: '162.19.141.22:27015' },
-                  { label: '🇫🇮 Хельсинки', ip: '65.109.112.50:27015' },
-                  { label: '🇸🇪 Стокгольм', ip: '185.242.115.14:27015' },
-                  { label: '🇵🇱 Варшава', ip: '51.83.136.20:27015' },
-                  { label: '🇬🇧 Лондон', ip: '51.89.234.12:27015' },
-                  { label: '🇰🇿 Казахстан', ip: '185.100.233.10:27015' },
-                  { label: '🇷🇺 Москва', ip: '185.178.208.50:27015' }
-                ].map((preset) => (
-                  <button
-                    key={preset.ip}
-                    type="button"
-                    onClick={() => {
-                      setGameServerTarget(preset.ip)
-                      void handleMeasureGamePing(preset.ip)
-                    }}
-                    className="text-[10px] px-2 py-0.5 rounded-md border border-border/60 bg-card/60 hover:bg-primary/15 hover:border-primary/50 text-foreground transition-colors cursor-pointer"
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
+              <p className="text-[10px] text-muted-foreground leading-relaxed">
+                Скопируйте строку <span className="font-mono text-foreground">connect IP:порт</span> из комнаты матча
+                Faceit или из консоли CS2. Замер: по 20 игровых запросов (A2S) напрямую и через каждый быстрый узел
+                подписки — пинг, джиттер и потери, как у самой игры.
+              </p>
+              {measuringGamePing && optimizerProgress && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
+                    <span>{optimizerProgress.stage}</span>
+                    <span>
+                      {optimizerProgress.done}/{optimizerProgress.total}
+                    </span>
+                  </div>
+                  <div className="h-1 rounded-full bg-border/50 overflow-hidden">
+                    <div
+                      className="h-full bg-primary transition-all duration-300"
+                      style={{
+                        width: `${optimizerProgress.total ? Math.round((optimizerProgress.done / optimizerProgress.total) * 100) : 0}%`
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Results */}
@@ -679,36 +727,47 @@ export default function ExitLagPage(): React.ReactElement {
               <div className="space-y-3 p-3.5 rounded-xl border border-primary/30 bg-primary/5 backdrop-blur-sm animate-in fade-in duration-200">
                 {/* Header */}
                 <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-border/40 text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-foreground">
-                      📍 {gamePingResult.geo.city ? `${gamePingResult.geo.city}, ` : ''}{gamePingResult.geo.country || 'Европа'}
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-semibold text-foreground truncate">
+                      📍 {gamePingResult.geo.city ? `${gamePingResult.geo.city}, ` : ''}
+                      {gamePingResult.geo.country || gamePingResult.targetIp}
                     </span>
-                    {gamePingResult.geo.isp && (
-                      <Badge variant="secondary" className="text-[10px] font-mono px-1.5 py-0">
-                        {gamePingResult.geo.isp}
-                      </Badge>
-                    )}
+                    <span className="text-[10px] font-mono text-muted-foreground">
+                      {gamePingResult.targetIp}:{gamePingResult.targetPort}
+                    </span>
                   </div>
                   <div className="text-[11px] text-muted-foreground flex items-center gap-2 font-mono">
-                    <span>Прямой пинг с ПК:</span>
-                    <span className="font-bold text-foreground">
-                      {gamePingResult.directPing ? `${gamePingResult.directPing} мс` : '—'}
-                    </span>
-                    {gamePingResult.directPingEstimated && (
-                      <span className="text-[9px] text-muted-foreground">(оценка)</span>
-                    )}
+                    <span>Напрямую{gamePingResult.directViaTunnel ? ' (через VPN)' : ''}:</span>
+                    <StatTriple stats={gamePingResult.direct} fallbackPing={gamePingResult.directPing} />
                   </div>
                 </div>
 
+                {(gamePingResult.warnings ?? []).map((w) => (
+                  <div
+                    key={w}
+                    className="text-[10px] leading-relaxed rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 px-2.5 py-1.5"
+                  >
+                    {w}
+                  </div>
+                ))}
+
+                {typeof gamePingResult.measuredNodes === 'number' && (
+                  <div className="text-[10px] text-muted-foreground">
+                    Проверено узлов: {gamePingResult.measuredNodes} из {gamePingResult.totalNodes} (самые быстрые до вас).
+                    Сортировка по итоговой оценке: пинг + 2×джиттер + 5 мс за каждый % потерь.
+                  </div>
+                )}
+
                 {/* Node List */}
-                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
                   {gamePingResult.nodes.length === 0 ? (
                     <div className="text-center py-6 text-xs text-muted-foreground">
-                      В вашей подписке нет доступных серверов для замера.
+                      Нет доступных узлов для замера — обновите подписку на вкладке INCY.
                     </div>
                   ) : (
                     gamePingResult.nodes.map((n) => {
-                      const isCurrentActive = status.state === 'running' && status.selectedNodeId === n.nodeId
+                      const isCurrentActive = status.state === 'running' && status.activeNodeId === n.nodeId
+                      const estimated = n.path?.method === 'estimate'
                       return (
                         <div
                           key={n.nodeId}
@@ -721,49 +780,54 @@ export default function ExitLagPage(): React.ReactElement {
                         >
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="font-semibold text-foreground truncate">
-                                {cleanServerName(n.nodeName)}
-                              </span>
+                              <span className="font-semibold text-foreground truncate">{cleanServerName(n.nodeName)}</span>
                               <Badge variant="outline" className="text-[9px] uppercase px-1 py-0">
                                 {n.protocol}
                               </Badge>
                               {n.isBest && (
-                                <Badge className="text-[9px] px-1.5 py-0 bg-emerald-500 text-white font-bold animate-pulse">
-                                  🏆 ЛУЧШИЙ ВЫБОР
-                                </Badge>
+                                <Badge className="text-[9px] px-1.5 py-0 bg-emerald-500 text-white font-bold">🏆 ЛУЧШИЙ</Badge>
                               )}
                               {isCurrentActive && (
                                 <Badge className="text-[9px] px-1.5 py-0 bg-primary/20 text-primary border border-primary/40 font-mono">
                                   ТЕКУЩИЙ
                                 </Badge>
                               )}
+                              {estimated && (
+                                <Badge variant="outline" className="text-[9px] px-1 py-0 text-amber-600 border-amber-500/40">
+                                  оценка
+                                </Badge>
+                              )}
                             </div>
                             <div className="flex items-center gap-3 text-[10px] text-muted-foreground mt-1.5 font-mono flex-wrap">
-                              <span>ПК → VPN: <b className="text-foreground">{n.userToNodePing ?? '—'} мс</b></span>
-                              <span title="Оценка по расстоянию между дата-центрами, а не замер">VPN → Игра: <b className="text-foreground">≈{n.nodeToGamePing} мс</b></span>
-                              {typeof n.savingMs === 'number' && n.savingMs > 0 && (
-                                <span className="text-emerald-500 font-bold">
-                                  ⚡ ≈{n.savingMs} мс быстрее прямого (оценка)
+                              <span>
+                                ПК → узел: <b className="text-foreground">{n.userToNodePing ?? '—'} мс</b>
+                              </span>
+                              {n.path && n.path.method === 'a2s' && (
+                                <span>
+                                  ответов: {n.path.received}/{n.path.sent}
                                 </span>
+                              )}
+                              {typeof n.savingMs === 'number' && n.savingMs > 0 && !gamePingResult.directViaTunnel && (
+                                <span className="text-emerald-500 font-bold">
+                                  ⚡ на {n.savingMs} мс быстрее прямого{estimated ? ' (оценка)' : ''}
+                                </span>
+                              )}
+                              {n.error && <span className="text-destructive">{n.error}</span>}
+                              {!n.error && n.path?.method === 'failed' && (
+                                <span className="text-destructive">сервер не ответил через этот узел</span>
                               )}
                             </div>
                           </div>
 
                           <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
-                            <div className="text-right">
-                              <div className={cn(
-                                'font-mono text-base font-black',
-                                n.isBest ? 'text-emerald-500' : 'text-foreground'
-                              )}>
-                                {n.totalPing ? `≈${n.totalPing} мс` : '—'}
-                              </div>
-                            </div>
-
+                            <StatTriple stats={n.path} fallbackPing={n.totalPing} highlight={n.isBest} />
                             <Button
                               size="sm"
                               variant={n.isBest ? 'default' : 'outline'}
-                              onClick={() => { void handleSelectNodeAndConnect(n.nodeId) }}
-                              disabled={selectingNodeId === n.nodeId}
+                              onClick={() => {
+                                void handleSelectNodeAndConnect(n.nodeId)
+                              }}
+                              disabled={selectingNodeId === n.nodeId || isCurrentActive}
                               className="text-xs h-7 px-2.5 font-semibold"
                             >
                               {selectingNodeId === n.nodeId ? (
@@ -771,7 +835,7 @@ export default function ExitLagPage(): React.ReactElement {
                               ) : isCurrentActive ? (
                                 'Подключен'
                               ) : (
-                                'Выбрать'
+                                'Подключить'
                               )}
                             </Button>
                           </div>

@@ -1,6 +1,6 @@
 import { ipcMain, app, shell, clipboard, BrowserWindow, dialog, desktopCapturer, screen } from 'electron'
 import { generateCloudflareWarpNode } from '../core/incy-warp'
-import { measureGameServerPing } from '../core/game-ping'
+import { optimizeRoute } from '../core/route-optimizer'
 import { listRunningProcesses } from './process-helper'
 import { getAppConfig, patchAppConfig } from '../config'
 import { applyTheme, setNativeTheme } from '../resolve/theme'
@@ -485,7 +485,9 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('incy:generateWarpNode', h(() => generateCloudflareWarpNode()))
 
   // ---- Game Server / Faceit CS2 Ping (ExitLag) ---------------------------
-  ipcMain.handle('incy:pingGameServer', h((target) => measureGameServerPing(String(target))))
+  // Оптимизатор маршрута: реальный замер пинга/джиттера/потерь до игрового
+  // сервера через каждый узел (см. route-optimizer.ts).
+  ipcMain.handle('incy:pingGameServer', h((target) => optimizeRoute(String(target))))
 
   // ---- Process & Dialog Helpers (Per-App Routing & QR Import) ------------
   ipcMain.handle('system:getRunningProcesses', h(() => listRunningProcesses()))

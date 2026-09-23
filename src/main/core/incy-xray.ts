@@ -290,11 +290,13 @@ function reuseProviderXrayOutbound(
   if (!clone || typeof clone !== 'object' || typeof clone.protocol !== 'string') return null
 
   clone.tag = 'proxy'
-  if (clone.mux === undefined) applyXrayMux(clone, settings)
+  // Hysteria работает поверх QUIC: mux и TCP-фрагментация к нему неприменимы.
+  const isQuic = clone.protocol === 'hysteria'
+  if (clone.mux === undefined && !isQuic) applyXrayMux(clone, settings)
 
   // Only inject the dialerProxy chain when the provider left sockopt alone —
   // overwriting their sockopt could break a deliberate binding.
-  if (hasFragment) {
+  if (hasFragment && !isQuic) {
     const stream = (clone.streamSettings ?? {}) as Record<string, unknown>
     const sockopt = (stream.sockopt ?? {}) as Record<string, unknown>
     if (sockopt.dialerProxy === undefined) {

@@ -843,12 +843,27 @@ export interface GameServerGeoInfo {
   lon?: number
 }
 
+/** Результат серии замеров одного пути (прямого или через узел). */
+export interface RoutePathStats {
+  /** a2s — игровые запросы по UDP; icmp — ping; estimate — расчёт; failed — нет ответа. */
+  method: 'a2s' | 'icmp' | 'estimate' | 'failed'
+  pingMs: number | null
+  jitterMs: number | null
+  lossPct: number | null
+  sent: number
+  received: number
+}
+
 export interface NodeGamePingInfo {
   nodeId: string
   nodeName: string
   protocol: string
   server: string
+  core?: 'xray' | 'sing-box' | null
   userToNodePing: number | null
+  path?: RoutePathStats
+  score?: number | null
+  error?: string
   nodeToGamePing: number
   totalPing: number | null
   savingMs: number | null
@@ -860,9 +875,21 @@ export interface GamePingResult {
   targetPort: number
   targetIp: string
   geo: GameServerGeoInfo
+  direct?: RoutePathStats
+  directViaTunnel?: boolean
+  a2sSupported?: boolean
+  measuredNodes?: number
+  totalNodes?: number
+  warnings?: string[]
   directPing: number | null
   directPingEstimated: boolean
   nodes: NodeGamePingInfo[]
+}
+
+export interface RouteOptimizerProgress {
+  done: number
+  total: number
+  stage: string
 }
 
 export const incyPingGameServer = (target: string): Promise<GamePingResult> =>
