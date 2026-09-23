@@ -573,7 +573,9 @@ export function buildXrayConfig(
   const finalTag = opts.routingMode === 'direct' ? 'direct' : 'proxy'
 
   return {
-    log: { loglevel: 'warning' },
+    // access: 'none' — журнал доступа Xray («accepted tcp:… -> proxy») писал
+    // строку на каждое соединение и забивал вкладку «Логи».
+    log: { loglevel: 'warning', access: 'none' },
     inbounds,
     outbounds,
     routing: {

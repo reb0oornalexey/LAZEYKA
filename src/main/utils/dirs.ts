@@ -1,5 +1,6 @@
 import { is } from '@electron-toolkit/utils'
-import { existsSync, mkdirSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, statSync } from 'fs'
+import { spawnSync } from 'child_process'
 import { app } from 'electron'
 import path from 'path'
 
@@ -131,10 +132,49 @@ export function incyRuntimeDir(): string {
   return path.join(runtimeDir(), 'incy')
 }
 
+const coreVersionCache = new Map<string, { mtimeMs: number; version: number[] | null }>()
+
+/** Версия ядра `x.y.z` (sing-box/xray печатают её в `version`). Кэш по mtime. */
+function coreVersion(bin: string): number[] | null {
+  try {
+    const mtimeMs = statSync(bin).mtimeMs
+    const cached = coreVersionCache.get(bin)
+    if (cached && cached.mtimeMs === mtimeMs) return cached.version
+    const r = spawnSync(bin, ['version'], { windowsHide: true, timeout: 5000, encoding: 'utf8' })
+    const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(r.stdout ?? ''))
+    const version = m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
+    coreVersionCache.set(bin, { mtimeMs, version })
+    return version
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Скачанное автообновлением ядро (runtime) или вшитое в сборку — берём НОВЕЕ.
+ *
+ * Раньше runtime выигрывал всегда. Автообновление ставит только патчи в
+ * пределах своей минорной версии, поэтому однажды скачанный sing-box 1.11.x
+ * навсегда перекрывал вшитый 1.13: конфиг в новом формате отклонялся, и
+ * каждое подключение шло через откат «dns-legacy».
+ */
+function newerCore(runtimePath: string, bundledPath: string): string {
+  const hasRt = existsSync(runtimePath)
+  const hasBundled = existsSync(bundledPath)
+  if (!hasRt) return bundledPath
+  if (!hasBundled) return runtimePath
+  const a = coreVersion(runtimePath)
+  const b = coreVersion(bundledPath)
+  if (!a) return bundledPath
+  if (!b) return runtimePath
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i] ? runtimePath : bundledPath
+  }
+  return runtimePath
+}
+
 export function incyBinaryPath(): string {
-  const rt = path.join(incyRuntimeDir(), 'sing-box.exe')
-  if (existsSync(rt)) return rt
-  return path.join(resourcesDir(), 'incy', 'sing-box.exe')
+  return newerCore(path.join(incyRuntimeDir(), 'sing-box.exe'), path.join(resourcesDir(), 'incy', 'sing-box.exe'))
 }
 
 /**
@@ -148,9 +188,7 @@ export function incyBinaryPath(): string {
  * %APPDATA%\lazeyka\runtime\incy wins over the one shipped in the installer.
  */
 export function xrayBinaryPath(): string {
-  const rt = path.join(incyRuntimeDir(), 'xray.exe')
-  if (existsSync(rt)) return rt
-  return path.join(resourcesDir(), 'incy', 'xray.exe')
+  return newerCore(path.join(incyRuntimeDir(), 'xray.exe'), path.join(resourcesDir(), 'incy', 'xray.exe'))
 }
 
 /** True when an xray.exe is available in either location. */

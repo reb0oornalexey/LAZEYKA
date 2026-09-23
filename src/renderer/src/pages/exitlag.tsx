@@ -298,7 +298,11 @@ export default function ExitLagPage(): React.ReactElement {
                   <Badge variant="outline" className="text-[10px] px-2 py-0 border-primary/50 text-primary font-mono font-bold uppercase bg-primary/10">
                     КИЛЛЕР-ФИЧА
                   </Badge>
-                  {exitLagRunning ? (
+                  {exitLagRunning && appCount === 0 ? (
+                    <Badge className="text-[10px] px-2 py-0 bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-semibold">
+                      РАБОТАЕТ · СПИСОК ПУСТ — VPN НИГДЕ
+                    </Badge>
+                  ) : exitLagRunning ? (
                     <Badge className="text-[10px] px-2 py-0 bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-semibold">
                       РАБОТАЕТ ({status.exitLagApps?.length ?? appCount} {appWord})
                     </Badge>

@@ -15,7 +15,9 @@ import {
   incyRuntimeDir,
   isXrayAvailable,
   xrayAssetsDir,
-  xrayBinaryPath
+  xrayBinaryPath,
+  tgwsCliPaths,
+  tgwsBinaryPath
 } from '../utils/dirs'
 import { planTopology, usesXrayOnlyFeatures } from './incy-topology'
 import { buildXrayConfig } from './incy-xray'
@@ -480,8 +482,11 @@ const MAX_LOG_LINES = 250
  * built from these lines) showed things like `ESC[33mWARNESC[0m[0000] …`
  * instead of readable text. Strip them at the entry point.
  */
+// Символ ESC записан как \x1b: раньше в исходнике он потерялся и превратился
+// в пробел — цветовые коды (`[31mERROR[0m`) оставались в логе, а у строк Xray
+// откусывалось « [s» («ocks-bridge -> proxy]»).
 // eslint-disable-next-line no-control-regex
-const ANSI_ESCAPE = / \[[0-9;]*[A-Za-z]/g
+const ANSI_ESCAPE = /\x1b\[[0-9;]*[A-Za-z]/g
 
 function broadcastLogEntry(entry: ControllerLog): void {
   for (const w of BrowserWindow.getAllWindows()) {
@@ -492,9 +497,18 @@ function broadcastLogEntry(entry: ControllerLog): void {
 }
 
 export function appendLog(line: string, customSource?: CoreSource): void {
+  // Ядро отдаёт вывод кусками по несколько строк — классифицируем построчно.
+  if (line.includes('\n')) {
+    for (const part of line.split(/\r?\n/)) if (part.trim()) appendLog(part, customSource)
+    return
+  }
   const ts = new Date().toLocaleTimeString('ru-RU')
   const clean = line.replace(ANSI_ESCAPE, '').trim()
   if (!clean) return
+  // Закрытие соединения самим приложением — не ошибка и не полезная
+  // информация: при обычном сёрфинге таких строк десятки в минуту, и они
+  // забивали лог и отчёт. Пропускаем их целиком.
+  if (CLIENT_ABORT_NOISE.test(clean)) return
   ringLogs.push(`[${ts}] ${clean}`)
   if (ringLogs.length > MAX_LOG_LINES) ringLogs.shift()
 
@@ -1804,7 +1818,13 @@ async function resolveHostFast(host: string): Promise<string> {
   if (cached && now < cached.exp) return cached.ip
 
   try {
-    const res = await dns.promises.resolve4(host)
+    // lookup, а не resolve4 — см. комментарий в connectIncyNode (устаревшие
+    // DNS-серверы c-ares после отключения туннеля).
+    const res = await withTimeout(
+      dns.promises.lookup(host, { all: true, family: 4 }).then((r) => r.map((x) => x.address)),
+      3000,
+      [] as string[]
+    )
     if (res && res[0]) {
       if (hostIpCache.size >= MAX_DNS_CACHE_SIZE) {
         for (const [k, v] of hostIpCache.entries()) {
@@ -2293,6 +2313,21 @@ export function normalizePerAppList(list?: string[]): string[] {
  * `(?i)(?:^|[\\/])(?:discord\.exe|cs2\.exe)$`. Совпадает с полным путём
  * процесса, который sing-box получает на Windows.
  */
+/** Клиенты Telegram, которые ходят в сеть через локальный TgWsProxy. */
+const TELEGRAM_CLIENTS: ReadonlySet<string> = new Set([
+  'telegram.exe',
+  'ayugram.exe',
+  'kotatogram.exe',
+  '64gram.exe',
+  'unigram.exe',
+  'materialgram.exe'
+])
+
+/** Регулярное выражение на точный путь процесса, без учёта регистра. */
+export function exactPathRegex(fullPath: string): string {
+  return `(?i)^${fullPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
+}
+
 export function perAppPathRegex(names: string[]): string {
   const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   return `(?i)(?:^|[\\\\/])(?:${escaped.join('|')})$`
@@ -2790,11 +2825,15 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // process_path_regex: `process_name` в sing-box — точное совпадение по
     // map, и `discord.exe` никогда не совпадал с реальным `Discord.exe`.
     const perAppList = normalizePerAppList(settings.perAppProcesses)
-    const isPerAppActive = Boolean(settings.perAppProxy) && perAppList.length > 0
-    const isExitLagWhitelist = isPerAppActive && settings.perAppMode !== 'bypass_only'
-    if (settings.perAppProxy && perAppList.length === 0) {
+    // ExitLag (белый список) действует, как только он включён — даже с пустым
+    // списком: тогда туннель поднят, но через VPN не идёт ничего, пока не
+    // добавлено хотя бы одно приложение. Так ExitLag и задуман: «VPN только
+    // для того, что в списке».
+    const isExitLagWhitelist = Boolean(settings.perAppProxy) && settings.perAppMode !== 'bypass_only'
+    const isPerAppActive = isExitLagWhitelist || (Boolean(settings.perAppProxy) && perAppList.length > 0)
+    if (isExitLagWhitelist && perAppList.length === 0) {
       appendLog(
-        'ExitLag включён, но список приложений пуст — туннель работает как обычный VPN. ' +
+        'ExitLag включён, список приложений пуст — через VPN сейчас ничего не идёт. ' +
           'Добавьте игры/программы на вкладке ExitLag.'
       )
     }
@@ -2834,7 +2873,17 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       try {
         // Без таймаута c-ares при недоступном DNS ждёт десятки секунд, и всё
         // это время кнопка висит в «Подключение…».
-        const records = await withTimeout(dns.promises.resolve4(host), 3000, [] as string[])
+        //
+        // lookup (системный резолвер Windows), а не resolve4 (c-ares): c-ares
+        // запоминает DNS-серверы при старте приложения. Если LAZEYKA стартовала
+        // с поднятым туннелем, в этом списке остаётся DNS TUN-адаптера, который
+        // после отключения мёртв, — каждое переподключение ждало таймаута
+        // (в логах: 6 секунд тишины перед «FakeIP пропущен»).
+        const records = await withTimeout(
+          dns.promises.lookup(host, { all: true, family: 4 }).then((r) => r.map((x) => x.address)),
+          3000,
+          [] as string[]
+        )
         for (const ip of records) {
           if (net.isIP(ip) && !resolvedServerIps.includes(ip)) resolvedServerIps.push(ip)
         }
@@ -3100,7 +3149,17 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     }
 
     // Одно регулярное выражение на весь список, без учёта регистра.
-    const perAppMatcher = isPerAppActive ? { process_path_regex: [perAppPathRegex(perAppList)] } : null
+    //
+    // Telegram в белом списке: сам Telegram ходит только на локальный
+    // TgWsProxy (127.0.0.1), а наружу соединения открывает процесс TgWsProxy.
+    // Без него «Telegram через VPN» ничего бы не менял — добавляем его путь.
+    const perAppRegexes: string[] = []
+    if (perAppList.length > 0) perAppRegexes.push(perAppPathRegex(perAppList))
+    if (perAppList.some((n) => TELEGRAM_CLIENTS.has(n.toLowerCase()))) {
+      const tgwsPaths = [tgwsCliPaths()?.python, tgwsBinaryPath()].filter((p): p is string => Boolean(p))
+      for (const p of tgwsPaths) perAppRegexes.push(exactPathRegex(p))
+    }
+    const perAppMatcher = perAppRegexes.length > 0 ? { process_path_regex: perAppRegexes } : null
 
     // ExitLag DNS:
     // In proxy_only mode, whitelisted processes resolve via remote-dns (through
@@ -3301,12 +3360,14 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         // Whitelist mode (ExitLag):
         // Only listed processes go through proxy, everything else stays direct.
         config.route.rules.push({ ...perAppMatcher, outbound: 'proxy' })
-        // All unidentified packets and unlisted processes default to direct
-        config.route.final = 'direct'
         appendLog(
           `Режим ExitLag: через VPN идут только ${perAppList.length} прилож. (${perAppList.join(', ')}), остальной трафик — напрямую`
         )
       }
+    }
+    if (isExitLagWhitelist) {
+      // Всё, что не в списке (и пакеты, чей процесс не определился), — напрямую.
+      config.route.final = 'direct'
     }
 
     if (settings.blockUdp) {

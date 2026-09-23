@@ -17,6 +17,7 @@ import {
   zapretCheckUpdate, tgwsCheckUpdate,
   incyConnect,
   getAppVersion,
+  appCheckUpdateNow,
   openExternalUrl,
   type ZapretUpdateInfo, type TgwsUpdateInfo
 } from '@renderer/utils/ipc'
@@ -27,7 +28,7 @@ import {
   formatInstalledVersion
 } from '@renderer/lib/utils'
 import LiveTrafficMonitor from '@renderer/components/live-traffic-monitor'
-import { RotateCw, Sparkles, X, LifeBuoy } from 'lucide-react'
+import { RotateCw, Sparkles, X, LifeBuoy, RefreshCw } from 'lucide-react'
 import Power from '@renderer/assets/on_icon.svg'
 import Pause from '@renderer/assets/pause_icon.svg'
 
@@ -335,6 +336,35 @@ const Home: React.FC = () => {
 
   // App version pulled from main via IPC (electron's app.getVersion()
   const [appVersion, setAppVersion] = useState<string | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+
+  /**
+   * Проверка обновлений LAZEYKA прямо с главной — мимо кэша. Если версия
+   * вышла, окно установки откроется само (оно слушает тот же результат).
+   * Отвечаем в любом случае, чтобы было видно, что проверка прошла.
+   */
+  const handleCheckUpdate = async (): Promise<void> => {
+    if (checkingUpdate) return
+    setCheckingUpdate(true)
+    try {
+      const info = await appCheckUpdateNow()
+      if (info.hasUpdate && info.assetUrl) {
+        toast.success(`Доступна версия ${info.latest}`, { description: 'Окно с установкой сейчас откроется.' })
+      } else if (info.hasUpdate) {
+        toast.warning(`Версия ${info.latest} вышла, но установщик к релизу не приложен`, {
+          description: 'Скачайте её вручную со страницы релизов.'
+        })
+      } else {
+        toast.success(`Установлена последняя версия — ${info.installed}`)
+      }
+    } catch (e: unknown) {
+      toast.error('Не удалось проверить обновления', {
+        description: e instanceof Error ? e.message : String(e)
+      })
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
   useEffect(() => {
     getAppVersion().then(setAppVersion).catch(() => setAppVersion(null))
   }, [])
@@ -479,6 +509,16 @@ const Home: React.FC = () => {
           >
             <LifeBuoy className="size-3 group-hover:scale-110 transition-transform" />
             <span>Поддержка</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleCheckUpdate()}
+            disabled={checkingUpdate}
+            title="Проверить, вышла ли новая версия LAZEYKA"
+            className="group cursor-pointer inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-md border border-primary/30 bg-primary/10 text-primary hover:border-primary/60 hover:bg-primary/20 disabled:opacity-60 disabled:cursor-wait transition-colors backdrop-blur-sm"
+          >
+            <RefreshCw className={`size-3 ${checkingUpdate ? 'animate-spin' : 'group-hover:rotate-90 transition-transform'}`} />
+            <span>{checkingUpdate ? 'Проверяем…' : 'Проверить обновления'}</span>
           </button>
           {appVersion && (
             <span className="pointer-events-none text-[11px] font-mono text-muted-foreground/60 bg-background/50 backdrop-blur-sm px-2 py-0.5 rounded-md border border-border/30">

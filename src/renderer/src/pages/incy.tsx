@@ -2271,15 +2271,16 @@ export default function IncyPage(): React.ReactElement {
             приложений. Без явного предупреждения это выглядело как «INCY
             перестал работать». */}
         {settings?.perAppProxy &&
-          settings.perAppMode !== 'bypass_only' &&
-          (settings.perAppProcesses?.length ?? 0) > 0 && (
+          settings.perAppMode !== 'bypass_only' && (
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs">
               <div className="flex items-start gap-2 min-w-0">
                 <Gamepad2 className="size-4 text-amber-500 shrink-0 mt-0.5" />
                 <div className="min-w-0">
                   <div className="font-semibold text-foreground">Включён режим ExitLag</div>
                   <div className="text-muted-foreground truncate">
-                    Через VPN идут только: {(settings.perAppProcesses ?? []).join(', ')}. Остальной трафик — напрямую.
+                    {(settings.perAppProcesses?.length ?? 0) > 0
+                      ? `Через VPN идут только: ${(settings.perAppProcesses ?? []).join(', ')}. Остальной трафик — напрямую.`
+                      : 'Список приложений пуст — через VPN сейчас ничего не идёт. Добавьте приложения на вкладке ExitLag.'}
                   </div>
                 </div>
               </div>
