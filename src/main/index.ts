@@ -16,6 +16,7 @@ import { restoreAutopilotFromConfig } from './core/zapret-autopilot'
 import { restoreGameModeFromConfig } from './core/game-mode'
 import { clearWindowsSystemProxy } from './utils/system-proxy'
 import { appLog } from './utils/app-logger'
+import { killRegisteredChildrenSync } from './utils/child-registry'
 import { enableAutoRun, disableAutoRun } from './sys/autoRun'
 import { isRunningAsAdmin } from './utils/elevation'
 import { pruneOldLogs, flushLogsNow, currentLogFilePath } from './utils/file-logger'
@@ -96,6 +97,10 @@ app.whenReady().then(async () => {
   try {
     await initPromise
     appLog('info', 'Инициализация завершена')
+    // Сироты прошлой сессии (краш, «Снять задачу»): осиротевший sing-box
+    // держит TUN и порты, и новый туннель не поднимается.
+    const reaped = killRegisteredChildrenSync()
+    if (reaped > 0) appLog('warn', `Завершено процессов, оставшихся от прошлого запуска: ${reaped}`)
   } catch (e) {
     appLog('error', `Ошибка инициализации: ${e}`)
     dialog.showErrorBox('LAZEYKA init failed', `${e}`)
@@ -296,12 +301,11 @@ function syncKillChildren(): void {
     // 1) Kill known LAZEYKA child binaries by image name. /T tears down the
     //    whole process tree, so cfproxy worker pools spawned by TgWsProxy
     //    and winws.exe sub-children are caught too.
-    spawnSync('taskkill.exe', ['/F', '/IM', 'TgWsProxy_windows.exe', '/T'], opts)
+    //    sing-box, xray и TgWsProxy — строго по своим PID из реестра: раньше
+    //    здесь был `taskkill /IM sing-box.exe`, который заодно убивал ядра
+    //    Hiddify / v2rayN / NekoBox и отдельно запущенный Flowseal.
+    killRegisteredChildrenSync()
     spawnSync('taskkill.exe', ['/F', '/IM', 'winws.exe', '/T'], opts)
-    spawnSync('taskkill.exe', ['/F', '/IM', 'sing-box.exe', '/T'], opts)
-    // Second INCY core. Without this an Xray left over from a hard kill keeps
-    // holding the proxy port, and the next launch fails to bind it.
-    spawnSync('taskkill.exe', ['/F', '/IM', 'xray.exe', '/T'], opts)
 
     // 2) Stop the WinDivert kernel driver — unloads it from memory so the
     //    `.sys` file is no longer locked on disk. We DO NOT delete the

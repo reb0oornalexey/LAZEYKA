@@ -1,4 +1,4 @@
-import { ipcMain, app, shell, clipboard, BrowserWindow, dialog, desktopCapturer } from 'electron'
+import { ipcMain, app, shell, clipboard, BrowserWindow, dialog, desktopCapturer, screen } from 'electron'
 import { generateCloudflareWarpNode } from '../core/incy-warp'
 import { measureGameServerPing } from '../core/game-ping'
 import { listRunningProcesses } from './process-helper'
@@ -33,6 +33,7 @@ import {
   saveIncySubscription,
   loadIncySettings,
   saveIncySettings,
+  patchIncySettings,
   importIncyInput,
   fetchIncySubscription,
   refreshIncySubscription,
@@ -435,6 +436,7 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('incy:getStatus', h(() => getIncyStatus()))
   ipcMain.handle('incy:getSettings', h(() => loadIncySettings()))
   ipcMain.handle('incy:saveSettings', h((settings) => saveIncySettings(settings as any)))
+  ipcMain.handle('incy:patchSettings', h((patch) => patchIncySettings((patch ?? {}) as any)))
   ipcMain.handle('incy:connect', h((id) => connectIncyNode(id ? String(id) : undefined)))
   ipcMain.handle('incy:disconnect', h(() => disconnectIncy()))
   ipcMain.handle('incy:selectNode', h((id) => selectIncyNode(String(id))))
@@ -512,6 +514,19 @@ export function registerIpcMainHandlers(): void {
     const img = clipboard.readImage()
     if (img.isEmpty()) return null
     return img.toDataURL()
+  }))
+  // Все мониторы в родном разрешении. Раньше снимался только первичный экран
+  // миниатюрой 1920×1080: на 4K картинка сжималась вдвое, и мелкий QR-код не
+  // распознавался, а QR на втором мониторе не находился вовсе.
+  ipcMain.handle('system:captureScreens', h(async () => {
+    const displays = screen.getAllDisplays()
+    const maxW = Math.max(...displays.map((d) => Math.round(d.size.width * d.scaleFactor)), 1920)
+    const maxH = Math.max(...displays.map((d) => Math.round(d.size.height * d.scaleFactor)), 1080)
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: maxW, height: maxH }
+    })
+    return sources.filter((s) => !s.thumbnail.isEmpty()).map((s) => s.thumbnail.toDataURL())
   }))
   ipcMain.handle('system:captureScreen', h(async () => {
     const sources = await desktopCapturer.getSources({

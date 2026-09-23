@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, rmSync, renameSync, readdirSync } from 'fs'
 import path from 'path'
 import { spawn } from 'child_process'
-import { tgwsRuntimeDir, resourcesDir } from '../utils/dirs'
+import AdmZip from 'adm-zip'
+import { tgwsRuntimeDir, tgwsCliPaths } from '../utils/dirs'
 import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 import { stopTgws, getTgwsStatus } from './tgws'
@@ -80,6 +81,10 @@ function backgroundRefresh(): void {
  * inside the installer.
  */
 function installedVersion(cfgInstalled?: string): string | undefined {
+  // Версия консольного пакета Flowseal (файл VERSION рядом с `proxy/`) —
+  // именно он и запускается. Поле конфига осталось от tray-бинарника.
+  const cli = tgwsCliPaths()
+  if (cli?.version) return cli.version
   const v = cfgInstalled?.trim()
   return v ? v : undefined
 }
@@ -116,16 +121,11 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
   const latest = latestRaw.replace(/^v/i, '').trim() || undefined
   const tag = release.tag_name || (latest ? `v${latest}` : '')
 
-  // Strict 64-bit Windows binary match: prioritize official TgWsProxy_windows.exe
-  const assets = release.assets ?? []
-  const winAsset =
-    assets.find((a) => a.name === 'TgWsProxy_windows.exe') ??
-    assets.find((a) => /^TgWsProxy_windows\.exe$/i.test(a.name)) ??
-    assets.find((a) => /^TgWsProxy_windows.*\.exe$/i.test(a.name) && !/32bit|7_|arm64/i.test(a.name))
-
-  const assetDownloadUrl =
-    winAsset?.browser_download_url ??
-    (tag ? `https://github.com/${REPO}/releases/download/${tag}/TgWsProxy_windows.exe` : undefined)
+  // Обновляется не tray-бинарник, а пакет `proxy` из исходников релиза:
+  // LAZEYKA запускает консольную точку входа Flowseal во встроенном Python
+  // (без трея и окон). Архив исходников есть у каждого тега.
+  const winAsset = undefined as { name: string; size?: number } | undefined
+  const assetDownloadUrl = tag ? `https://github.com/${REPO}/archive/refs/tags/${tag}.zip` : undefined
 
   const hasUpdate = latest ? compareVersion(latest, compareBaseline(installed)) > 0 : false
 
@@ -133,7 +133,7 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
     installed,
     latest,
     hasUpdate,
-    assetName: winAsset?.name ?? 'TgWsProxy_windows.exe',
+    assetName: winAsset?.name ?? `tg-ws-proxy-${tag}.zip`,
     assetUrl: assetDownloadUrl,
     assetSize: winAsset?.size,
     releaseUrl: release.html_url ?? (tag ? `https://github.com/${REPO}/releases/tag/${tag}` : undefined),
@@ -146,81 +146,115 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
   return info
 }
 
-// Best-effort kill of any leftover TgWsProxy* processes so we can cleanly
-// overwrite/manage files without Windows file locking errors.
-async function killStaleTgwsBinary(): Promise<void> {
-  if (process.platform !== 'win32') return
-  await new Promise<void>((resolve) => {
-    const p = spawn('taskkill.exe', ['/F', '/IM', 'TgWsProxy*', '/T'], {
-      windowsHide: true
+/** Проверить, что Python импортирует новый пакет (нет новых зависимостей). */
+function smokeTestPackage(appDir: string): Promise<string | null> {
+  const cli = tgwsCliPaths()
+  if (!cli) return Promise.resolve('встроенный Python не найден')
+  return new Promise((resolve) => {
+    const code =
+      'import sys; sys.path.insert(0, sys.argv[1]); import proxy.tg_ws_proxy as m; ' +
+      'assert hasattr(m, "main"); print("ok")'
+    const p = spawn(cli.python, ['-B', '-X', 'utf8', '-c', code, appDir], { windowsHide: true })
+    let out = ''
+    let err = ''
+    p.stdout?.on('data', (d) => (out += d.toString()))
+    p.stderr?.on('data', (d) => (err += d.toString()))
+    const timer = setTimeout(() => {
+      try { p.kill() } catch { /* noop */ }
+      resolve('таймаут проверки')
+    }, 15000)
+    p.on('error', (e) => {
+      clearTimeout(timer)
+      resolve(e.message)
     })
-    p.on('exit', () => resolve())
-    p.on('error', () => resolve())
+    p.on('exit', (c) => {
+      clearTimeout(timer)
+      resolve(c === 0 && out.includes('ok') ? null : (err.trim().split(/\r?\n/).pop() || `код ${c}`))
+    })
   })
-  await new Promise((r) => setTimeout(r, 400))
 }
 
+/**
+ * Установить новую версию Flowseal tg-ws-proxy.
+ *
+ * Скачивается архив исходников тега, из него берётся только пакет `proxy/`,
+ * проверяется импортом во встроенном Python и атомарно подменяет прежний
+ * (с откатом при ошибке). Раньше tray-бинарник записывался поверх рабочего
+ * без проверки и без возможности отката.
+ */
 export async function installTgwsUpdate(
   assetUrl: string,
   expectedVersion?: string
 ): Promise<{ installedVersion?: string; sizeBytes: number }> {
-  if (!assetUrl) throw new Error('Пустая ссылка на бинарник')
-
-  // Stop the currently-running tgws first
-  const st = getTgwsStatus()
-  if (st.state === 'running' || st.state === 'starting') {
-    try { await stopTgws() } catch { /* best-effort */ }
-  }
-  await killStaleTgwsBinary()
+  if (!assetUrl) throw new Error('Пустая ссылка на обновление')
+  if (!tgwsCliPaths()) throw new Error('Встроенный Python для TgWsProxy не найден — переустановите LAZEYKA')
 
   let buf: Buffer
   try {
     const res = await fetch(assetUrl, { headers: { 'User-Agent': REQUEST_HEADERS['User-Agent'] } })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const ab = await res.arrayBuffer()
-    buf = Buffer.from(ab)
+    buf = Buffer.from(await res.arrayBuffer())
   } catch (e) {
     throw new Error(`Не удалось скачать TgWsProxy: ${e instanceof Error ? e.message : String(e)}`)
   }
 
-  if (buf.length < 1024 * 1024) {
-    throw new Error(`Загруженный файл слишком маленький (${buf.length} байт)`)
-  }
+  const root = tgwsRuntimeDir()
+  mkdirSync(root, { recursive: true })
+  const staging = path.join(root, `app.new-${Date.now()}`)
+  const target = path.join(root, 'app')
+  const backup = path.join(root, 'app.bak')
 
-  // Validate PE header in-memory without spawning process
-  if (buf[0] !== 0x4d || buf[1] !== 0x5a) {
-    throw new Error('Файл не является исполняемым файлом Windows (нет сигнатуры MZ)')
-  }
-  const peOffset = buf.readUInt32LE(0x3c)
-  if (buf.subarray(peOffset, peOffset + 4).toString('ascii') !== 'PE\0\0') {
-    throw new Error('Повреждённый PE-заголовок файла')
-  }
-  const machine = buf.readUInt16LE(peOffset + 4)
-  if (machine !== 0x8664) {
-    throw new Error('Несовместимая архитектура (требуется x64)')
-  }
-
-  const dir = tgwsRuntimeDir()
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-
-  const dest = path.join(dir, 'TgWsProxy_windows.exe')
   try {
-    if (existsSync(dest)) unlinkSync(dest)
-  } catch {
-    await killStaleTgwsBinary()
-    try { if (existsSync(dest)) unlinkSync(dest) } catch { /* ok */ }
+    const zip = new AdmZip(buf)
+    let files = 0
+    for (const entry of zip.getEntries()) {
+      // <repo>-<tag>/proxy/... → proxy/...
+      const m = /^[^/]+\/(proxy\/.+|LICENSE)$/.exec(entry.entryName)
+      if (!m || entry.isDirectory) continue
+      const rel = m[1]
+      if (rel.includes('..')) continue
+      const dest = path.join(staging, ...rel.split('/'))
+      mkdirSync(path.dirname(dest), { recursive: true })
+      writeFileSync(dest, entry.getData())
+      files++
+    }
+    if (files === 0 || !existsSync(path.join(staging, 'proxy', 'tg_ws_proxy.py'))) {
+      throw new Error('в архиве нет пакета proxy/tg_ws_proxy.py')
+    }
+    if (expectedVersion) writeFileSync(path.join(staging, 'VERSION'), expectedVersion.replace(/^v/i, ''), 'utf-8')
+
+    const smoke = await smokeTestPackage(staging)
+    if (smoke) throw new Error(`новая версия не запускается во встроенном Python: ${smoke}`)
+  } catch (e) {
+    try { rmSync(staging, { recursive: true, force: true }) } catch { /* noop */ }
+    throw new Error(`Обновление TgWsProxy отклонено: ${e instanceof Error ? e.message : String(e)}`)
   }
 
-  writeFileSync(dest, buf)
-
-  // Also update bundled binary if writable in development
+  // Остановить прокси, подменить пакет, при сбое — вернуть прежний.
+  const st = getTgwsStatus()
+  const wasRunning = st.state === 'running' || st.state === 'starting'
+  if (wasRunning) {
+    try { await stopTgws() } catch { /* best-effort */ }
+  }
   try {
-    const bundled = path.join(resourcesDir(), 'tgws', 'TgWsProxy_windows.exe')
-    writeFileSync(bundled, buf)
-  } catch { /* ok in production */ }
+    rmSync(backup, { recursive: true, force: true })
+    if (existsSync(target)) renameSync(target, backup)
+    renameSync(staging, target)
+    rmSync(backup, { recursive: true, force: true })
+  } catch (e) {
+    try {
+      if (!existsSync(target) && existsSync(backup)) renameSync(backup, target)
+    } catch { /* noop */ }
+    throw new Error(`Не удалось заменить файлы TgWsProxy: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  // Подчистить незавершённые попытки прошлых запусков.
+  for (const name of readdirSync(root)) {
+    if (name.startsWith('app.new-')) {
+      try { rmSync(path.join(root, name), { recursive: true, force: true }) } catch { /* noop */ }
+    }
+  }
 
-  // Persist version + clear "Later" dismissal.
-  const finalVersion = expectedVersion || undefined
+  const finalVersion = expectedVersion?.replace(/^v/i, '') || undefined
   const cfg = await getAppConfig()
   const next: TgwsConfig = {
     ...(cfg.tgws as TgwsConfig),
@@ -228,6 +262,11 @@ export async function installTgwsUpdate(
     dismissedUpdateTag: undefined
   }
   await patchAppConfig({ tgws: next })
+
+  if (wasRunning) {
+    const { startTgws } = await import('./tgws')
+    await startTgws().catch(() => void 0)
+  }
 
   cache = null
   return { installedVersion: finalVersion, sizeBytes: buf.length }

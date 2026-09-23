@@ -24,6 +24,8 @@ interface CloudflareRegResponse {
     account_type: string
   }
   config: {
+    /** 3 байта в base64 — поле `reserved` протокола WARP. */
+    client_id?: string
     peers: Array<{
       public_key: string
       endpoint: {
@@ -114,6 +116,16 @@ export async function generateCloudflareWarpNode(): Promise<{ node: IncyNode; al
 
   const endpoint = WARP_ENDPOINTS[0]
 
+  // `reserved` — три байта client_id. Сервер WARP опознаёт по ним клиента;
+  // без них часть узлов принимает рукопожатие, но не передаёт трафик.
+  let reserved: number[] | undefined
+  try {
+    const bytes = Buffer.from(config.client_id ?? '', 'base64')
+    if (bytes.length === 3) reserved = [bytes[0], bytes[1], bytes[2]]
+  } catch {
+    /* поле необязательное */
+  }
+
   const addressList = [`${v4}/32`]
   if (v6) {
     addressList.push(`${v6}/128`)
@@ -139,7 +151,8 @@ export async function generateCloudflareWarpNode(): Promise<{ node: IncyNode; al
           address: endpoint.ip,
           port: endpoint.port,
           public_key: peerPublicKey,
-          allowed_ips: ['0.0.0.0/0', '::/0']
+          allowed_ips: ['0.0.0.0/0', '::/0'],
+          ...(reserved ? { reserved } : {})
         }
       ],
       mtu: 1280

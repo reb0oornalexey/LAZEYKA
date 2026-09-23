@@ -1,5 +1,5 @@
 import { is } from '@electron-toolkit/utils'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { app } from 'electron'
 import path from 'path'
 
@@ -81,6 +81,36 @@ export function tgwsBinaryPath(): string {
   const rt = path.join(tgwsRuntimeDir(), 'TgWsProxy_windows.exe')
   if (existsSync(rt)) return rt
   return path.join(resourcesDir(), 'tgws', 'TgWsProxy_windows.exe')
+}
+
+/**
+ * Консольный TgWsProxy: встроенный Python + пакет `proxy` из исходников Flowseal.
+ *
+ * Официальный `TgWsProxy_windows.exe` — это tray-приложение (`windows.py`):
+ * аргументы командной строки оно игнорирует, читает `%APPDATA%\TgWsProxy\
+ * config.json` и всегда рисует иконку в трее. Консольная точка входа
+ * (`proxy/tg_ws_proxy.py`) понимает `--dc-ip`, `--no-cfproxy` и т.д. и не
+ * создаёт никаких окон.
+ *
+ * Обновлённый пакет `proxy` (автообновление) лежит в runtime и имеет приоритет
+ * над встроенным.
+ */
+export function tgwsCliPaths(): { python: string; bootstrap: string; appDir: string; version: string } | null {
+  const pyDir = path.join(resourcesDir(), 'tgws', 'python')
+  const python = path.join(pyDir, 'python.exe')
+  const bootstrap = path.join(pyDir, 'lazeyka_tgws.py')
+  if (!existsSync(python) || !existsSync(bootstrap)) return null
+  const runtimeApp = path.join(tgwsRuntimeDir(), 'app')
+  const bundledApp = path.join(resourcesDir(), 'tgws', 'app')
+  const appDir = existsSync(path.join(runtimeApp, 'proxy', 'tg_ws_proxy.py')) ? runtimeApp : bundledApp
+  if (!existsSync(path.join(appDir, 'proxy', 'tg_ws_proxy.py'))) return null
+  let version = ''
+  try {
+    version = readFileSync(path.join(appDir, 'VERSION'), 'utf-8').trim()
+  } catch {
+    /* unknown */
+  }
+  return { python, bootstrap, appDir, version }
 }
 
 export function zapretRuntimeDir(): string {

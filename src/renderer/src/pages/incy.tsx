@@ -50,7 +50,7 @@ import {
   incyClearManualNodes,
   incyGetSubscription,
   incyGetSettings,
-  incySaveSettings,
+  incyPatchSettings,
   incyImportInput,
   incyRefreshSubscription,
   incyGetSubscriptions,
@@ -81,7 +81,7 @@ import {
   dialogPickExecutable,
   dialogPickImageFile,
   clipboardReadImage,
-  systemCaptureScreen,
+  systemCaptureScreens,
   type GamePingResult,
   type RunningProcessInfo,
   type GeoCategoryInfo,
@@ -1564,12 +1564,16 @@ export default function IncyPage(): React.ReactElement {
     setScanningQr(true)
     try {
       toast.info('Сканирование экрана...', { duration: 1500 })
-      const dataUrl = await systemCaptureScreen()
-      if (!dataUrl) {
+      const shots = await systemCaptureScreens()
+      if (!shots || shots.length === 0) {
         toast.error('Не удалось сделать снимок экрана')
         return
       }
-      const code = await decodeQrFromDataUrl(dataUrl)
+      let code: string | null = null
+      for (const shot of shots) {
+        code = await decodeQrFromDataUrl(shot)
+        if (code) break
+      }
       if (!code) {
         toast.error('QR-код не найден на экране', {
           description: 'Убедитесь, что QR-код виден на мониторе, или скопируйте его область в буфер обмена.'
@@ -1609,28 +1613,20 @@ export default function IncyPage(): React.ReactElement {
   }
 
   // ---- Per-App Routing (ExitLag-style) --------------------------------------
+  // Туннель переподключается сам (patchIncySettings в main), если он поднят.
   const handleTogglePerAppProxy = async (enabled: boolean): Promise<void> => {
     await handleUpdateSettings({ perAppProxy: enabled })
-    if (isConnected) {
-      toast.info('Настройки применены', {
-        description: 'Переподключитесь к серверу для обновления маршрутов ядра.'
-      })
-    }
   }
 
   const handleSetPerAppMode = async (mode: 'proxy_only' | 'bypass_only'): Promise<void> => {
     await handleUpdateSettings({ perAppMode: mode })
-    if (isConnected) {
-      toast.info('Режим изменён', {
-        description: 'Переподключитесь к серверу для применения.'
-      })
-    }
   }
 
   const handleAddPerAppProcess = async (processName: string): Promise<void> => {
-    const raw = processName.trim()
-    if (!raw || !settings) return
-    const cleaned = raw.toLowerCase().endsWith('.exe') ? raw.toLowerCase() : `${raw.toLowerCase()}.exe`
+    // Исходный регистр сохраняется — сравнение без учёта регистра делает ядро.
+    const base = processName.trim().split(/[\\/]/).pop()?.trim() ?? ''
+    if (!base || !settings) return
+    const cleaned = /\.exe$/i.test(base) ? base : `${base}.exe`
     const current = settings.perAppProcesses ?? []
     if (current.some((p) => p.toLowerCase() === cleaned)) {
       toast.info('Это приложение уже в списке')
@@ -1680,11 +1676,14 @@ export default function IncyPage(): React.ReactElement {
 
   const handleApplyPreset = async (presetApps: string[]): Promise<void> => {
     if (!settings) return
-    const current = new Set((settings.perAppProcesses ?? []).map((p) => p.toLowerCase()))
+    const list = [...(settings.perAppProcesses ?? [])]
+    const seen = new Set(list.map((p) => p.toLowerCase()))
     for (const app of presetApps) {
-      current.add(app.toLowerCase())
+      if (seen.has(app.toLowerCase())) continue
+      seen.add(app.toLowerCase())
+      list.push(app)
     }
-    await handleUpdateSettings({ perAppProcesses: Array.from(current) })
+    await handleUpdateSettings({ perAppProcesses: list })
     toast.success('Пресет применён')
   }
 
@@ -1970,9 +1969,11 @@ export default function IncyPage(): React.ReactElement {
     silent = false
   ): Promise<void> => {
     if (!settings) return
-    const next = { ...settings, ...patch }
-    setSettings(next)
-    await incySaveSettings(next)
+    setSettings({ ...settings, ...patch })
+    // Только изменённые поля: полный объект, загруженный при открытии
+    // страницы, затирал изменения со страницы ExitLag и из трея.
+    const res = await incyPatchSettings(patch)
+    setSettings(res.settings)
     if (patch.connectionStyle) {
       window.scrollTo({ top: 0, behavior: 'instant' })
       const container = document.querySelector('main')
@@ -2265,6 +2266,37 @@ export default function IncyPage(): React.ReactElement {
   return (
     <BasePage title="INCY Proxy Engine">
       <div className="px-4 pb-6 space-y-4">
+        {/* ExitLag и INCY — один туннель. Если на вкладке ExitLag включён
+            белый список, «Подключить» здесь поднимает VPN только для этих
+            приложений. Без явного предупреждения это выглядело как «INCY
+            перестал работать». */}
+        {settings?.perAppProxy &&
+          settings.perAppMode !== 'bypass_only' &&
+          (settings.perAppProcesses?.length ?? 0) > 0 && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs">
+              <div className="flex items-start gap-2 min-w-0">
+                <Gamepad2 className="size-4 text-amber-500 shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <div className="font-semibold text-foreground">Включён режим ExitLag</div>
+                  <div className="text-muted-foreground truncate">
+                    Через VPN идут только: {(settings.perAppProcesses ?? []).join(', ')}. Остальной трафик — напрямую.
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => navigate('/exitlag')}>
+                  Настроить
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => void handleUpdateSettings({ perAppProxy: false })}
+                >
+                  Весь трафик через VPN
+                </Button>
+              </div>
+            </div>
+          )}
         {/* Navigation Tabs Bar */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/40 pb-3">
           <div className="flex flex-wrap items-center gap-1 bg-card/60 backdrop-blur-xl p-1 rounded-xl border border-border/60">

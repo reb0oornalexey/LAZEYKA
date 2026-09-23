@@ -7,7 +7,21 @@ import { MapPin, Trash2, ClipboardCopy, Download } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
 import BasePage from '@renderer/components/base/base-page'
 import { toast } from 'sonner'
-import { zapretStatus, tgwsStatus, incyGetStatus, incyGetSettings } from '@renderer/utils/ipc'
+import { zapretStatus, tgwsStatus, incyGetStatus, incyGetSettings, getAppVersion } from '@renderer/utils/ipc'
+
+/**
+ * Отчёт уходит в чат поддержки — секреты из него убираются: MTProto-секрет
+ * TgWsProxy (по нему к прокси может подключиться кто угодно), UUID/пароли
+ * узлов из ссылок vless://, trojan:// и т.п.
+ */
+function redact(text: string): string {
+  return text
+    .replace(/(--secret\s+)[0-9a-f]{32}/gi, '$1********')
+    .replace(/(secret=)(?:dd|ee)?[0-9a-f]{32}[0-9a-f]*/gi, '$1********')
+    .replace(/(Secret:\s*)[0-9a-f]{32}/gi, '$1********')
+    .replace(/\b(vless|vmess|trojan|ss|hysteria2|hy2|tuic):\/\/[^\s"'<>]+/gi, '$1://********')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '********-uuid')
+}
 
 const sourceColor: Record<CoreSource, string> = {
   tgws: 'text-sky-700 dark:text-sky-400 font-semibold',
@@ -31,7 +45,8 @@ async function generateDiagnosticReport(): Promise<string> {
 
   lines.push('# 📋 Диагностический отчёт LAZEYKA')
   lines.push(`**Дата:** ${new Date().toLocaleString('ru-RU')}`)
-  lines.push(`**ОС:** ${navigator.platform}`)
+  lines.push(`**LAZEYKA:** ${await getAppVersion().catch(() => '?')}`)
+  lines.push(`**ОС:** ${navigator.userAgent.match(/Windows NT [\d.]+/)?.[0] ?? navigator.platform}`)
   lines.push(`**User-Agent:** ${navigator.userAgent}`)
   lines.push('')
 
@@ -57,6 +72,9 @@ async function generateDiagnosticReport(): Promise<string> {
     lines.push('## INCY')
     lines.push(`- Состояние: ${incyStatus?.state ?? 'неизвестно'}`)
     lines.push(`- Режим подключения: ${incyStatus?.connectionMode ?? 'неизвестно'}`)
+    lines.push(
+      `- ExitLag в этой сессии: ${incyStatus?.exitLagActive ? `да (${(incyStatus.exitLagApps ?? []).join(', ')})` : 'нет'}`
+    )
     lines.push(`- Выбранный узел: ${incyStatus?.selectedNodeId ?? 'нет'}`)
     lines.push(`- Активный узел: ${incyStatus?.activeNodeId ?? 'нет'}`)
     if (incyStatus?.lastError) lines.push(`- Ошибка: ${incyStatus.lastError}`)
@@ -84,7 +102,7 @@ async function generateDiagnosticReport(): Promise<string> {
   }
   lines.push('```')
 
-  return lines.join('\n')
+  return redact(lines.join('\n'))
 }
 
 const Logs: React.FC = () => {

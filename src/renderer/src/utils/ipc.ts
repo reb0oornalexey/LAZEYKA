@@ -614,6 +614,9 @@ export interface IncyStatus {
   routingMode: 'bypass-ru' | 'global' | 'direct'
   connectedAt?: number
   lastError?: string
+  /** Сессия поднята в режиме ExitLag (через VPN только приложения из списка). */
+  exitLagActive?: boolean
+  exitLagApps?: string[]
 }
 
 export const incyGetNodes = (): Promise<IncyNode[]> => invoke('incy:getNodes')
@@ -623,6 +626,10 @@ export const incyClearManualNodes = (): Promise<IncyNode[]> => invoke('incy:clea
 export const incyGetSubscription = (): Promise<IncySubscription | null> => invoke('incy:getSubscription')
 export const incyGetSettings = (): Promise<IncySettings> => invoke('incy:getSettings')
 export const incySaveSettings = (settings: IncySettings): Promise<void> => invoke('incy:saveSettings', settings)
+/** Частичное обновление; туннель сам переподключится, если изменение его касается. */
+export const incyPatchSettings = (
+  patch: Partial<IncySettings>
+): Promise<{ settings: IncySettings; reapplied: boolean }> => invoke('incy:patchSettings', patch)
 export const incyImportInput = (
   input: string
 ): Promise<{ addedCount: number; subscription: IncySubscription | null; nodes: IncyNode[] }> =>
@@ -818,6 +825,8 @@ export const clipboardReadImage = (): Promise<string | null> =>
   invoke('clipboard:readImage')
 export const systemCaptureScreen = (): Promise<string | null> =>
   invoke('system:captureScreen')
+/** Снимки всех мониторов в родном разрешении. */
+export const systemCaptureScreens = (): Promise<string[]> => invoke('system:captureScreens')
 
 // ---- Game Server / Faceit Ping (ExitLag) ------------------------------------
 export interface GameServerGeoInfo {

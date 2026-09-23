@@ -6,6 +6,7 @@ import net from 'node:net'
 import dns from 'node:dns'
 import { performance } from 'node:perf_hooks'
 import { randomBytes } from 'node:crypto'
+import { domainToASCII } from 'node:url'
 import { ChildProcess, spawn } from 'node:child_process'
 import { BrowserWindow } from 'electron'
 import {
@@ -33,6 +34,7 @@ import { showSystemNotification } from '../utils/notifications'
 import { getAllBypassDomains } from './split-tunneling'
 import { setWindowsSystemProxy, clearWindowsSystemProxy } from '../utils/system-proxy'
 import { logToFile } from '../utils/file-logger'
+import { registerChild, unregisterChild } from '../utils/child-registry'
 
 export interface IncyNode {
   id: string
@@ -297,6 +299,8 @@ export interface IncySettings {
   perAppProxy: boolean
   perAppMode?: 'proxy_only' | 'bypass_only'
   perAppProcesses?: string[]
+  /** Подробный лог ядра (уровень info). По умолчанию выключен — см. log.level. */
+  verboseCoreLog?: boolean
   preferredIp: 'AUTO' | 'IPV4' | 'IPV6'
   vpnDns: 'Cloudflare + Google' | 'Google DNS' | 'Cloudflare DNS' | 'Quad9' | 'Xbox DNS' | 'Custom'
   customDns?: string
@@ -421,6 +425,15 @@ export interface IncyStatus {
   routingMode: 'bypass-ru' | 'global' | 'direct'
   connectedAt?: number
   lastError?: string
+  /**
+   * Сессия поднята в режиме ExitLag: через VPN идут только приложения из
+   * белого списка. Нужен интерфейсу для индикатора в сайдбаре и для
+   * предупреждения на странице INCY — без него пользователь, включивший
+   * ExitLag однажды, видел «VPN подключён», хотя всё шло напрямую.
+   */
+  exitLagActive?: boolean
+  /** Приложения, которые в этой сессии идут через туннель (ExitLag). */
+  exitLagApps?: string[]
 }
 
 let child: ChildProcess | null = null
@@ -435,6 +448,13 @@ let currentStatus: IncyStatus = {
 export function broadcastStatus(next?: Partial<IncyStatus>): IncyStatus {
   if (next) {
     currentStatus = { ...currentStatus, ...next }
+    // Любое состояние, кроме «работает»/«подключается», закрывает сессию
+    // ExitLag — иначе индикатор в сайдбаре остался бы гореть после обрыва.
+    if (next.state && next.state !== 'running' && next.state !== 'connecting') {
+      currentStatus.exitLagActive = false
+      currentStatus.exitLagApps = []
+      exitLagLogTagging = false
+    }
   }
   for (const w of BrowserWindow.getAllWindows()) {
     if (!w.isDestroyed()) {
@@ -445,6 +465,13 @@ export function broadcastStatus(next?: Partial<IncyStatus>): IncyStatus {
 }
 
 const ringLogs: string[] = []
+
+/** Шумовые «ошибки» закрытия соединения клиентом — см. appendLog. */
+const CLIENT_ABORT_NOISE =
+  /connection (?:download|upload) closed|wsasend|wsarecv|forcibly closed by the remote host|aborted by the software in your host machine|use of closed network connection|context canceled/i
+
+/** Включается на время сессии в режиме ExitLag — для пометки строк лога. */
+let exitLagLogTagging = false
 const MAX_LOG_LINES = 250
 
 /**
@@ -471,24 +498,27 @@ export function appendLog(line: string, customSource?: CoreSource): void {
   ringLogs.push(`[${ts}] ${clean}`)
   if (ringLogs.length > MAX_LOG_LINES) ringLogs.shift()
 
+  // Обрыв соединения со стороны локального приложения (вкладку закрыли,
+  // клиент отменил запрос) sing-box пишет с уровнем ERROR, хотя это штатная
+  // ситуация: `write tcp4 172.19.0.1:X->172.19.0.2:Y: wsasend: … aborted` —
+  // это ответ самому приложению через NAT TUN-стека, а не сбой туннеля.
+  const isClientAbort = CLIENT_ABORT_NOISE.test(clean)
   const isErr =
-    clean.includes('ERROR') ||
-    clean.includes('fatal') ||
-    clean.includes('FATAL') ||
-    (clean.includes('[ERR]') && !clean.includes('INFO') && !clean.includes('WARN'))
-  const isWarn = clean.includes('WARN') || clean.includes('warn')
+    !isClientAbort &&
+    (clean.includes('ERROR') ||
+      clean.includes('fatal') ||
+      clean.includes('FATAL') ||
+      (clean.includes('[ERR]') && !clean.includes('INFO') && !clean.includes('WARN')))
+  const isWarn = !isClientAbort && (clean.includes('WARN') || clean.includes('warn'))
   const type: ControllerLog['type'] = isErr ? 'error' : isWarn ? 'warn' : 'info'
 
-  let isExitLag = false
-  try {
-    const settings = loadIncySettings()
-    isExitLag =
-      clean.includes('ExitLag') ||
-      clean.includes('приложений') ||
-      (Boolean(settings.perAppProxy) && (clean.includes('process') || clean.includes('router:')))
-  } catch {
-    /* fallback to incy */
-  }
+  // Раньше здесь на КАЖДУЮ строку лога синхронно читался и парсился файл
+  // настроек — в main-потоке, при логе sing-box уровня info (несколько строк на
+  // соединение). Флаг ExitLag теперь хранится в памяти и выставляется при
+  // подключении.
+  const isExitLag =
+    clean.includes('ExitLag') ||
+    (exitLagLogTagging && (clean.includes('process') || clean.includes('router:')))
 
   const source: CoreSource = customSource || (isExitLag ? 'exitlag' : 'incy')
 
@@ -619,6 +649,73 @@ export function saveIncySettings(settings: IncySettings): void {
   const file = incySettingsFile()
   mkdirSync(path.dirname(file), { recursive: true })
   writeFileSync(file, JSON.stringify(settings, null, 2), 'utf-8')
+}
+
+/** Поля настроек, от которых зависит конфиг поднятого туннеля. */
+const TUNNEL_SETTING_KEYS: ReadonlySet<string> = new Set([
+  'perAppProxy',
+  'perAppMode',
+  'perAppProcesses',
+  'routingMode',
+  'customRoutingRules',
+  'connectionMode',
+  'sniffing',
+  'hijackDns',
+  'blockUdp',
+  'extraBypassAddresses',
+  'geoRoutingEnabled',
+  'vpnDns',
+  'remoteDns',
+  'localDns',
+  'preferredIp',
+  'verboseCoreLog'
+])
+
+let reapplyTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Переподключить живой туннель, чтобы он подхватил новые настройки.
+ *
+ * С задержкой и слиянием: добавление трёх игр подряд даёт одно
+ * переподключение, а не три, и последнее изменение не теряется из-за
+ * защиты «подключение уже выполняется».
+ */
+function scheduleTunnelReapply(): void {
+  if (reapplyTimer) clearTimeout(reapplyTimer)
+  reapplyTimer = setTimeout(() => {
+    reapplyTimer = null
+    if (currentStatus.state !== 'running' || !currentStatus.activeNodeId) return
+    if (isConnecting) {
+      scheduleTunnelReapply()
+      return
+    }
+    appendLog('Настройки туннеля изменились — переподключение для применения.')
+    connectIncyNode(currentStatus.activeNodeId).catch((e) => {
+      appendLog(`Новые настройки не применились: ${e instanceof Error ? e.message : String(e)}`)
+    })
+  }, 700)
+}
+
+/**
+ * Частичное обновление настроек на стороне main.
+ *
+ * Страницы (INCY, ExitLag) раньше отправляли ВЕСЬ объект настроек, загруженный
+ * при открытии страницы, — и затирали то, что за это время поменяли на другой
+ * вкладке, в трее или по deeplink. Теперь в main уходит только изменённая
+ * часть, а если она влияет на туннель — он переподключается сам.
+ */
+export function patchIncySettings(patch: Partial<IncySettings>): { settings: IncySettings; reapplied: boolean } {
+  const current = loadIncySettings()
+  const next = { ...current, ...patch } as IncySettings
+  saveIncySettings(next)
+  const touchesTunnel = Object.keys(patch).some(
+    (k) =>
+      TUNNEL_SETTING_KEYS.has(k) &&
+      JSON.stringify((current as any)[k]) !== JSON.stringify((patch as any)[k])
+  )
+  const reapplied = touchesTunnel && currentStatus.state === 'running' && Boolean(currentStatus.activeNodeId)
+  if (reapplied) scheduleTunnelReapply()
+  return { settings: loadIncySettings(), reapplied }
 }
 
 /**
@@ -2090,7 +2187,11 @@ function resolveDnsPair(settings: IncySettings): { remote: string; local: string
 function domainStrategyFor(settings: IncySettings): string {
   if (settings.preferredIp === 'IPV4') return 'ipv4_only'
   if (settings.preferredIp === 'IPV6') return 'ipv6_only'
-  return 'prefer_ipv4'
+  // AUTO → только IPv4. TUN поднимается с одним IPv4-адресом, поэтому
+  // IPv6-соединения шли мимо туннеля напрямую через провайдера (утечка и
+  // блокировки у пользователей с нативным IPv6). Без AAAA-ответов приложения
+  // просто используют IPv4, который туннель перехватывает.
+  return 'ipv4_only'
 }
 
 /**
@@ -2129,16 +2230,129 @@ function applyMultiplex(outbound: Record<string, unknown>, settings: IncySetting
  * Only the tag is forced (the routing rules reference `proxy`), and mux /
  * domain strategy are filled in when the provider did not express an opinion.
  */
+/** Промис с ограничением по времени: по истечении возвращает `fallback`. */
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(fallback), ms)
+    p.then(
+      (v) => {
+        clearTimeout(t)
+        resolve(v)
+      },
+      () => {
+        clearTimeout(t)
+        resolve(fallback)
+      }
+    )
+  })
+}
+
+/**
+ * Список доменов пользователя → суффиксы для sing-box.
+ *
+ * `*.рф` → `xn--p1ai`: SNI и DNS-запросы всегда в punycode, кириллическое
+ * правило не совпадало ни разу. IP-маски (`192.168.*`), CIDR и адреса
+ * отбрасываются — для них есть правила по IP.
+ */
+export function toDomainSuffixes(list: string[]): string[] {
+  const out = new Set<string>()
+  for (const raw of list ?? []) {
+    const d = String(raw ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/^\*\./, '')
+      .replace(/^\./, '')
+    if (!d || d.includes('*') || d.includes('/') || d.includes(':') || net.isIP(d)) continue
+    const ascii = domainToASCII(d)
+    if (ascii) out.add(ascii)
+  }
+  return [...out]
+}
+
+/**
+ * Список приложений ExitLag → уникальные имена `.exe` в исходном регистре.
+ * Принимает и полный путь, и имя без расширения.
+ */
+export function normalizePerAppList(list?: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const p of list ?? []) {
+    let name = path.win32.basename(String(p ?? '').trim())
+    if (!name) continue
+    if (!/\.exe$/i.test(name)) name += '.exe'
+    const key = name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(name)
+  }
+  return out
+}
+
+/**
+ * Одно регулярное выражение для `process_path_regex`, без учёта регистра:
+ * `(?i)(?:^|[\\/])(?:discord\.exe|cs2\.exe)$`. Совпадает с полным путём
+ * процесса, который sing-box получает на Windows.
+ */
+export function perAppPathRegex(names: string[]): string {
+  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  return `(?i)(?:^|[\\\\/])(?:${escaped.join('|')})$`
+}
+
+/** Публичный ключ пира Cloudflare WARP — подставляется ТОЛЬКО для узлов WARP. */
+const WARP_PEER_PUBLIC_KEY = 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo='
+
+function isWarpNode(node: IncyNode, host: string): boolean {
+  return (
+    node.id.startsWith('node-warp-') ||
+    /^162\.159\.|^188\.114\.9[67]\.|cloudflareclient\.com$/i.test(host || '')
+  )
+}
+
+/** `host:port`, `[v6]:port` → { host, port }. */
+function splitHostPort(endpoint: string): { host: string; port: number } | null {
+  const m = /^\[?([^\]]+?)\]?:(\d+)$/.exec(String(endpoint || '').trim())
+  return m ? { host: m[1], port: Number(m[2]) } : null
+}
+
+/**
+ * WireGuard-узел → endpoint sing-box ≥1.11.
+ *
+ * Понимает оба диалекта: sing-box (`private_key`, `peers[].public_key`,
+ * `address`/`port`) и Xray (`settings.secretKey`, `peers[].publicKey`,
+ * `peers[].endpoint: "host:port"`). Раньше Xray-формат превращался в конфиг с
+ * пустым приватным ключом и публичным ключом Cloudflare — частный сервер
+ * молча не работал. Теперь ключ Cloudflare подставляется только узлам WARP,
+ * а без ключей подключение останавливается с понятной ошибкой.
+ */
 export function buildWireGuardEndpoint(node: IncyNode): any {
   const raw = node.rawOutbound ?? {}
-  const rawPeers = Array.isArray(raw.peers) && raw.peers.length > 0 ? raw.peers : []
-  const serverIp = rawPeers[0]?.address || rawPeers[0]?.server || raw.server || node.server || '162.159.192.1'
-  const serverPort = rawPeers[0]?.port || rawPeers[0]?.server_port || raw.server_port || node.port || 2408
-  const peerPubKey = rawPeers[0]?.public_key || rawPeers[0]?.peer_public_key || raw.peer_public_key || 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo='
-  const privateKey = raw.private_key || ''
+  const xs = raw.settings ?? {}
+  const peersSrc: any[] =
+    Array.isArray(raw.peers) && raw.peers.length > 0
+      ? raw.peers
+      : Array.isArray(xs.peers) && xs.peers.length > 0
+        ? xs.peers
+        : []
+  const p0 = peersSrc[0] ?? {}
+  const ep = typeof p0.endpoint === 'string' ? splitHostPort(p0.endpoint) : null
 
-  const rawAddr = raw.address || raw.local_address || ['172.16.0.2/32']
-  const addressList = Array.isArray(rawAddr) ? rawAddr : [rawAddr]
+  const serverIp = p0.address || p0.server || ep?.host || raw.server || node.server || ''
+  const serverPort = Number(p0.port || p0.server_port || ep?.port || raw.server_port || node.port) || 2408
+  const privateKey = raw.private_key || xs.secretKey || xs.private_key || ''
+  let peerPubKey = p0.public_key || p0.publicKey || p0.peer_public_key || raw.peer_public_key || ''
+  if (!peerPubKey && isWarpNode(node, serverIp)) peerPubKey = WARP_PEER_PUBLIC_KEY
+
+  if (!serverIp) throw new Error(`WireGuard-узел «${node.name}»: не указан адрес сервера`)
+  if (!privateKey) throw new Error(`WireGuard-узел «${node.name}»: нет приватного ключа (private_key / secretKey)`)
+  if (!peerPubKey) throw new Error(`WireGuard-узел «${node.name}»: нет публичного ключа сервера (public_key / publicKey)`)
+
+  const rawAddr = raw.address || raw.local_address || xs.address || ['172.16.0.2/32']
+  const addressList = (Array.isArray(rawAddr) ? rawAddr : [rawAddr]).map((a: string) =>
+    String(a).includes('/') ? String(a) : `${a}/${net.isIPv6(String(a)) ? 128 : 32}`
+  )
+
+  const reserved = p0.reserved ?? raw.reserved ?? xs.reserved
+  const psk = p0.pre_shared_key || p0.preSharedKey
 
   return {
     type: 'wireguard',
@@ -2150,10 +2364,33 @@ export function buildWireGuardEndpoint(node: IncyNode): any {
         address: serverIp,
         port: serverPort,
         public_key: peerPubKey,
-        allowed_ips: ['0.0.0.0/0', '::/0']
+        ...(psk ? { pre_shared_key: psk } : {}),
+        allowed_ips: ['0.0.0.0/0', '::/0'],
+        ...(Array.isArray(reserved) && reserved.length === 3 ? { reserved } : {})
       }
     ],
-    mtu: raw.mtu || 1280
+    mtu: Number(raw.mtu || xs.mtu) || 1280
+  }
+}
+
+/**
+ * Endpoint WireGuard (схема sing-box ≥1.11) → outbound старой схемы (≤1.10).
+ * Раньше при откате endpoint просто переносился в `outbounds` как есть, и
+ * старое ядро его всё равно не принимало.
+ */
+function wireGuardEndpointToLegacyOutbound(ep: any): any {
+  const peer = ep?.peers?.[0] ?? {}
+  return {
+    type: 'wireguard',
+    tag: ep.tag,
+    server: peer.address,
+    server_port: peer.port,
+    local_address: ep.address,
+    private_key: ep.private_key,
+    peer_public_key: peer.public_key,
+    ...(peer.pre_shared_key ? { pre_shared_key: peer.pre_shared_key } : {}),
+    ...(peer.reserved ? { reserved: peer.reserved } : {}),
+    mtu: ep.mtu
   }
 }
 
@@ -2395,15 +2632,27 @@ let childGeneration = 0
  */
 let xrayChild: ChildProcess | null = null
 
-function killProcessTree(cp: ChildProcess | null): void {
-  if (!cp) return
+/**
+ * Завершить процесс с потомками и дождаться его выхода (не дольше `waitMs`).
+ *
+ * Раньше taskkill запускался «в фоне», а следующий sing-box стартовал через
+ * 200 мс — при переподключении старый процесс ещё держал адаптер tun0 и порты,
+ * и новый падал на старте.
+ */
+function killProcessTree(cp: ChildProcess | null, waitMs = 3000): Promise<void> {
+  if (!cp) return Promise.resolve()
+  const exited =
+    cp.exitCode !== null || cp.signalCode !== null
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => cp.once('exit', () => resolve()))
   try {
     if (process.platform === 'win32' && cp.pid) {
-      spawn('taskkill.exe', ['/F', '/T', '/PID', String(cp.pid)], { windowsHide: true })
+      spawn('taskkill.exe', ['/F', '/T', '/PID', String(cp.pid)], { windowsHide: true }).on('error', () => void 0)
     } else {
       cp.kill('SIGTERM')
     }
   } catch { /* noop */ }
+  return Promise.race([exited, new Promise<void>((r) => setTimeout(r, waitMs))])
 }
 
 /**
@@ -2425,10 +2674,9 @@ async function stopRunningChild(): Promise<void> {
   xrayChild = null
   // Invalidate the handlers bound to the processes before they actually die.
   childGeneration++
-  killProcessTree(singbox)
-  killProcessTree(xray)
-  // Brief pause to allow OS socket cleanup
-  await new Promise((r) => setTimeout(r, 200))
+  await Promise.all([killProcessTree(singbox), killProcessTree(xray)])
+  // Короткая пауза, чтобы Windows освободила адаптер и сокеты.
+  await new Promise((r) => setTimeout(r, 150))
 }
 
 export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
@@ -2498,7 +2746,11 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       }
     }
 
-    const rawDomains = bypassDomains.map((d) => d.replace(/^\*\./, ''))
+    // sing-box сравнивает домены в ASCII (punycode): SNI и DNS-запросы никогда
+    // не содержат кириллицы, поэтому правило `рф` раньше не срабатывало ни
+    // разу. Маски вида `192.168.*` доменами не являются — частные сети
+    // закрывает отдельное правило `ip_is_private`.
+    const rawDomains = toDomainSuffixes(bypassDomains)
 
     const idleTimeout = Math.max(0, Number(settings.idleTimeoutSec) || 0)
 
@@ -2532,7 +2784,30 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // session on its hard-coded 'tun' default, so checking it first silently
     // ignored a saved "Системный прокси" / "Только прокси" choice and always
     // attached the TUN adapter.
-    const mode = settings.connectionMode || 'tun'
+    // ---- Per-App / ExitLag -------------------------------------------------
+    //
+    // Имена храним в исходном регистре, а сравниваем без учёта регистра через
+    // process_path_regex: `process_name` в sing-box — точное совпадение по
+    // map, и `discord.exe` никогда не совпадал с реальным `Discord.exe`.
+    const perAppList = normalizePerAppList(settings.perAppProcesses)
+    const isPerAppActive = Boolean(settings.perAppProxy) && perAppList.length > 0
+    const isExitLagWhitelist = isPerAppActive && settings.perAppMode !== 'bypass_only'
+    if (settings.perAppProxy && perAppList.length === 0) {
+      appendLog(
+        'ExitLag включён, но список приложений пуст — туннель работает как обычный VPN. ' +
+          'Добавьте игры/программы на вкладке ExitLag.'
+      )
+    }
+
+    // Маршрутизация по процессам видит только трафик, прошедший через TUN:
+    // игры не ходят через системный прокси, а в «Только прокси» процесс вообще
+    // не определить. Поэтому ExitLag всегда поднимает TUN.
+    const mode: 'tun' | 'system_proxy' | 'only_proxy' = isPerAppActive
+      ? 'tun'
+      : settings.connectionMode || 'tun'
+    if (isPerAppActive && settings.connectionMode && settings.connectionMode !== 'tun') {
+      appendLog('ExitLag: режим подключения принудительно переключён на TUN — иначе трафик игр не перехватить.')
+    }
     const routingMode = settings.routingMode || 'bypass-ru'
     currentStatus.connectionMode = mode
     currentStatus.routingMode = routingMode
@@ -2540,7 +2815,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // Decide which core(s) run. Exactly one topology is active at a time and
     // each scarce resource (TUN adapter, user-facing port, system proxy) has a
     // single owner — see incy-topology.ts for the full map.
-    const topology = planTopology(target, settings, isXrayAvailable())
+    const topology = planTopology(target, { ...settings, connectionMode: mode }, isXrayAvailable())
     appendLog(`Ядро: ${topology.reason}`)
     if (topology.protocolCore === 'sing-box' && usesXrayOnlyFeatures(settings)) {
       appendLog(
@@ -2557,7 +2832,9 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         return
       }
       try {
-        const records = await dns.promises.resolve4(host)
+        // Без таймаута c-ares при недоступном DNS ждёт десятки секунд, и всё
+        // это время кнопка висит в «Подключение…».
+        const records = await withTimeout(dns.promises.resolve4(host), 3000, [] as string[])
         for (const ip of records) {
           if (net.isIP(ip) && !resolvedServerIps.includes(ip)) resolvedServerIps.push(ip)
         }
@@ -2657,7 +2934,6 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
      * адреса этих серверов к direct — тот же смысл, выраженный тем способом,
      * который ядро принимает.
      */
-    const isExitLagWhitelist = Boolean(settings.perAppProxy && settings.perAppMode === 'proxy_only')
 
     const dnsServersModern = isExitLagWhitelist
       ? [
@@ -2755,7 +3031,11 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
 
     const config: any = {
       log: {
-        level: 'info'
+        // warn, а не info: info пишет несколько строк на КАЖДОЕ соединение.
+        // Этот поток шёл через pipe в main-процесс; когда main не успевал его
+        // вычитывать, запись лога внутри sing-box блокировала обработку
+        // соединений — сайты открывались медленно.
+        level: settings.verboseCoreLog ? 'info' : 'warn'
       },
       experimental: {
         clash_api: {
@@ -2767,7 +3047,11 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         servers: dnsServers,
         rules: dnsRules,
         strategy: domainStrategyFor(settings),
-        independent_cache: true
+        independent_cache: true,
+        // IP → домен по ответам DNS: доменные правила (обход RU, свои
+        // правила) срабатывают и там, где sniff не смог достать имя —
+        // UDP игр, QUIC, нестандартный TLS.
+        reverse_mapping: true
       },
       inbounds,
       ...(endpointsConfig.length > 0 ? { endpoints: endpointsConfig } : {}),
@@ -2811,34 +3095,12 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // direct while still asking the proxy's DNS was both slower and leaked the
     // query.
     if (routingMode === 'bypass-ru') {
-      const bypassDomains = rawDomains.length > 0 ? rawDomains : ['ru', 'su', 'рф']
+      const bypassDomains = rawDomains.length > 0 ? rawDomains : ['ru', 'su', 'xn--p1ai']
       dnsRules.push({ domain_suffix: bypassDomains, server: 'local-dns' })
     }
 
-    // Per-App Routing process list normalization
-    const isPerAppActive = Boolean(
-      settings.perAppProxy &&
-      Array.isArray(settings.perAppProcesses) &&
-      settings.perAppProcesses.length > 0
-    )
-    const perAppProcessNames: string[] = []
-    if (isPerAppActive) {
-      const rawList = (settings.perAppProcesses ?? [])
-        .map((p) => path.basename(p.trim()))
-        .filter(Boolean)
-      const pSet = new Set<string>()
-      for (const p of rawList) {
-        pSet.add(p)
-        pSet.add(p.toLowerCase())
-        pSet.add(p.toUpperCase())
-        if (!p.toLowerCase().endsWith('.exe')) {
-          pSet.add(`${p}.exe`)
-          pSet.add(`${p.toLowerCase()}.exe`)
-          pSet.add(`${p.toUpperCase()}.EXE`)
-        }
-      }
-      perAppProcessNames.push(...pSet)
-    }
+    // Одно регулярное выражение на весь список, без учёта регистра.
+    const perAppMatcher = isPerAppActive ? { process_path_regex: [perAppPathRegex(perAppList)] } : null
 
     // ExitLag DNS:
     // In proxy_only mode, whitelisted processes resolve via remote-dns (through
@@ -2846,13 +3108,17 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // `invert: true` on process_name — on Windows, sing-box frequently fails
     // to identify process PID ("process not found"), and inverted rules catch
     // all unidentified packets (including svchost.exe DNS), breaking all DNS.
-    if (isPerAppActive && perAppProcessNames.length > 0) {
+    //
+    // Оговорка: системные DNS-запросы на Windows отправляет служба Dnscache
+    // (svchost.exe), а не сама игра, поэтому это правило срабатывает только
+    // для приложений со своим резолвером (браузеры с DoH, Discord и т.п.).
+    if (perAppMatcher) {
       if (settings.perAppMode === 'bypass_only') {
         // Blacklist: bypassed apps resolve via local-dns
-        dnsRules.unshift({ process_name: perAppProcessNames, server: 'local-dns' })
+        dnsRules.unshift({ ...perAppMatcher, server: 'local-dns' })
       } else {
         // Whitelist (ExitLag): only listed apps resolve via remote-dns
-        dnsRules.push({ process_name: perAppProcessNames, server: 'remote-dns' })
+        dnsRules.push({ ...perAppMatcher, server: 'remote-dns' })
       }
     }
 
@@ -2890,7 +3156,8 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         if (/^[\d.]+\/\d{1,2}$/.test(value) || /^[\d.]+$/.test(value) || value.includes(':')) {
           config.route.rules.push({ ip_cidr: [value], ...base })
         } else {
-          config.route.rules.push({ domain_suffix: [value.replace(/^\*\./, '')], ...base })
+          const suffix = toDomainSuffixes([value])
+          if (suffix.length > 0) config.route.rules.push({ domain_suffix: suffix, ...base })
         }
       }
     }
@@ -2990,20 +3257,26 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       })
     }
 
-    // Routing modes (RU bypass):
-    // MUST evaluate BEFORE Per-App rules!
-    // When a user whitelists a browser in ExitLag mode, Russian sites (.ru, .рф, .su,
-    // Yandex, Gosuslugi, banks) must STILL go direct at native ISP speed rather than
-    // through the overseas VPN tunnel.
+    // Частные адреса (роутер, принтер, NAS, docker/WSL, офисные 10.x) — всегда
+    // напрямую. Раньше отдельного правила не было, и в полном VPN такие
+    // адреса, не попавшие в on-link маршрут Windows, уезжали в туннель.
+    config.route.rules.push({ ip_is_private: true, outbound: 'direct' })
+
+    // Порядок дальше — от явного к общему:
+    //   1. правила пользователя (явный выбор сильнее встроенных списков —
+    //      так и задумано и описано у поля customRoutingRules);
+    //   2. обход RU — ДО правил по приложениям, чтобы браузер из белого
+    //      списка ExitLag открывал российские сайты напрямую;
+    //   3. правила по приложениям;
+    //   4. route.final.
+    pushCustomRules()
+
     if (routingMode === 'bypass-ru') {
       config.route.rules.push({
-        domain_suffix: rawDomains.length > 0 ? rawDomains : ['ru', 'su', 'рф'],
+        domain_suffix: rawDomains.length > 0 ? rawDomains : ['ru', 'su', 'xn--p1ai'],
         outbound: 'direct'
       })
     }
-
-    // User custom rules run before per-app rules
-    pushCustomRules()
 
     // Per-App Routing (ExitLag-style whitelist or blacklist)
     //
@@ -3016,25 +3289,22 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // Instead, we use simple positive matching:
     //   proxy_only: listed processes → proxy, route.final → direct
     //   bypass_only: listed processes → direct, route.final → proxy (unchanged)
-    if (isPerAppActive && perAppProcessNames.length > 0) {
+    if (perAppMatcher) {
+      // Поиск процесса у sing-box включается сам, если есть правила по
+      // процессам; явный флаг — на случай, если это поведение поменяется.
+      config.route.find_process = true
       if (settings.perAppMode === 'bypass_only') {
         // Blacklist mode: selected apps bypass proxy completely and go direct
-        config.route.rules.push({
-          process_name: perAppProcessNames,
-          outbound: 'direct'
-        })
-        appendLog(`Режим приложений: ${settings.perAppProcesses!.length} приложений исключены (напрямую)`)
+        config.route.rules.push({ ...perAppMatcher, outbound: 'direct' })
+        appendLog(`Режим приложений: ${perAppList.length} приложений исключены (напрямую): ${perAppList.join(', ')}`)
       } else {
         // Whitelist mode (ExitLag):
         // Only listed processes go through proxy, everything else stays direct.
-        config.route.rules.push({
-          process_name: perAppProcessNames,
-          outbound: 'proxy'
-        })
+        config.route.rules.push({ ...perAppMatcher, outbound: 'proxy' })
         // All unidentified packets and unlisted processes default to direct
         config.route.final = 'direct'
         appendLog(
-          `Режим ExitLag: через VPN идут ТОЛЬКО ${settings.perAppProcesses!.length} приложений (${settings.perAppProcesses!.join(', ')}), все остальные 100% напрямую`
+          `Режим ExitLag: через VPN идут только ${perAppList.length} прилож. (${perAppList.join(', ')}), остальной трафик — напрямую`
         )
       }
     }
@@ -3070,7 +3340,8 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         const cfg = buildXrayConfig(target, settings, {
           ports: topology.ports,
           chained: topology.chained,
-          bypassDomains,
+          // ASCII/punycode, без IP-масок — как и для sing-box.
+          bypassDomains: rawDomains,
           routingMode,
           geoTier
         })
@@ -3135,6 +3406,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         }
       })
       xrayChild = spawnedXray
+      registerChild(spawnedXray.pid, xrayBin)
 
       spawnedXray.stdout?.on('data', (data) => {
         const text = data.toString().trim()
@@ -3151,6 +3423,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         xrayChild = null
       })
       spawnedXray.on('exit', (code) => {
+        unregisterChild(spawnedXray.pid)
         if (generation !== childGeneration) return
         appendLog(`Xray остановлен (код ${code})`)
         xrayChild = null
@@ -3285,7 +3558,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
           note: 'Переключение WireGuard на устаревшую схему outbounds для старых версий sing-box.',
           apply: () => {
             if (config.endpoints && config.endpoints.length > 0) {
-              config.outbounds.unshift(...config.endpoints)
+              config.outbounds.unshift(...config.endpoints.map(wireGuardEndpointToLegacyOutbound))
               delete config.endpoints
             }
           }
@@ -3364,6 +3637,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
 
     // 2. Spawn sing-box.exe (generation was claimed before Xray started)
     const spawned = spawn(bin, ['run', '-c', cfgFile], { windowsHide: true })
+    registerChild(spawned.pid, bin)
     child = spawned
 
     spawned.stdout?.on('data', (data) => {
@@ -3385,6 +3659,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     })
 
     spawned.on('exit', (code) => {
+      unregisterChild(spawned.pid)
       // A replacement process has already taken over — this exit belongs to
       // the instance we deliberately killed, so it must not touch state.
       if (generation !== childGeneration) return
@@ -3430,11 +3705,14 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
 
     beginStatsSession(statsClashPort)
 
+    exitLagLogTagging = isExitLagWhitelist
     const status = broadcastStatus({
       state: 'running',
       activeNodeId: target.id,
       selectedNodeId: target.id,
-      connectedAt: Date.now()
+      connectedAt: Date.now(),
+      exitLagActive: isExitLagWhitelist,
+      exitLagApps: isExitLagWhitelist ? perAppList : []
     })
 
     appendLog(`Успешно подключено к ${target.name}`)

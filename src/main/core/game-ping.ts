@@ -347,9 +347,11 @@ function probeTcp(ip: string, port: number, timeoutMs = 600): Promise<number | n
  */
 function probeIcmp(ip: string, timeoutMs = 700): Promise<number | null> {
   return new Promise((resolve) => {
-    execFile('ping.exe', [ip, '-n', '1', '-w', String(timeoutMs)], (err, stdout) => {
+    execFile('ping.exe', [ip, '-n', '1', '-w', String(timeoutMs)], { windowsHide: true }, (err, stdout) => {
       if (err || !stdout) return resolve(null)
-      const match = stdout.match(/(?:time|время)[=<](\d+)ms/i)
+      // В русской Windows ping пишет «время=12мс» в кодировке cp866 — после
+      // декодирования как UTF-8 слова не совпадают. Опираемся на число перед TTL.
+      const match = String(stdout).match(/[=<](\d+)\s*[^\s\d]{0,4}\s+TTL=/i)
       if (match) {
         return resolve(parseInt(match[1], 10))
       }
@@ -359,53 +361,50 @@ function probeIcmp(ip: string, timeoutMs = 700): Promise<number | null> {
 }
 
 /**
- * Determines coordinates of a node based on its name, region, or server IP.
+ * Координаты узла.
+ *
+ * Сначала — GeoIP адреса сервера (точно и не зависит от названия). Если он
+ * недоступен — по названию, но по целым словам: раньше искалась подстрока, и
+ * `de` находился в «Sweden» и «node», `se` — в «server», `ru` — в «trust»,
+ * так что большинство узлов считались Франкфуртом.
  */
-function getNodeCoordinates(node: IncyNode): [number, number] {
-  const name = (node.name + ' ' + (node.server || '')).toLowerCase()
+const NAME_HINTS: Array<[RegExp, keyof typeof CITY_COORDINATES]> = [
+  [/герман|germany|frankfurt|\bde\b|\bfra\b/i, 'frankfurt'],
+  [/финлянд|finland|helsinki|\bfi\b|\bhel\b/i, 'helsinki'],
+  [/швеци|sweden|stockholm|\bse\b|\bsto\b/i, 'stockholm'],
+  [/нидерланд|голланд|netherlands|amsterdam|\bnl\b|\bams\b/i, 'amsterdam'],
+  [/польш|poland|warsaw|\bpl\b|\bwaw\b/i, 'warsaw'],
+  [/великобритан|англи|united kingdom|london|\buk\b|\bgb\b/i, 'london'],
+  [/франци|france|paris|\bfr\b/i, 'paris'],
+  [/казахстан|kazakhstan|almaty|astana|\bkz\b/i, 'almaty'],
+  [/росси|russia|москва|moscow|\bru\b|\bmsk\b/i, 'moscow'],
+  [/турци|turkey|istanbul|\btr\b/i, 'istanbul'],
+  [/австри|austria|vienna|\bat\b/i, 'vienna'],
+  [/чехи|czech|prague|\bcz\b/i, 'prague'],
+  [/сша|\busa\b|united states|\bus\b|new york/i, 'newyork']
+]
 
-  if (name.includes('германи') || name.includes('germany') || name.includes('de') || name.includes('frankfurt') || name.includes('fra')) {
-    return CITY_COORDINATES.frankfurt
-  }
-  if (name.includes('финлянд') || name.includes('finland') || name.includes('fi') || name.includes('helsinki') || name.includes('hel')) {
-    return CITY_COORDINATES.helsinki
-  }
-  if (name.includes('швеци') || name.includes('sweden') || name.includes('se') || name.includes('stockholm') || name.includes('sto')) {
-    return CITY_COORDINATES.stockholm
-  }
-  if (name.includes('нидерланд') || name.includes('netherlands') || name.includes('nl') || name.includes('amsterdam') || name.includes('ams')) {
-    return CITY_COORDINATES.amsterdam
-  }
-  if (name.includes('польш') || name.includes('poland') || name.includes('pl') || name.includes('warsaw') || name.includes('waw')) {
-    return CITY_COORDINATES.warsaw
-  }
-  if (name.includes('великобритан') || name.includes('англия') || name.includes('uk') || name.includes('london') || name.includes('gb')) {
-    return CITY_COORDINATES.london
-  }
-  if (name.includes('франци') || name.includes('france') || name.includes('fr') || name.includes('paris')) {
-    return CITY_COORDINATES.paris
-  }
-  if (name.includes('казахстан') || name.includes('kazakhstan') || name.includes('kz') || name.includes('almaty') || name.includes('astana')) {
-    return CITY_COORDINATES.almaty
-  }
-  if (name.includes('росси') || name.includes('russia') || name.includes('ru') || name.includes('москва') || name.includes('moscow')) {
-    return CITY_COORDINATES.moscow
-  }
-  if (name.includes('турци') || name.includes('turkey') || name.includes('tr') || name.includes('istanbul')) {
-    return CITY_COORDINATES.istanbul
-  }
-  if (name.includes('австри') || name.includes('austria') || name.includes('at') || name.includes('vienna')) {
-    return CITY_COORDINATES.vienna
-  }
-  if (name.includes('чехи') || name.includes('czech') || name.includes('cz') || name.includes('prague')) {
-    return CITY_COORDINATES.prague
-  }
-  if (name.includes('сша') || name.includes('usa') || name.includes('us')) {
-    return CITY_COORDINATES.newyork
-  }
+function coordinatesFromName(node: IncyNode): [number, number] | null {
+  // Флаги-эмодзи и разделители превращаем в пробелы, чтобы \b работал.
+  const text = `${node.name} ${node.server || ''}`.replace(/[_\-|•·()[\]]/g, ' ')
+  for (const [re, city] of NAME_HINTS) if (re.test(text)) return CITY_COORDINATES[city]
+  return null
+}
 
-  // Default to Frankfurt (largest European internet exchange hub)
-  return CITY_COORDINATES.frankfurt
+async function getNodeCoordinates(node: IncyNode): Promise<{ coords: [number, number]; source: 'geoip' | 'name' | 'default' }> {
+  if (node.server) {
+    try {
+      const geo = await resolveGameServerGeo(node.server, node.port)
+      if (typeof geo.lat === 'number' && typeof geo.lon === 'number') {
+        return { coords: [geo.lat, geo.lon], source: 'geoip' }
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  const byName = coordinatesFromName(node)
+  if (byName) return { coords: byName, source: 'name' }
+  return { coords: CITY_COORDINATES.frankfurt, source: 'default' }
 }
 
 /**
@@ -461,7 +460,7 @@ export async function measureGameServerPing(input: string): Promise<GamePingResu
       }
     }
 
-    const [nodeLat, nodeLon] = getNodeCoordinates(node)
+    const { coords: [nodeLat, nodeLon] } = await getNodeCoordinates(node)
     const nodeToGame = calculateFiberRtt(nodeLat, nodeLon, targetLat, targetLon)
 
     let totalPing: number | null = null

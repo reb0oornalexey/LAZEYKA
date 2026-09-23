@@ -28,7 +28,7 @@ const nav = [
   { key: 'telegram', path: '/telegram', icon: TelegramIcon, label: 'Telegram',   service: 'tgws' },
   { key: 'zapret',   path: '/zapret',   icon: ZapretIcon,   label: 'Zapret',     service: 'zapret' },
   { key: 'incy',     path: '/incy',     icon: Globe,        label: 'INCY Proxy', service: 'incy' },
-  { key: 'exitlag',  path: '/exitlag',  icon: Gamepad2,     label: 'ExitLag',    service: null },
+  { key: 'exitlag',  path: '/exitlag',  icon: Gamepad2,     label: 'ExitLag',    service: 'exitlag' },
   { key: 'logs',     path: '/logs',     icon: ScrollText,   label: 'Логи',       service: null },
   { key: 'settings', path: '/settings', icon: SettingsIcon, label: 'Настройки',  service: null },
   { key: 'about',    path: '/about',    icon: InfoIcon,     label: 'Информация', service: null },
@@ -47,11 +47,15 @@ const AppSidebar: React.FC = () => {
   const zapretRunning = useZapretStore((s) => s.status.state === 'running')
   const tgwsRunning = useTgwsStore((s) => s.status.state === 'running')
   const incyRunning = useIncyStore((s) => s.status.state === 'running')
+  // ExitLag «работает», только когда ядро подтвердило сессию с белым списком
+  // приложений — а не просто когда включён флажок на его странице.
+  const exitLagRunning = useIncyStore((s) => s.status.state === 'running' && Boolean(s.status.exitLagActive))
 
   const getServiceActive = (service: string | null): boolean => {
     if (service === 'zapret') return zapretRunning
     if (service === 'tgws') return tgwsRunning
     if (service === 'incy') return incyRunning
+    if (service === 'exitlag') return exitLagRunning
     return false
   }
 

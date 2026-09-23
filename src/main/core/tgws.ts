@@ -6,7 +6,8 @@ import { randomBytes } from 'crypto'
 import os from 'os'
 import https from 'https'
 import { BrowserWindow } from 'electron'
-import { tgwsBinaryPath } from '../utils/dirs'
+import { tgwsBinaryPath, tgwsCliPaths } from '../utils/dirs'
+import { registerChild, unregisterChild, registeredPids } from '../utils/child-registry'
 import { getAppConfig, patchAppConfig } from '../config'
 import { showSystemNotification } from '../utils/notifications'
 import { logToFile } from '../utils/file-logger'
@@ -19,14 +20,25 @@ let stopRequested = false
 
 // ---- defaults --------------------------------------------------------------
 
-const DEFAULT_DC_IPS = [
-  '1:149.154.175.50',
-  '2:149.154.167.51',
-  '3:149.154.175.100',
-  '4:149.154.167.91',
-  '5:149.154.171.5',
-  '203:91.105.192.100'
-] as const
+/**
+ * Куда TgWsProxy открывает WebSocket (`--dc-ip`).
+ *
+ * Это IP фронтенда `*.web.telegram.org` — ровно то, что Flowseal ставит по
+ * умолчанию (`2:149.154.167.220`, `4:149.154.167.220`: proxy/tg_ws_proxy.py,
+ * utils/default_config.py, docs/RU/TrayConfig.md).
+ *
+ * В 1.1.4 сюда по ошибке попала таблица `DC_DEFAULT_IPS` из proxy/utils.py —
+ * это адреса для запасного пути (CF-прокси/прямой TCP) и A-записи своего
+ * CF-домена, а не WebSocket-фронтенд. TLS с SNI `kws2.web.telegram.org` на
+ * них не поднимается, и каждое соединение ждало таймаута WS.
+ *
+ * DC 203 (CDN: видео, кружки, медиа): Flowseal сам ведёт его на домены DC2
+ * (`ws_domains(): if dc == 203: dc = 2`, коммит 4b0bc2f), поэтому ему нужен
+ * тот же фронтенд. Без записи 203 медиа уходило в публичные CF-домены,
+ * которые отвечали 503. Если WS для 203 не поднимется, Flowseal сам
+ * вернётся к fallback — хуже, чем было, не станет.
+ */
+const DEFAULT_DC_IPS = ['2:149.154.167.220', '4:149.154.167.220', '203:149.154.167.220'] as const
 const COLD_BOOT_THRESHOLD_S = 180
 const NETWORK_WAIT_TIMEOUT_MS = 30_000
 const SECRET_HEX_LEN = 32
@@ -39,12 +51,24 @@ function broadcast(channel: string, ...args: unknown[]): void {
   }
 }
 
+/**
+ * Секрет MTProto не должен попадать в лог и в диагностический отчёт, который
+ * отправляют в поддержку: по нему к прокси может подключиться кто угодно.
+ * Flowseal и сам печатает его при старте («Secret: …», ссылка tg://…).
+ */
+function maskSecrets(text: string): string {
+  return text
+    .replace(/(--secret\s+)[0-9a-f]{32}/gi, '$1********')
+    .replace(/(secret=)(?:dd|ee)?[0-9a-f]{32}[0-9a-f]*/gi, '$1********')
+    .replace(/(Secret:\s*)[0-9a-f]{32}/gi, '$1********')
+}
+
 function log(type: ControllerLog['type'], payload: string): void {
   const entry: ControllerLog = {
     time: Date.now(),
     type,
     source: 'tgws',
-    payload
+    payload: maskSecrets(payload)
   }
   // Mirrored to disk: core stdout is exactly what post-mortem debugging needs,
   // and the renderer's ring buffer keeps only the last 500 lines of a session.
@@ -98,17 +122,30 @@ function tryListen(host: string, port: number): Promise<{ free: true } | { free:
   })
 }
 
+function runTaskkill(args: string[]): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const p = spawn('taskkill.exe', args, { windowsHide: true })
+    p.on('exit', () => resolve())
+    p.on('error', () => resolve())
+  })
+}
+
+/**
+ * Освободить порт от собственного зависшего TgWsProxy.
+ *
+ * Сначала — процессы из реестра LAZEYKA (консольный python.exe нельзя
+ * убивать по имени: заденем чужой Python). Затем — старый tray-бинарник
+ * TgWsProxy_windows.exe, который могла оставить прошлая версия LAZEYKA.
+ */
 async function killStaleTgws(): Promise<boolean> {
   if (process.platform !== 'win32') return false
   try {
-    await new Promise<void>((resolve) => {
-      const p = spawn('taskkill.exe', ['/F', '/IM', 'TgWsProxy*', '/T'], {
-        windowsHide: true
-      })
-      p.on('exit', () => resolve())
-      p.on('error', () => resolve())
-    })
-    log('info', 'stale TgWsProxy instances killed')
+    for (const pid of [...registeredPids('python.exe'), ...registeredPids('TgWsProxy_windows.exe')]) {
+      await runTaskkill(['/F', '/T', '/PID', String(pid)])
+      unregisterChild(pid)
+    }
+    await runTaskkill(['/F', '/IM', 'TgWsProxy_windows.exe', '/T'])
+    log('info', 'зависшие экземпляры TgWsProxy завершены')
     await new Promise((r) => setTimeout(r, 300))
     return true
   } catch {
@@ -140,9 +177,12 @@ async function ensurePortFree(host: string, port: number): Promise<void> {
 
 function ensureFirewallRule(port: number): void {
   if (process.platform !== 'win32') return
+  // Сначала удаляем прежнее правило: `add rule` не проверяет дубликаты, и при
+  // каждом запуске в брандмауэре появлялась ещё одна копия.
   try {
     exec(
-      `netsh advfirewall firewall add rule name="LAZEYKA TGWS Proxy" dir=in action=allow protocol=TCP localport=${port} profile=any`,
+      `netsh advfirewall firewall delete rule name="LAZEYKA TGWS Proxy" >nul 2>&1 & ` +
+        `netsh advfirewall firewall add rule name="LAZEYKA TGWS Proxy" dir=in action=allow protocol=TCP localport=${port} profile=any`,
       { windowsHide: true }
     )
   } catch { /* best effort */ }
@@ -150,17 +190,18 @@ function ensureFirewallRule(port: number): void {
 
 // ---- Flowseal Headless Helpers (Zero GUI, Zero Tray) -----------------------
 
+/**
+ * Список `DC:IP`. Как у Flowseal: если пользователь задал свой список — он
+ * используется целиком (так можно и убрать DC), иначе — значения по умолчанию.
+ * Раньше пользовательский список лишь дополнял встроенный, и убрать DC было
+ * нельзя.
+ */
 function resolveDcIps(configured?: string[]): string[] {
   const dcMap = new Map<string, string>()
-  for (const d of DEFAULT_DC_IPS) {
+  const user = (configured ?? []).filter((d) => typeof d === 'string' && /^\s*\d+\s*:\s*\S+\s*$/.test(d))
+  for (const d of user.length > 0 ? user : DEFAULT_DC_IPS) {
     const [dc, ip] = d.split(':', 2)
-    dcMap.set(dc, ip)
-  }
-  for (const d of configured ?? []) {
-    if (typeof d === 'string' && d.includes(':')) {
-      const [dc, ip] = d.split(':', 2)
-      dcMap.set(dc.trim(), ip.trim())
-    }
+    dcMap.set(dc.trim(), ip.trim())
   }
   const result: string[] = []
   for (const [dc, ip] of dcMap.entries()) {
@@ -205,10 +246,6 @@ function preseedFlowsealConfig(t: AppConfig['tgws'], secret: string): void {
   } catch {
     /* best effort */
   }
-}
-
-function suppressTrayIcon(_pid: number): void {
-  // Pure headless binary never creates a tray icon
 }
 
 // ---- pre-flight: cold-boot network wait -----------------------------------
@@ -285,6 +322,36 @@ export function stopTgws(): Promise<void> {
   return withLock(() => stopTgwsImpl())
 }
 
+/**
+ * Поколение процесса TgWsProxy. Обработчики `exit`/`error` запоминают своё
+ * поколение и ничего не делают, если процесс уже заменён: раньше «опоздавший»
+ * exit старого процесса после перезапуска обнулял ссылку на НОВЫЙ процесс
+ * (он оставался жить без управления) и показывал ложное «Ошибка Telegram
+ * Proxy» после штатной остановки.
+ */
+let generation = 0
+
+/** Уровень строки лога Flowseal по её содержимому (он пишет всё в stderr). */
+function levelOf(line: string): ControllerLog['type'] {
+  if (/\b(ERROR|CRITICAL|Traceback)\b/.test(line)) return 'error'
+  if (/\bWARNING\b/.test(line)) return 'warn'
+  return 'info'
+}
+
+function pipeLines(stream: NodeJS.ReadableStream | null | undefined): void {
+  if (!stream) return
+  let tail = ''
+  stream.on('data', (buf: Buffer) => {
+    const text = tail + buf.toString()
+    const lines = text.split(/\r?\n/)
+    tail = lines.pop() ?? ''
+    for (const line of lines) if (line.trim()) log(levelOf(line), line.trimEnd())
+  })
+  stream.on('end', () => {
+    if (tail.trim()) log(levelOf(tail), tail.trimEnd())
+  })
+}
+
 async function startTgwsImpl(): Promise<void> {
   if (child) {
     log('warn', 'startTgws ignored: already running')
@@ -294,7 +361,11 @@ async function startTgwsImpl(): Promise<void> {
   const cfg0 = await getAppConfig()
   if (!cfg0.tgws) throw new Error('tgws config missing')
 
-  const bin = cfg0.tgws.binaryPath || tgwsBinaryPath()
+  // Консольный режим (без трея и окон) — основной. Tray-бинарник остаётся
+  // запасным вариантом, только если встроенного Python нет (старая сборка
+  // или пользователь явно указал свой exe в настройках).
+  const cli = cfg0.tgws.binaryPath ? null : tgwsCliPaths()
+  const bin = cli ? cli.python : cfg0.tgws.binaryPath || tgwsBinaryPath()
   if (!existsSync(bin)) {
     setStatus({ state: 'error', lastError: `TgWsProxy binary not found: ${bin}` })
     log('error', `binary missing: ${bin}`)
@@ -304,6 +375,8 @@ async function startTgwsImpl(): Promise<void> {
   setStatus({ state: 'starting', startedAt: Date.now(), lastError: undefined })
   log('info', '═══ TG WS PROXY STARTUP ═══')
 
+  const myGen = ++generation
+  let proc: ChildProcess | null = null
   try {
     // 1) Secret validation/regeneration
     const secret = await ensureSecret(cfg0.tgws.secret)
@@ -322,19 +395,14 @@ async function startTgwsImpl(): Promise<void> {
       ensureFirewallRule(t.port)
     }
 
-    // 4) Cold-boot network check
+    // 4) Cold-boot network check — действительно ждём (не дольше 30 с):
+    //    раньше проверка запускалась «в фоне» и ни на что не влияла.
     if (isColdBoot()) {
-      void waitForNetwork(dcIpsToTargets(dcIp))
-        .then(() => log('info', 'upstream DC reachable'))
-        .catch(() => log('warn', 'upstream DC check timed out'))
+      await waitForNetwork(dcIpsToTargets(dcIp)).catch(() => false)
     }
 
-    // 5) Spawn binary
-    const args: string[] = [
-      '--host', host,
-      '--port', String(t.port),
-      '--secret', secret
-    ]
+    // 5) Spawn
+    const args: string[] = ['--host', host, '--port', String(t.port), '--secret', secret]
     for (const d of dcIp) args.push('--dc-ip', d)
     if (t.bufKb) args.push('--buf-kb', String(t.bufKb))
     if (t.poolSize) args.push('--pool-size', String(t.poolSize))
@@ -343,54 +411,85 @@ async function startTgwsImpl(): Promise<void> {
     if (t.cfproxyUserDomain) args.push('--cfproxy-domain', t.cfproxyUserDomain)
     if (t.fakeTlsDomain) args.push('--fake-tls-domain', t.fakeTlsDomain)
 
-    // Ensure Flowseal config and first-run markers are primed so zero GUI windows open
-    preseedFlowsealConfig(t, secret)
-
-    log('info', `spawning: ${bin} ${args.join(' ')}`)
-    child = spawn(bin, args, {
-      windowsHide: true,
-      cwd: path.dirname(bin)
-    })
-
-    if (child.pid) {
-      suppressTrayIcon(child.pid)
+    let spawnArgs: string[]
+    let cwd: string
+    if (cli) {
+      // -u: без буферизации (логи сразу), -B: не писать __pycache__ в
+      // Program Files, -X utf8: кириллица в путях и логах.
+      spawnArgs = ['-u', '-B', '-X', 'utf8', cli.bootstrap, cli.appDir, ...args]
+      cwd = cli.appDir
+      log('info', `режим: консольный (Flowseal tg-ws-proxy ${cli.version || '?'}, без трея)`)
+    } else {
+      spawnArgs = args
+      cwd = path.dirname(bin)
+      // Tray-сборка Flowseal игнорирует аргументы и читает config.json —
+      // подготавливаем его, чтобы она хотя бы не показывала окна.
+      preseedFlowsealConfig(t, secret)
+      log('warn', 'режим: tray-бинарник Flowseal (консольный Python не найден) — возможна иконка в трее')
     }
 
-    child.stdout?.on('data', (buf) => log('info', buf.toString().trimEnd()))
-    child.stderr?.on('data', (buf) => log('warn', buf.toString().trimEnd()))
-    child.on('error', (err) => {
+    log('info', `spawning: ${bin} ${spawnArgs.join(' ')}`)
+    proc = spawn(bin, spawnArgs, {
+      windowsHide: true,
+      cwd,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+    })
+    child = proc
+    registerChild(proc.pid, bin)
+    const thisProc = proc
+
+    pipeLines(thisProc.stdout)
+    pipeLines(thisProc.stderr)
+    thisProc.on('error', (err) => {
+      unregisterChild(thisProc.pid)
+      if (myGen !== generation) return
       log('error', `child error: ${err.message}`)
       setStatus({ state: 'error', lastError: err.message, pid: undefined })
       child = null
     })
-    child.on('exit', (code, signal) => {
+    thisProc.on('exit', (code, signal) => {
+      unregisterChild(thisProc.pid)
       log('info', `exited code=${code} signal=${signal ?? 'none'}`)
+      // Процесс уже заменён или остановлен намеренно — состояние не трогаем.
+      if (myGen !== generation) return
       const wasGraceful = stopRequested || code === 0 || signal === 'SIGTERM'
       child = null
       setStatus({
         state: wasGraceful ? 'stopped' : 'error',
         pid: undefined,
-        lastError: wasGraceful
-          ? undefined
-          : (code != null ? `exited with code ${code}` : undefined)
+        lastError: wasGraceful ? undefined : code != null ? `exited with code ${code}` : undefined
       })
     })
 
-    await new Promise((r) => setTimeout(r, 120))
-    if (!child || child.exitCode != null) {
+    // Python стартует дольше exe — ждём, пока порт реально начнёт слушаться.
+    const deadline = Date.now() + 8000
+    let listening = false
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 150))
+      if (thisProc.exitCode != null || child !== thisProc) break
+      if (await tcpPing(host === '0.0.0.0' ? '127.0.0.1' : host, t.port, 300)) {
+        listening = true
+        break
+      }
+    }
+    if (child !== thisProc || thisProc.exitCode != null) {
       throw new Error('process died immediately after spawn')
     }
+    if (!listening) log('warn', `порт ${t.port} пока не отвечает — продолжаем ждать в фоне`)
 
-    setStatus({ state: 'running', pid: child.pid })
-    log('info', `✓ running on 0.0.0.0:${t.port} (pid=${child.pid})`)
+    setStatus({ state: 'running', pid: thisProc.pid })
+    log('info', `✓ running on ${host}:${t.port} (pid=${thisProc.pid})`)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     log('error', `startup failed: ${msg}`)
-    setStatus({ state: 'error', lastError: msg, pid: undefined })
-    if (child) {
-      try { child.kill('SIGKILL') } catch { /* noop */ }
-      child = null
+    if (proc) {
+      generation++ // обработчики этого процесса больше не трогают состояние
+      try { proc.kill('SIGKILL') } catch { /* noop */ }
+      if (process.platform === 'win32' && proc.pid) void runTaskkill(['/F', '/T', '/PID', String(proc.pid)])
+      unregisterChild(proc.pid)
     }
+    child = null
+    setStatus({ state: 'error', lastError: msg, pid: undefined })
     throw e
   }
 }
@@ -401,18 +500,19 @@ async function stopTgwsImpl(): Promise<void> {
     return
   }
   stopRequested = true
+  // Новое поколение: exit этого процесса, когда бы он ни пришёл, уже не
+  // изменит статус и не обнулит ссылку на следующий процесс.
+  generation++
   setStatus({ state: 'stopping', lastError: undefined })
   log('info', 'stopping TG WS Proxy…')
   const proc = child
   const pid = proc.pid
+  const exited =
+    proc.exitCode != null ? Promise.resolve() : new Promise<void>((resolve) => proc.once('exit', () => resolve()))
 
   try {
     if (process.platform === 'win32' && pid) {
-      await new Promise<void>((resolve) => {
-        const p = spawn('taskkill.exe', ['/F', '/T', '/PID', String(pid)], { windowsHide: true })
-        p.on('exit', () => resolve())
-        p.on('error', () => resolve())
-      })
+      await runTaskkill(['/F', '/T', '/PID', String(pid)])
     } else {
       proc.kill('SIGTERM')
     }
@@ -420,15 +520,13 @@ async function stopTgwsImpl(): Promise<void> {
     log('warn', `kill failed: ${e}`)
   }
 
-  await Promise.race([
-    new Promise<void>((resolve) => proc.once('exit', () => resolve())),
-    new Promise<void>((resolve) => setTimeout(resolve, 500))
-  ])
+  await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 3000))])
 
   if (process.platform !== 'win32' && proc.exitCode == null && !proc.killed) {
     try { proc.kill('SIGKILL') } catch { /* noop */ }
   }
 
+  unregisterChild(pid)
   child = null
   setStatus({ state: 'stopped', pid: undefined, lastError: undefined })
   stopRequested = false
@@ -477,8 +575,15 @@ export async function getTgwsShareLinks(): Promise<TgwsShareInfo> {
   const cfg = await getAppConfig()
   const t = cfg.tgws || { host: '127.0.0.1', port: 1443, secret: '' }
   const rawSecret = isValidSecret(t.secret) ? t.secret : await ensureSecret(t.secret)
-  // Telegram MTProto proxy link requires the 'dd' prefix for randomized padded intermediate protocol
-  const clientSecret = rawSecret.startsWith('dd') ? rawSecret : `dd${rawSecret}`
+  // `dd` — padded intermediate (как у Flowseal). При включённом Fake TLS
+  // клиенту нужен ee-секрет: `ee` + секрет + hex(домен маскировки), иначе
+  // Telegram подключается без маскировки и сервер его отвергает.
+  const ftls = (t as TgwsConfig).fakeTlsDomain?.trim()
+  const clientSecret = ftls
+    ? `ee${rawSecret}${Buffer.from(ftls, 'ascii').toString('hex')}`
+    : rawSecret.startsWith('dd')
+      ? rawSecret
+      : `dd${rawSecret}`
   const localHost = t.host && t.host !== '0.0.0.0' ? t.host : '127.0.0.1'
 
   const localLink = `tg://proxy?server=${encodeURIComponent(localHost)}&port=${t.port}&secret=${encodeURIComponent(clientSecret)}`

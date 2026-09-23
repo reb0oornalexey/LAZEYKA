@@ -26,7 +26,7 @@ import { cn } from '@renderer/lib/utils'
 import { useIncyStore } from '@renderer/store/incy-store'
 import {
   incyGetSettings,
-  incySaveSettings,
+  incyPatchSettings,
   incyGetNodes,
   incyConnect,
   incyDisconnect,
@@ -86,22 +86,34 @@ export default function ExitLagPage(): React.ReactElement {
     void loadData()
   }, [])
 
-  const handleUpdateSettings = async (patch: Partial<IncySettings>): Promise<void> => {
-    if (!settings) return
-    const next = { ...settings, ...patch }
-    setSettings(next)
+  /**
+   * Отправляет в main только изменённые поля (patch), а не весь объект,
+   * загруженный при открытии страницы: иначе затирались изменения, сделанные
+   * на вкладке INCY или из трея. Если туннель поднят, main переподключит его
+   * сам — ручное «переподключите» больше не нужно.
+   */
+  const handleUpdateSettings = async (patch: Partial<IncySettings>): Promise<boolean> => {
+    if (!settings) return false
+    setSettings({ ...settings, ...patch })
     try {
-      await incySaveSettings(next)
+      const res = await incyPatchSettings(patch)
+      setSettings(res.settings)
+      return res.reapplied
     } catch (e: any) {
       toast.error('Не удалось сохранить настройки', { description: e?.message || String(e) })
+      return false
     }
   }
 
   const handleTogglePerAppProxy = async (enabled: boolean): Promise<void> => {
-    await handleUpdateSettings({ perAppProxy: enabled })
-    if (isConnected) {
-      toast.info('Настройки ExitLag сохранены', {
-        description: 'Переподключите туннель, чтобы обновить фильтрацию пакетов Windows.'
+    const reapplied = await handleUpdateSettings(
+      enabled ? { perAppProxy: true, perAppMode: 'proxy_only' } : { perAppProxy: false }
+    )
+    if (reapplied) {
+      toast.info(enabled ? 'ExitLag включён' : 'ExitLag выключен', {
+        description: enabled
+          ? 'Туннель переподключается: через VPN пойдут только приложения из списка.'
+          : 'Туннель переподключается: весь трафик снова идёт через VPN.'
       })
     } else {
       toast.success(enabled ? 'Режим ExitLag активирован' : 'Режим ExitLag выключен')
@@ -109,18 +121,17 @@ export default function ExitLagPage(): React.ReactElement {
   }
 
   const handleSetPerAppMode = async (mode: 'proxy_only' | 'bypass_only'): Promise<void> => {
-    await handleUpdateSettings({ perAppMode: mode })
-    if (isConnected) {
-      toast.info('Режим изменён', {
-        description: 'Переподключите туннель для применения.'
-      })
-    }
+    const reapplied = await handleUpdateSettings({ perAppMode: mode })
+    if (reapplied) toast.info('Режим изменён — туннель переподключается')
   }
 
   const handleAddPerAppProcess = async (processName: string): Promise<void> => {
-    const raw = processName.trim()
-    if (!raw || !settings) return
-    const cleaned = raw.toLowerCase().endsWith('.exe') ? raw.toLowerCase() : `${raw.toLowerCase()}.exe`
+    // Имя хранится в исходном регистре (Discord.exe, VALORANT-Win64-Shipping.exe):
+    // сравнение без учёта регистра делает ядро. Раньше всё приводилось к
+    // нижнему регистру, и такие приложения в туннель не попадали.
+    const base = processName.trim().split(/[\\/]/).pop()?.trim() ?? ''
+    if (!base || !settings) return
+    const cleaned = /\.exe$/i.test(base) ? base : `${base}.exe`
     const current = settings.perAppProcesses ?? []
     if (current.some((p) => p.toLowerCase() === cleaned)) {
       toast.info('Это приложение уже в списке')
@@ -171,11 +182,14 @@ export default function ExitLagPage(): React.ReactElement {
 
   const handleApplyPreset = async (presetApps: string[]): Promise<void> => {
     if (!settings) return
-    const current = new Set((settings.perAppProcesses ?? []).map((p) => p.toLowerCase()))
+    const list = [...(settings.perAppProcesses ?? [])]
+    const seen = new Set(list.map((p) => p.toLowerCase()))
     for (const app of presetApps) {
-      current.add(app.toLowerCase())
+      if (seen.has(app.toLowerCase())) continue
+      seen.add(app.toLowerCase())
+      list.push(app)
     }
-    await handleUpdateSettings({ perAppProcesses: Array.from(current) })
+    await handleUpdateSettings({ perAppProcesses: list })
     toast.success('Пресет применён')
   }
 
@@ -259,6 +273,10 @@ export default function ExitLagPage(): React.ReactElement {
   const activeNode = nodes.find((n) => n.id === status.selectedNodeId) || nodes[0]
   const isPerAppEnabled = Boolean(settings?.perAppProxy)
   const appCount = settings?.perAppProcesses?.length ?? 0
+  // «Работает» — это подтверждение от ядра, а не просто включённый флажок:
+  // флажок мог быть включён при остановленном туннеле или с пустым списком.
+  const exitLagRunning = isConnected && Boolean(status.exitLagActive)
+  const appWord = appCount === 1 ? 'программа' : appCount >= 2 && appCount <= 4 ? 'программы' : 'программ'
 
   return (
     <BasePage title="ExitLag">
@@ -280,9 +298,17 @@ export default function ExitLagPage(): React.ReactElement {
                   <Badge variant="outline" className="text-[10px] px-2 py-0 border-primary/50 text-primary font-mono font-bold uppercase bg-primary/10">
                     КИЛЛЕР-ФИЧА
                   </Badge>
-                  {isPerAppEnabled ? (
+                  {exitLagRunning ? (
                     <Badge className="text-[10px] px-2 py-0 bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-semibold">
-                      АКТИВЕН ({appCount} {appCount === 1 ? 'программа' : appCount >= 2 && appCount <= 4 ? 'программы' : 'программ'})
+                      РАБОТАЕТ ({status.exitLagApps?.length ?? appCount} {appWord})
+                    </Badge>
+                  ) : isPerAppEnabled && appCount === 0 ? (
+                    <Badge className="text-[10px] px-2 py-0 bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-semibold">
+                      ДОБАВЬТЕ ПРИЛОЖЕНИЯ
+                    </Badge>
+                  ) : isPerAppEnabled ? (
+                    <Badge className="text-[10px] px-2 py-0 bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-semibold">
+                      ВКЛЮЧЁН · ТУННЕЛЬ ОСТАНОВЛЕН
                     </Badge>
                   ) : (
                     <Badge variant="secondary" className="text-[10px] px-2 py-0 text-muted-foreground">
@@ -320,7 +346,7 @@ export default function ExitLagPage(): React.ReactElement {
                   <div className="text-xs font-semibold text-foreground flex items-center gap-1.5 truncate">
                     <span>Туннель INCY:</span>
                     <span className={isConnected ? 'text-emerald-500 font-bold' : 'text-muted-foreground'}>
-                      {isConnected ? 'Подключен и фильтрует' : 'Остановлен'}
+                      {exitLagRunning ? 'Подключен и фильтрует' : isConnected ? 'Подключен (обычный VPN)' : 'Остановлен'}
                     </span>
                     {activeNode && isConnected && (
                       <span className="text-muted-foreground font-normal truncate">
@@ -710,10 +736,10 @@ export default function ExitLagPage(): React.ReactElement {
                             </div>
                             <div className="flex items-center gap-3 text-[10px] text-muted-foreground mt-1.5 font-mono flex-wrap">
                               <span>ПК → VPN: <b className="text-foreground">{n.userToNodePing ?? '—'} мс</b></span>
-                              <span>VPN → Игра: <b className="text-foreground">{n.nodeToGamePing} мс</b></span>
+                              <span title="Оценка по расстоянию между дата-центрами, а не замер">VPN → Игра: <b className="text-foreground">≈{n.nodeToGamePing} мс</b></span>
                               {typeof n.savingMs === 'number' && n.savingMs > 0 && (
                                 <span className="text-emerald-500 font-bold">
-                                  ⚡ -{n.savingMs} мс быстрее прямого!
+                                  ⚡ ≈{n.savingMs} мс быстрее прямого (оценка)
                                 </span>
                               )}
                             </div>
@@ -725,7 +751,7 @@ export default function ExitLagPage(): React.ReactElement {
                                 'font-mono text-base font-black',
                                 n.isBest ? 'text-emerald-500' : 'text-foreground'
                               )}>
-                                {n.totalPing ? `${n.totalPing} мс` : '—'}
+                                {n.totalPing ? `≈${n.totalPing} мс` : '—'}
                               </div>
                             </div>
 

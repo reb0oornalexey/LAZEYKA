@@ -32,29 +32,31 @@ GPL applies to those files exactly as it does to the rest of LAZEYKA.
 
 ## 2. Flowseal/tg-ws-proxy (TgWsProxy)
 
-The bundled `TgWsProxy_windows.exe` is a CLI rebuild of
-**Flowseal/tg-ws-proxy** — a Telegram MTProto-over-WebSocket relay.
+Starting with LAZEYKA 1.1.5, TgWsProxy runs from **unmodified source** of
+**Flowseal/tg-ws-proxy** (the `proxy/` package, tag `v1.10.4`) through its
+console entry point `proxy.tg_ws_proxy:main`, inside a bundled embeddable
+CPython. No tray icon, no windows, CLI arguments are honoured.
 
 - Upstream source: <https://github.com/Flowseal/tg-ws-proxy>
-- Corresponding source for the bundled CLI rebuild:
-  <https://github.com/tenstepsbeforedecay/slipgate-tgws-cli>
-- License: GNU General Public License v3.0
-- Copyright (C) Flowseal and tg-ws-proxy contributors
+- Bundled at: `resources/tgws/app/proxy/` (+ `resources/tgws/app/LICENSE`)
+- License: MIT — Copyright (c) 2026 Flowseal
 
-The rebuild exists because the official Flowseal release ships a tray-GUI
-binary (entry point `windows.py` + `pystray`) that pops a first-run
-dialog, parks a tray icon, ignores `--host`/`--port`/`--secret` CLI args
-and acquires a single-instance mutex incompatible with LAZEYKA's
-headless integration. It rebuilds the exact same source through
-PyInstaller against `proxy.tg_ws_proxy:main` (the CLI entry point),
-producing a true headless `.exe` with no UI surface. No source code is
-modified — only the build configuration.
+The official `TgWsProxy_windows.exe` release is a tray-GUI build
+(`windows.py` + `pystray`) that ignores `--host`/`--port`/`--secret`/`--dc-ip`
+and parks a tray icon. It is kept in `resources/tgws/` only as a fallback for
+installations without the bundled Python.
 
-> The link above is the GPL-3.0 "corresponding source" for the binary we
-> ship. It must stay: distributing a GPL binary without pointing to the
-> source it was built from violates the licence. It is an attribution, not
-> LAZEYKA branding. To drop it, first publish your own mirror of that build
-> configuration and put its URL here instead.
+### Bundled Python runtime (`resources/tgws/python/`)
+
+- CPython 3.12.10 embeddable package for Windows — Python Software
+  Foundation License 2. <https://www.python.org/>
+- cryptography 46.0.5 — Apache-2.0 OR BSD-3-Clause.
+  <https://github.com/pyca/cryptography>
+- cffi 2.1.1 — MIT. <https://github.com/python-cffi/cffi>
+- pycparser 3.0 — BSD-3-Clause. <https://github.com/eliben/pycparser>
+- certifi 2026.7.22 — MPL-2.0. <https://github.com/certifi/python-certifi>
+
+License texts ship inside each package's `*.dist-info/` folder.
 
 ---
 
