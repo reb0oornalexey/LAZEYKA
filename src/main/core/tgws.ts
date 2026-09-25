@@ -144,7 +144,8 @@ async function killStaleTgws(): Promise<boolean> {
       await runTaskkill(['/F', '/T', '/PID', String(pid)])
       unregisterChild(pid)
     }
-    await runTaskkill(['/F', '/IM', 'TgWsProxy_windows.exe', '/T'])
+    // Только свои процессы: `taskkill /IM TgWsProxy_windows.exe` убивал и
+    // отдельно запущенный пользователем TgWsProxy от Flowseal.
     log('info', 'зависшие экземпляры TgWsProxy завершены')
     await new Promise((r) => setTimeout(r, 300))
     return true
@@ -170,10 +171,18 @@ async function ensurePortFree(host: string, port: number): Promise<void> {
     log('info', `port ${port} freed after cleanup`)
     return
   }
-  throw new Error(`port ${port} is occupied and could not be freed`)
+  throw new Error(`Порт ${port} занят другой программой (например, отдельным TgWsProxy). Закройте её или смените порт.`)
 }
 
 // ---- Windows Firewall helper ---------------------------------------------
+
+/** Правило брандмауэра больше не нужно (прокси слушает только этот ПК). */
+function removeFirewallRule(): void {
+  if (process.platform !== 'win32') return
+  try {
+    exec('netsh advfirewall firewall delete rule name="LAZEYKA TGWS Proxy" >nul 2>&1', { windowsHide: true })
+  } catch { /* best effort */ }
+}
 
 function ensureFirewallRule(port: number): void {
   if (process.platform !== 'win32') return
@@ -451,7 +460,11 @@ async function startTgwsImpl(): Promise<void> {
 
     // 3) Port pre-check & Windows Firewall (if listening on all interfaces)
     await ensurePortFree(host, t.port)
-    if (host === '0.0.0.0') {
+    // Правило нужно для любого адреса, доступного из сети (0.0.0.0 или
+    // конкретный IP в локальной сети), и не нужно для 127.0.0.1.
+    if (/^(127\.|localhost$|::1$)/i.test(host)) {
+      removeFirewallRule()
+    } else {
       ensureFirewallRule(t.port)
     }
 
@@ -643,18 +656,21 @@ export async function getTgwsShareLinks(): Promise<TgwsShareInfo> {
   // клиенту нужен ee-секрет: `ee` + секрет + hex(домен маскировки), иначе
   // Telegram подключается без маскировки и сервер его отвергает.
   const ftls = (t as TgwsConfig).fakeTlsDomain?.trim()
-  const clientSecret = ftls
-    ? `ee${rawSecret}${Buffer.from(ftls, 'ascii').toString('hex')}`
-    : rawSecret.startsWith('dd')
-      ? rawSecret
-      : `dd${rawSecret}`
+  // Сырой секрет — всегда ровно 32 hex. Раньше проверка startsWith('dd')
+  // срабатывала на случайном секрете, начинающемся с «dd», и префикс терялся.
+  const clientSecret = ftls ? `ee${rawSecret}${Buffer.from(ftls, 'ascii').toString('hex')}` : `dd${rawSecret}`
   const localHost = t.host && t.host !== '0.0.0.0' ? t.host : '127.0.0.1'
 
   const localLink = `tg://proxy?server=${encodeURIComponent(localHost)}&port=${t.port}&secret=${encodeURIComponent(clientSecret)}`
   const httpLink = `https://t.me/proxy?server=${encodeURIComponent(localHost)}&port=${t.port}&secret=${encodeURIComponent(clientSecret)}`
 
+  // Ссылка для телефона имеет смысл, только если прокси слушает сеть: хост
+  // 0.0.0.0 или адрес этого ПК в локальной сети. При 127.0.0.1 телефон по
+  // QR не подключался, хотя этот режим был выбран по умолчанию.
   const lanIps = getLocalNetworkIps()
-  const lanIp = lanIps[0] || null
+  const bindHost = (t.host || '127.0.0.1').trim()
+  const listensLan = bindHost === '0.0.0.0' || lanIps.includes(bindHost)
+  const lanIp = listensLan ? (bindHost === '0.0.0.0' ? lanIps[0] || null : bindHost) : null
   const lanLink = lanIp
     ? `tg://proxy?server=${encodeURIComponent(lanIp)}&port=${t.port}&secret=${encodeURIComponent(clientSecret)}`
     : null

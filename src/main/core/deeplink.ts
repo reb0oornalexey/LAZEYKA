@@ -19,7 +19,7 @@
  *   lazeyka://routing/add/<base64>   append routing rules
  *   lazeyka://restore/<base64>       subscription + settings from a backup link
  */
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, dialog } from 'electron'
 import {
   connectIncyNode,
   disconnectIncy,
@@ -85,6 +85,45 @@ function notify(title: string, body: string): void {
 }
 
 /** Tell the renderer to reload INCY data after a link changed something. */
+/**
+ * Подтверждение перед командой, которая меняет настройки или список серверов.
+ *
+ * Ссылку `lazeyka://` может открыть любая веб-страница. Раньше импорт,
+ * правила маршрутизации и восстановление настроек применялись молча — так
+ * можно было подсунуть чужую подписку или открыть локальный прокси в сеть.
+ */
+async function confirmDeeplink(message: string, detail: string): Promise<boolean> {
+  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.isVisible()) ?? null
+  const opts = {
+    type: 'question' as const,
+    buttons: ['Применить', 'Отмена'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    title: 'LAZEYKA — ссылка lazeyka://',
+    message,
+    detail: `${detail}\n\nЕсли вы не открывали эту ссылку сами, нажмите «Отмена».`
+  }
+  const res = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts)
+  if (res.response !== 0) appLog('info', '[deeplink] Пользователь отменил команду')
+  return res.response === 0
+}
+
+/** Ключи настроек, которые ссылка восстановления не меняет никогда. */
+const RESTORE_BLOCKED_KEYS = new Set([
+  'socksUser',
+  'socksPass',
+  'socksAuth',
+  'selectedNodeId',
+  'allowLan',
+  'mixedPort'
+])
+
+function describePayloadHost(payload: string): string {
+  const m = /https?:\/\/[^\s/?#]+/i.exec(payload)
+  return m ? m[0] : payload.slice(0, 80)
+}
+
 function broadcastRefresh(): void {
   for (const w of BrowserWindow.getAllWindows()) {
     if (!w.isDestroyed()) w.webContents.send('incy:dataChanged')
@@ -139,6 +178,7 @@ export async function handleDeepLink(url: string): Promise<void> {
           notify('LAZEYKA', 'Ссылка не содержит подписку или конфигурацию')
           break
         }
+        if (!(await confirmDeeplink('Добавить серверы из ссылки?', `Источник: ${describePayloadHost(payload)}`))) break
         const res = await importIncyInput(payload)
         broadcastRefresh()
         notify(
@@ -159,6 +199,18 @@ export async function handleDeepLink(url: string): Promise<void> {
           notify('LAZEYKA — маршрутизация', 'В ссылке нет корректных правил')
           break
         }
+        const preview = rules
+          .slice(0, 8)
+          .map((r) => `${r.value} → ${r.action === 'proxy' ? 'VPN' : r.action === 'direct' ? 'напрямую' : 'блок'}`)
+          .join('\n')
+        if (
+          !(await confirmDeeplink(
+            mode === 'oneadd' ? 'Заменить все свои правила маршрутизации?' : 'Добавить правила маршрутизации?',
+            `${preview}${rules.length > 8 ? `\n…и ещё ${rules.length - 8}` : ''}`
+          ))
+        ) {
+          break
+        }
         const settings = loadIncySettings()
         settings.customRoutingRules =
           mode === 'oneadd' ? rules : [...(settings.customRoutingRules ?? []), ...rules]
@@ -173,6 +225,24 @@ export async function handleDeepLink(url: string): Promise<void> {
 
       case 'restore': {
         const payload = decodePayload(segments.slice(1).join('/'))
+        let subsHint = ''
+        try {
+          const d = JSON.parse(payload)
+          const list: string[] = Array.isArray(d?.subscriptions)
+            ? d.subscriptions.map((s: { url?: unknown }) => String(s?.url ?? ''))
+            : d?.subscription?.url
+              ? [String(d.subscription.url)]
+              : []
+          subsHint = list.filter(Boolean).map(describePayloadHost).join('\n')
+        } catch { /* не JSON — applyRestorePayload сам откажет */ }
+        if (
+          !(await confirmDeeplink(
+            'Восстановить настройки INCY из ссылки?',
+            `Настройки INCY будут заменены значениями из ссылки.${subsHint ? `\nПодписки:\n${subsHint}` : ''}`
+          ))
+        ) {
+          break
+        }
         const applied = applyRestorePayload(payload)
         if (applied) {
           broadcastRefresh()
@@ -254,7 +324,9 @@ function applyRestorePayload(payload: string): boolean {
       for (const [key, value] of Object.entries(data.settings)) {
         // Local-proxy credentials stay machine-specific, and a selected node id
         // from another device points at a server this one does not have.
-        if (key === 'socksUser' || key === 'socksPass' || key === 'selectedNodeId') continue
+        // Плюс то, что открывает локальный прокси наружу: доступ из сети,
+        // выключенный пароль и порт не меняются чужой ссылкой.
+        if (RESTORE_BLOCKED_KEYS.has(key)) continue
         ;(next as any)[key] = value
       }
       saveIncySettings(next)

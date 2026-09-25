@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { writeFileAtomic } from '../utils/atomic-write'
 import path from 'node:path'
 import http from 'node:http'
 import https from 'node:https'
@@ -66,6 +67,20 @@ export interface IncyNode {
   wsPath?: string
   wsHost?: string
   grpcServiceName?: string
+  /** ALPN из ссылки (`alpn=h2,http/1.1`). */
+  alpn?: string[]
+  /** Не проверять сертификат сервера (`allowInsecure=1` / `insecure=1`). */
+  insecure?: boolean
+  /** Hysteria2: пароль обфускации salamander. */
+  obfsPassword?: string
+  /** Hysteria2: диапазоны портов для прыжков (`20000:30000`). */
+  hopPorts?: string[]
+  /** VMess: шифр (`scy`) и alterId (`aid`). */
+  vmessCipher?: string
+  alterId?: number
+  /** Shadowsocks: SIP003-плагин (`obfs-local`, `v2ray-plugin`) и его параметры. */
+  plugin?: string
+  pluginOpts?: string
 
   rawUri?: string
   rawJson?: any
@@ -271,7 +286,14 @@ export interface IncySettings {
 
   // Connection
   autoConnect: boolean
+  /** Kill Switch: при обрыве VPN не пускать мимо него то, что шло через VPN. */
   killSwitch: boolean
+  /** Сам переподключаться, если VPN оборвался не по команде пользователя. */
+  reconnectOnDrop?: boolean
+  /** Сетевой стек TUN sing-box: mixed (по умолчанию), system или gvisor. */
+  tunStack?: 'mixed' | 'system' | 'gvisor'
+  /** MTU TUN-адаптера; 0 — значение sing-box по умолчанию. */
+  tunMtu?: number
   hijackDns: boolean
   allowLan: boolean
   lanViaProxy: boolean
@@ -338,6 +360,7 @@ export interface IncySettings {
   pingTimeoutSec: number
 
   // Performance
+  /** Тайм-аут простоя UDP-сессии, с; меньше 120 — стандартные 5 минут. */
   idleTimeoutSec: number
   maxTcpConnections: number
   maxUdpConnections: number
@@ -361,6 +384,9 @@ export const DEFAULT_INCY_SETTINGS: IncySettings = {
 
   autoConnect: false,
   killSwitch: false,
+  reconnectOnDrop: true,
+  tunStack: 'mixed',
+  tunMtu: 0,
   hijackDns: true,
   allowLan: false,
   lanViaProxy: true,
@@ -432,6 +458,10 @@ export const DEFAULT_INCY_SETTINGS: IncySettings = {
 
 export interface IncyStatus {
   state: 'stopped' | 'running' | 'connecting' | 'error'
+  /** VPN оборвался, Kill Switch держит закрытым трафик, шедший через VPN. */
+  killSwitchActive?: boolean
+  /** VPN оборвался, идёт автоматическое переподключение. */
+  recovering?: boolean
   activeNodeId: string | null
   selectedNodeId: string | null
   connectionMode: 'tun' | 'system_proxy' | 'only_proxy'
@@ -463,6 +493,11 @@ export function broadcastStatus(next?: Partial<IncyStatus>): IncyStatus {
     currentStatus = { ...currentStatus, ...next }
     // Любое состояние, кроме «работает»/«подключается», закрывает сессию
     // ExitLag — иначе индикатор в сайдбаре остался бы гореть после обрыва.
+    // Рабочее подключение снимает флаги Kill Switch / переподключения.
+    if (next.state === 'running') {
+      currentStatus.killSwitchActive = false
+      currentStatus.recovering = false
+    }
     if (next.state && next.state !== 'running' && next.state !== 'connecting') {
       currentStatus.exitLagActive = false
       currentStatus.exitLagApps = []
@@ -676,10 +711,13 @@ function xrayRuntimeConfigFile(): string {
 
 export function loadIncySettings(): IncySettings {
   const file = incySettingsFile()
-  if (!existsSync(file)) return DEFAULT_INCY_SETTINGS
+  // Копия, а не сам объект по умолчанию: вызывающие меняют результат, и
+  // общий DEFAULT_INCY_SETTINGS «загрязнялся» до следующего чтения.
+  const defaults = (): IncySettings => JSON.parse(JSON.stringify(DEFAULT_INCY_SETTINGS))
+  if (!existsSync(file)) return defaults()
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf-8'))
-    const merged = { ...DEFAULT_INCY_SETTINGS, ...parsed }
+    const merged = { ...defaults(), ...parsed }
     // A settings file written before custom routing existed has no array here,
     // and every consumer iterates it — normalise rather than guard everywhere.
     if (!Array.isArray(merged.customRoutingRules)) merged.customRoutingRules = []
@@ -717,7 +755,7 @@ export function loadIncySettings(): IncySettings {
     }
     return merged
   } catch {
-    return DEFAULT_INCY_SETTINGS
+    return defaults()
   }
 }
 
@@ -753,7 +791,7 @@ export function saveIncySettings(settings: IncySettings): void {
   }
   const file = incySettingsFile()
   mkdirSync(path.dirname(file), { recursive: true })
-  writeFileSync(file, JSON.stringify(settings, null, 2), 'utf-8')
+  writeFileAtomic(file, JSON.stringify(settings, null, 2))
 }
 
 /** Поля настроек, от которых зависит конфиг поднятого туннеля. */
@@ -773,7 +811,31 @@ const TUNNEL_SETTING_KEYS: ReadonlySet<string> = new Set([
   'remoteDns',
   'localDns',
   'preferredIp',
-  'verboseCoreLog'
+  'verboseCoreLog',
+  'idleTimeoutSec',
+  'tunStack',
+  'tunMtu',
+  // Раньше смена этих настроек сохранялась, но до переподключения вручную не
+  // действовала: фрагментация, шумы и mux меняют даже выбор ядра.
+  'fragmentation',
+  'fragmentationPackets',
+  'fragmentationLength',
+  'fragmentationInterval',
+  'noises',
+  'noisesType',
+  'noisesPacket',
+  'noisesDelay',
+  'multiplexing',
+  'muxConcurrency',
+  'xudpConcurrency',
+  'customDns',
+  'allowLan',
+  'lanViaProxy',
+  'mixedPort',
+  'socksAuth',
+  'socksUser',
+  'socksPass',
+  'geoCategoryOverrides'
 ])
 
 let reapplyTimer: ReturnType<typeof setTimeout> | null = null
@@ -789,7 +851,18 @@ let reapplyTimer: ReturnType<typeof setTimeout> | null = null
  */
 let sessionTunnelSig: string | null = null
 function tunnelSig(s: IncySettings): string {
-  return JSON.stringify([...TUNNEL_SETTING_KEYS].map((k) => (s as any)[k] ?? null))
+  // Список ExitLag сравниваем по сути: пока ExitLag выключен, правка списка
+  // туннель не трогает; регистр, порядок и дубли тоже не в счёт.
+  const eff: Record<string, unknown> = { ...s }
+  if (!s.perAppProxy) {
+    eff.perAppMode = null
+    eff.perAppProcesses = null
+  } else {
+    eff.perAppProcesses = normalizePerAppList(s.perAppProcesses)
+      .map((p) => p.toLowerCase())
+      .sort()
+  }
+  return JSON.stringify([...TUNNEL_SETTING_KEYS].map((k) => eff[k] ?? null))
 }
 function tunnelOutdated(): boolean {
   return (
@@ -869,6 +942,16 @@ async function runFailover(reason: string): Promise<void> {
     const nodes = loadIncyNodes()
     const fromNode = nodes.find((n) => n.id === from)
     const fromName = fromNode?.name ?? from
+    // Сначала проверяем сам узел: DNS-таймауты бывают и у провайдера
+    // (local-dns ходит напрямую). Раньше исправный узел помечался сломанным,
+    // туннель рвался, и так по кругу каждые две минуты.
+    if (fromNode) {
+      const alive = await httpViaCore(fromNode, s.pingTestUrl || 'https://www.gstatic.com/generate_204', 'HEAD', 6000)
+      if (alive != null) {
+        appendLog(`Автопереключение отменено: «${fromName}» отвечает (${alive} мс), сбой не в узле (${reason}).`)
+        return
+      }
+    }
     // Ключ по имени/адресу, а не по id: id меняются при обновлении подписки.
     if (fromNode) failedNodeUntil.set(nodeAutoKey(fromNode), Date.now() + 10 * 60_000)
     const now = Date.now()
@@ -905,9 +988,14 @@ async function runFailover(reason: string): Promise<void> {
         continue
       }
       appendLog(`Автопереключение: «${fromName}» → «${n.name}» (ответ через узел за ${ok} мс).`)
-      showSystemNotification('LAZEYKA — узел заменён', `«${fromName}» перестал работать. Подключено: «${n.name}».`)
       selectIncyNode(n.id)
       await connectIncyNode(n.id)
+      // Уведомляем только о состоявшейся замене.
+      if (currentStatus.state === 'running' && currentStatus.activeNodeId === n.id) {
+        showSystemNotification('LAZEYKA — узел заменён', `«${fromName}» перестал работать. Подключено: «${n.name}».`)
+      } else {
+        appendLog(`Автопереключение: подключиться к «${n.name}» не удалось.`)
+      }
       return
     }
     appendLog('ВНИМАНИЕ: автопереключение — ни один из лучших узлов не пропустил трафик. Остаёмся на текущем.')
@@ -970,7 +1058,13 @@ export function loadIncyNodes(): IncyNode[] {
     // dead node. A reading survives only if it was taken during this run and
     // is still recent.
     const now = Date.now()
-    return parsed.map((n: IncyNode) => {
+    return parsed.map((n0: IncyNode) => {
+      // VMess-узлы, сохранённые старой версией, не знали своего транспорта
+      // (ws/grpc) — достаём его из исходного JSON ссылки.
+      const n =
+        n0.protocol === 'vmess' && !n0.network && n0.rawJson && typeof n0.rawJson === 'object'
+          ? { ...n0, ...vmessFieldsFromJson(n0.rawJson) }
+          : n0
       const at = typeof n.latencyAt === 'number' ? n.latencyAt : 0
       const fresh = at >= PROCESS_STARTED_AT && now - at < LATENCY_TTL_MS
       return fresh ? n : { ...n, latencyMs: null, latencyAt: undefined }
@@ -991,8 +1085,26 @@ export function saveIncyNodes(nodes: IncyNode[]): void {
   // it. It also means a re-ping in a long session refreshes the clock, which a
   // stamp-only-if-missing rule would not.
   const now = Date.now()
-  const stamped = nodes.map((n) => (n.latencyMs !== null ? { ...n, latencyAt: now } : n))
-  writeFileSync(file, JSON.stringify(stamped, null, 2), 'utf-8')
+  // Неудачный замер («нет ответа») тоже хранит время — иначе после
+  // сохранения упавший сервер снова выглядел бы непроверенным.
+  const stamped = nodes.map((n) => (n.latencyMs !== null ? { ...n, latencyAt: now } : n.latencyAt ? { ...n, latencyAt: now } : n))
+  writeFileAtomic(file, JSON.stringify(stamped, null, 2))
+}
+
+/**
+ * Записать результаты замера пинга в ТЕКУЩИЙ список узлов.
+ *
+ * Раньше «Пинг всех» в конце сохранял весь список, снятый до замера. Если за
+ * эти 20–30 секунд успевала обновиться подписка, новые узлы затирались
+ * старыми, а выбранный узел указывал на исчезнувший id («Узел не найден»).
+ */
+export function saveIncyLatencies(results: { id: string; latencyMs: number | null }[]): IncyNode[] {
+  const byId = new Map(results.map((r) => [r.id, r.latencyMs]))
+  const nodes = loadIncyNodes().map((n) =>
+    byId.has(n.id) ? { ...n, latencyMs: byId.get(n.id) ?? null, latencyAt: Date.now() } : n
+  )
+  saveIncyNodes(nodes)
+  return nodes
 }
 
 /** Файл со списком подписок. Пришёл на смену одиночному incy-sub.json. */
@@ -1071,7 +1183,7 @@ export function loadIncySubscriptions(): IncySubscription[] {
 export function saveIncySubscriptions(list: IncySubscription[]): void {
   const file = incySubsFile()
   mkdirSync(path.dirname(file), { recursive: true })
-  writeFileSync(file, JSON.stringify(list, null, 2), 'utf-8')
+  writeFileAtomic(file, JSON.stringify(list, null, 2))
 }
 
 /**
@@ -1114,30 +1226,101 @@ export function upsertIncySubscription(sub: IncySubscription): IncySubscription 
   return idx >= 0 ? list[idx] : withId
 }
 
+/** decodeURIComponent, который не роняет разбор на одиночном «%» в имени узла. */
+function safeDecode(s: string): string {
+  try {
+    return decodeURIComponent(s)
+  } catch {
+    // Одиночный «%» (например, «Скорость 100%») ломал раскодирование всей
+    // строки — раскодируем только корректные последовательности.
+    return s.replace(/(?:%[0-9A-Fa-f]{2})+/g, (m) => {
+      try {
+        return decodeURIComponent(m)
+      } catch {
+        return m
+      }
+    })
+  }
+}
+
+/** Хост из ссылки без квадратных скобок IPv6 (`[2001:db8::1]` → `2001:db8::1`). */
+function urlHost(url: URL): string {
+  return url.hostname.replace(/^\[|\]$/g, '')
+}
+
+/** Имя узла из `#фрагмента` ссылки, иначе `host:port`. */
+function linkName(url: URL): string {
+  return safeDecode(url.hash.replace(/^#/, '')) || `${urlHost(url)}:${url.port}`
+}
+
+function isTruthyParam(v: string | null | undefined): boolean {
+  return v != null && /^(1|true|yes)$/i.test(String(v))
+}
+
+function newNodeId(): string {
+  return `node-${Date.now()}-${randomBytes(3).toString('hex')}`
+}
+
+/** `20000-30000,443` → `['20000:30000', '443:443']` (формат server_ports sing-box). */
+function parsePortRanges(spec: string): string[] {
+  return spec
+    .split(',')
+    .map((p) => p.trim())
+    .filter((p) => /^\d+(-\d+)?$/.test(p))
+    .map((p) => (p.includes('-') ? p.replace('-', ':') : `${p}:${p}`))
+}
+
 /**
- * Read the transport out of a share-link query string.
+ * Транспорт и TLS-параметры из query-строки ссылки.
  *
- * `type` names the transport (`ws`, `grpc`, `httpupgrade`, `xhttp`), and each
- * one needs its own companion fields — a WebSocket without its path lands on
- * the wrong endpoint, a gRPC stream without its service name is refused.
- * Defaults to plain TCP, which is what the vast majority of links use.
+ * `type` — транспорт (`ws`, `grpc`, `httpupgrade`, `xhttp`), у каждого свои
+ * поля: WebSocket без пути попадает не туда, gRPC без имени сервиса сервер
+ * отклоняет. URLSearchParams уже раскодировал значения — повторный
+ * decodeURIComponent портил пути с «%» и падал на них.
  */
 function parseTransportParams(params: URLSearchParams): Partial<IncyNode> {
   const type = (params.get('type') || 'tcp').toLowerCase()
   const out: Partial<IncyNode> = {}
-  if (type === 'ws' || type === 'httpupgrade' || type === 'xhttp') {
-    out.network = type as IncyNode['network']
-    const path = params.get('path')
-    if (path) out.wsPath = decodeURIComponent(path)
-    const host = params.get('host')
-    if (host) out.wsHost = host
+  if (type === 'ws' || type === 'httpupgrade' || type === 'xhttp' || type === 'splithttp') {
+    out.network = type === 'splithttp' ? 'xhttp' : (type as IncyNode['network'])
+    const p = params.get('path')
+    if (p) out.wsPath = p
+    const h = params.get('host')
+    if (h) out.wsHost = h
   } else if (type === 'grpc') {
     out.network = 'grpc'
-    const svc = params.get('serviceName')
-    if (svc) out.grpcServiceName = decodeURIComponent(svc)
+    const svc = params.get('serviceName') || params.get('path')
+    if (svc) out.grpcServiceName = svc
   } else {
     out.network = 'tcp'
   }
+  const alpn = params.get('alpn')
+  if (alpn) out.alpn = alpn.split(',').map((s) => s.trim()).filter(Boolean)
+  if (isTruthyParam(params.get('allowInsecure')) || isTruthyParam(params.get('insecure'))) out.insecure = true
+  return out
+}
+
+/** Поля транспорта из JSON-формата vmess:// (v2rayN «v2»). */
+export function vmessFieldsFromJson(v: any): Partial<IncyNode> {
+  const out: Partial<IncyNode> = {}
+  const netRaw = String(v?.net || 'tcp').toLowerCase()
+  const path = typeof v?.path === 'string' && v.path ? v.path : undefined
+  const host = typeof v?.host === 'string' && v.host ? v.host : undefined
+  if (netRaw === 'ws' || netRaw === 'httpupgrade' || netRaw === 'xhttp' || netRaw === 'splithttp') {
+    out.network = netRaw === 'splithttp' ? 'xhttp' : (netRaw as IncyNode['network'])
+    if (path) out.wsPath = path
+    if (host) out.wsHost = host
+  } else if (netRaw === 'grpc') {
+    out.network = 'grpc'
+    if (path) out.grpcServiceName = path
+  } else {
+    out.network = 'tcp'
+  }
+  if (typeof v?.scy === 'string' && v.scy) out.vmessCipher = v.scy
+  const aid = Number(v?.aid)
+  if (Number.isFinite(aid) && aid > 0) out.alterId = aid
+  if (typeof v?.alpn === 'string' && v.alpn) out.alpn = v.alpn.split(',').map((s: string) => s.trim()).filter(Boolean)
+  if (isTruthyParam(v?.allowInsecure) || isTruthyParam(v?.insecure) || v?.allowInsecure === true) out.insecure = true
   return out
 }
 
@@ -1147,15 +1330,16 @@ export function parseIncyUri(uri: string): IncyNode | null {
     if (trimmed.startsWith('vless://')) {
       const url = new URL(trimmed)
       const params = url.searchParams
+      const sec = (params.get('security') || 'none').toLowerCase()
       return {
-        id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        name: decodeURIComponent(url.hash.replace('#', '') || `${url.hostname}:${url.port}`),
+        id: newNodeId(),
+        name: linkName(url),
         protocol: 'vless',
-        server: url.hostname,
+        server: urlHost(url),
         port: Number(url.port) || 443,
-        uuid: url.username,
-        security: (params.get('security') as any) || 'none',
-        sni: params.get('sni') || undefined,
+        uuid: safeDecode(url.username),
+        security: sec === 'reality' ? 'reality' : sec === 'tls' || sec === 'xtls' ? 'tls' : 'none',
+        sni: params.get('sni') || params.get('peer') || undefined,
         publicKey: params.get('pbk') || undefined,
         shortId: params.get('sid') || undefined,
         flow: params.get('flow') || undefined,
@@ -1166,14 +1350,13 @@ export function parseIncyUri(uri: string): IncyNode | null {
       }
     }
 
-    // vmess:// is base64-encoded JSON (the v2rayN "v2" format). The protocol
-    // was already listed in IncyNode's union type, but no branch ever parsed
-    // it — every vmess link in a subscription was silently discarded.
+    // vmess:// бывает двух видов: base64-JSON (формат v2rayN) и обычная
+    // ссылка `vmess://uuid@host:port?type=ws&security=tls#имя`.
     if (trimmed.startsWith('vmess://')) {
-      const payload = trimmed.slice('vmess://'.length)
+      const payload = trimmed.slice('vmess://'.length).replace(/#.*$/, '')
       let decoded = ''
       try {
-        decoded = Buffer.from(payload, 'base64').toString('utf-8')
+        decoded = Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8')
       } catch {
         decoded = ''
       }
@@ -1181,116 +1364,167 @@ export function parseIncyUri(uri: string): IncyNode | null {
         const v = JSON.parse(decoded)
         const port = Number(v.port) || 443
         const tls = String(v.tls || '').toLowerCase()
+        const server = String(v.add || '').replace(/^\[|\]$/g, '')
         return {
-          id: `node-${Date.now()}-${randomBytes(3).toString('hex')}`,
-          name: v.ps || v.remarks || `${v.add}:${port}`,
+          id: newNodeId(),
+          name: v.ps || v.remarks || `${server}:${port}`,
           protocol: 'vmess',
-          server: String(v.add || ''),
+          server,
           port,
           uuid: String(v.id || ''),
-          security: tls === 'tls' || tls === 'reality' ? (tls as 'tls' | 'reality') : 'none',
-          sni: v.sni || v.host || undefined,
+          security: tls === 'tls' ? 'tls' : 'none',
+          sni: v.sni || (tls === 'tls' ? v.host : undefined) || undefined,
           fingerprint: v.fp || 'chrome',
+          ...vmessFieldsFromJson(v),
           rawUri: trimmed,
           rawJson: v,
           latencyMs: null
         }
       }
+      if (payload.includes('@')) {
+        const url = new URL(trimmed)
+        const params = url.searchParams
+        const sec = (params.get('security') || 'none').toLowerCase()
+        const aid = Number(params.get('alterId') || params.get('aid'))
+        return {
+          id: newNodeId(),
+          name: linkName(url),
+          protocol: 'vmess',
+          server: urlHost(url),
+          port: Number(url.port) || 443,
+          uuid: safeDecode(url.username),
+          security: sec === 'tls' ? 'tls' : 'none',
+          sni: params.get('sni') || undefined,
+          fingerprint: params.get('fp') || 'chrome',
+          ...(params.get('encryption') ? { vmessCipher: params.get('encryption') as string } : {}),
+          ...(aid > 0 ? { alterId: aid } : {}),
+          ...parseTransportParams(params),
+          rawUri: trimmed,
+          latencyMs: null
+        }
+      }
     }
 
-    if (trimmed.startsWith('hysteria2://') || trimmed.startsWith('hy2://')) {
-      const url = new URL(trimmed.replace('hy2://', 'hysteria2://'))
+    if (/^(hysteria2|hy2):\/\//i.test(trimmed)) {
+      let norm = trimmed.replace(/^hy2:\/\//i, 'hysteria2://')
+      // Прыжки портов `host:443,20000-30000` — new URL такое не разбирает.
+      let hopPorts: string[] | undefined
+      let firstPort: number | undefined
+      const hp = /^(hysteria2:\/\/[^@/?#]*@)(\[[^\]]+\]|[^:/?#]+):([\d,-]+)(.*)$/i.exec(norm)
+      if (hp && /[,-]/.test(hp[3])) {
+        hopPorts = parsePortRanges(hp[3])
+        firstPort = Number(hp[3].split(/[,-]/)[0]) || 443
+        norm = `${hp[1]}${hp[2]}:${firstPort}${hp[4]}`
+      }
+      const url = new URL(norm)
       const params = url.searchParams
+      if (!hopPorts && params.get('mport')) hopPorts = parsePortRanges(String(params.get('mport')))
+      // Пароль может быть в форме `user:pass@` — это одна строка авторизации.
+      const auth = url.password ? `${url.username}:${url.password}` : url.username
+      const obfs = (params.get('obfs') || '').toLowerCase()
+      const obfsPassword = params.get('obfs-password') || params.get('obfsParam') || ''
+      const alpn = params.get('alpn')
       return {
-        id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        name: decodeURIComponent(url.hash.replace('#', '') || `${url.hostname}:${url.port}`),
+        id: newNodeId(),
+        name: linkName(url),
         protocol: 'hysteria2',
-        server: url.hostname,
-        port: Number(url.port) || 443,
-        password: url.username,
+        server: urlHost(url),
+        port: Number(url.port) || firstPort || 443,
+        password: safeDecode(auth),
         security: 'tls',
-        sni: params.get('sni') || url.hostname,
+        sni: params.get('sni') || params.get('peer') || urlHost(url),
+        ...(obfs === 'salamander' && obfsPassword ? { obfsPassword } : {}),
+        ...(isTruthyParam(params.get('insecure')) ? { insecure: true } : {}),
+        ...(alpn ? { alpn: alpn.split(',').map((s) => s.trim()).filter(Boolean) } : {}),
+        ...(hopPorts && hopPorts.length > 0 ? { hopPorts } : {}),
         rawUri: trimmed,
         latencyMs: null
       }
     }
 
     if (trimmed.startsWith('ss://')) {
-      let main = trimmed.slice(5)
+      let body = trimmed.slice(5)
       let tag = ''
-      const hashIdx = main.indexOf('#')
+      const hashIdx = body.indexOf('#')
       if (hashIdx !== -1) {
-        tag = decodeURIComponent(main.slice(hashIdx + 1))
-        main = main.slice(0, hashIdx)
+        tag = safeDecode(body.slice(hashIdx + 1))
+        body = body.slice(0, hashIdx)
       }
-      const qIdx = main.indexOf('?')
+      let query = ''
+      const qIdx = body.indexOf('?')
       if (qIdx !== -1) {
-        main = main.slice(0, qIdx)
+        query = body.slice(qIdx + 1)
+        body = body.slice(0, qIdx)
+      }
+      // SIP002: `ss://…@host:port/?plugin=…` — косая черта перед query.
+      body = body.replace(/\/+$/, '')
+
+      // base64 пробуем только если строка вообще похожа на base64 и в
+      // результате получилось «метод:пароль». Раньше мусор после декодирования
+      // случайно содержал «:» и подменял настоящие данные.
+      const b64 = (s: string): string | null => {
+        const t = s.replace(/-/g, '+').replace(/_/g, '/')
+        if (!/^[A-Za-z0-9+/]+=*$/.test(t)) return null
+        try {
+          return Buffer.from(t, 'base64').toString('utf-8')
+        } catch {
+          return null
+        }
+      }
+
+      let userinfo = ''
+      let hostport = ''
+      if (body.includes('@')) {
+        const at = body.lastIndexOf('@')
+        userinfo = body.slice(0, at)
+        hostport = body.slice(at + 1)
+        const dec = b64(userinfo)
+        userinfo = dec && /^[\w.+-]+:/.test(dec) ? dec : safeDecode(userinfo)
+      } else {
+        const dec = b64(body)
+        if (dec && dec.includes('@')) {
+          const at = dec.lastIndexOf('@')
+          userinfo = dec.slice(0, at)
+          hostport = dec.slice(at + 1).replace(/\/+$/, '')
+        }
       }
 
       let method = 'aes-128-gcm'
       let password = ''
+      const ci = userinfo.indexOf(':')
+      if (ci > 0) {
+        method = userinfo.slice(0, ci).toLowerCase()
+        password = userinfo.slice(ci + 1)
+      }
       let server = ''
       let port = 8388
-
-      if (main.includes('@')) {
-        const atIdx = main.lastIndexOf('@')
-        let userinfo = main.slice(0, atIdx)
-        const hostport = main.slice(atIdx + 1)
-
-        try {
-          const decoded = Buffer.from(userinfo, 'base64').toString('utf-8')
-          if (decoded.includes(':')) {
-            userinfo = decoded
-          }
-        } catch { /* not base64 */ }
-
-        if (userinfo.includes(':')) {
-          const colonIdx = userinfo.indexOf(':')
-          method = userinfo.slice(0, colonIdx)
-          password = userinfo.slice(colonIdx + 1)
-        }
-
-        const colonHost = hostport.lastIndexOf(':')
-        if (colonHost !== -1) {
-          server = hostport.slice(0, colonHost).replace(/[[\]]/g, '')
-          port = Number(hostport.slice(colonHost + 1)) || 8388
-        } else {
-          server = hostport
-        }
+      const hpm = /^\[?([^\]]+?)\]?:(\d+)$/.exec(hostport)
+      if (hpm) {
+        server = hpm[1]
+        port = Number(hpm[2]) || 8388
       } else {
-        try {
-          const decoded = Buffer.from(main, 'base64').toString('utf-8')
-          if (decoded.includes('@')) {
-            const atIdx = decoded.lastIndexOf('@')
-            const userinfo = decoded.slice(0, atIdx)
-            const hostport = decoded.slice(atIdx + 1)
+        server = hostport
+      }
 
-            if (userinfo.includes(':')) {
-              const colonIdx = userinfo.indexOf(':')
-              method = userinfo.slice(0, colonIdx)
-              password = userinfo.slice(colonIdx + 1)
-            }
-            const colonHost = hostport.lastIndexOf(':')
-            if (colonHost !== -1) {
-              server = hostport.slice(0, colonHost).replace(/[[\]]/g, '')
-              port = Number(hostport.slice(colonHost + 1)) || 8388
-            } else {
-              server = hostport
-            }
-          }
-        } catch { /* ignore */ }
+      let plugin: string | undefined
+      let pluginOpts: string | undefined
+      const pluginRaw = new URLSearchParams(query).get('plugin')
+      if (pluginRaw) {
+        const semi = pluginRaw.indexOf(';')
+        plugin = (semi === -1 ? pluginRaw : pluginRaw.slice(0, semi)).trim()
+        pluginOpts = semi === -1 ? '' : pluginRaw.slice(semi + 1)
       }
 
       if (server) {
         return {
-          id: `node-${Date.now()}-${randomBytes(3).toString('hex')}`,
+          id: newNodeId(),
           name: tag || `${server}:${port}`,
           protocol: 'shadowsocks',
           server,
           port,
           method,
           password,
+          ...(plugin ? { plugin, pluginOpts } : {}),
           rawUri: trimmed,
           latencyMs: null
         }
@@ -1299,13 +1533,21 @@ export function parseIncyUri(uri: string): IncyNode | null {
 
     if (trimmed.startsWith('trojan://')) {
       const url = new URL(trimmed)
+      const params = url.searchParams
+      const sec = (params.get('security') || 'tls').toLowerCase()
       return {
-        id: `node-${Date.now()}-${randomBytes(3).toString('hex')}`,
-        name: decodeURIComponent(url.hash.replace('#', '') || `${url.hostname}:${url.port}`),
+        id: newNodeId(),
+        name: linkName(url),
         protocol: 'trojan',
-        server: url.hostname,
+        server: urlHost(url),
         port: Number(url.port) || 443,
-        password: url.username,
+        password: safeDecode(url.username),
+        security: sec === 'none' ? 'none' : sec === 'reality' ? 'reality' : 'tls',
+        sni: params.get('sni') || params.get('peer') || undefined,
+        publicKey: params.get('pbk') || undefined,
+        shortId: params.get('sid') || undefined,
+        fingerprint: params.get('fp') || 'chrome',
+        ...parseTransportParams(params),
         rawUri: trimmed,
         latencyMs: null
       }
@@ -1533,9 +1775,11 @@ function fetchHttpRaw(
           return reject(new Error(`Сервер вернул ошибку: HTTP ${res.statusCode}`))
         }
 
-        let data = ''
-        res.on('data', (chunk) => (data += chunk))
-        res.on('end', () => resolve({ body: data, headers: res.headers }))
+        // Собираем байты и раскодируем один раз: эмодзи-флаг или кириллица,
+        // разорванные между TCP-кусками, раньше превращались в «�».
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
+        res.on('end', () => resolve({ body: Buffer.concat(chunks).toString('utf-8'), headers: res.headers }))
       }
     )
 
@@ -1661,9 +1905,9 @@ export async function fetchIncySubscription(subUrl: string): Promise<{ subscript
   // 1. Try parsing JSON array directly
   try {
     const parsedJson = JSON.parse(body)
-    if (Array.isArray(parsedJson)) {
-      nodes = parsedJson.map((it, idx) => parseJsonConfigItem(it, idx)).filter(Boolean) as IncyNode[]
-    }
+    // Подписка из одного конфига (объект, а не массив) — тоже подписка.
+    const list = Array.isArray(parsedJson) ? parsedJson : parsedJson && typeof parsedJson === 'object' ? [parsedJson] : []
+    nodes = list.map((it, idx) => parseJsonConfigItem(it, idx)).filter(Boolean) as IncyNode[]
   } catch { /* not direct json */ }
 
   // 2. Fall back to Base64 decode
@@ -1740,6 +1984,27 @@ function nodeIdentity(n: IncyNode): string {
 }
 
 /**
+ * Найти «тот же» узел в обновлённом списке.
+ *
+ * У провайдеров часто несколько узлов на одном `host:443` (разные SNI или
+ * входы), и поиск только по адресу перекидывал выбор на первый попавшийся —
+ * иногда из чужой подписки. Теперь сначала ищем в той же подписке, и
+ * сначала по имени, потом по SNI и транспорту, и только потом по адресу.
+ */
+function findSameNode(target: IncyNode, list: IncyNode[]): IncyNode | undefined {
+  const sameSub = list.filter((n) => n.subscriptionId === target.subscriptionId)
+  const pool = sameSub.length > 0 ? sameSub : list
+  const id = nodeIdentity(target)
+  const byAddr = pool.filter((n) => nodeIdentity(n) === id)
+  return (
+    byAddr.find((n) => n.name === target.name) ??
+    byAddr.find((n) => (n.sni ?? '') === (target.sni ?? '') && (n.network ?? 'tcp') === (target.network ?? 'tcp')) ??
+    pool.find((n) => n.name === target.name) ??
+    byAddr[0]
+  )
+}
+
+/**
  * Re-download the currently saved subscription and refresh the node list,
  * preserving measured latencies and the user's selected server.
  *
@@ -1765,12 +2030,12 @@ export async function refreshIncySubscription(subscriptionId?: string): Promise<
   const previous = loadIncyNodes()
   const latencyByIdentity = new Map<string, number | null>()
   for (const p of previous) {
-    if (p.latencyMs !== null) latencyByIdentity.set(nodeIdentity(p), p.latencyMs)
+    if (p.latencyMs !== null) latencyByIdentity.set(`${nodeIdentity(p)}|${p.name}`, p.latencyMs)
   }
   const fresh = nodes.map((n) => ({
     ...n,
     subscriptionId: current.id,
-    latencyMs: n.latencyMs ?? latencyByIdentity.get(nodeIdentity(n)) ?? null
+    latencyMs: n.latencyMs ?? latencyByIdentity.get(`${nodeIdentity(n)}|${n.name}`) ?? null
   }))
 
   // Заменяются только узлы ЭТОЙ подписки. Раньше список перезаписывался
@@ -1787,7 +2052,7 @@ export async function refreshIncySubscription(subscriptionId?: string): Promise<
   const settings = loadIncySettings()
   const previouslySelected = previous.find((p) => p.id === settings.selectedNodeId)
   const reselected = previouslySelected
-    ? merged.find((n) => nodeIdentity(n) === nodeIdentity(previouslySelected))
+    ? findSameNode(previouslySelected, merged)
     : undefined
   // Запасной вариант — только если выбранный узел действительно исчез.
   // Иначе обновление одной подписки перекидывало бы выбор на чужой сервер.
@@ -1811,7 +2076,7 @@ export async function refreshIncySubscription(subscriptionId?: string): Promise<
     if (!stillThere) {
       const activeBefore = previous.find((p) => p.id === currentStatus.activeNodeId)
       const activeNow = activeBefore
-        ? merged.find((n) => nodeIdentity(n) === nodeIdentity(activeBefore))
+        ? findSameNode(activeBefore, merged)
         : undefined
       if (activeNow) {
         broadcastStatus({ activeNodeId: activeNow.id })
@@ -1984,6 +2249,15 @@ export async function importIncyInput(input: string): Promise<{ addedCount: numb
   throw new Error('Неверный формат ссылки. Поддерживаются URL подписок (https://...), а также vless://, ss://, trojan://, hysteria2://')
 }
 
+/**
+ * Режим, в котором реально поднят туннель. ExitLag всегда работает через TUN,
+ * даже если в настройках сохранён «Системный прокси», — getIncyStatus же
+ * отдаёт сохранённый выбор (его показывают кнопки режима).
+ */
+export function getLiveConnectionMode(): IncyStatus['connectionMode'] | null {
+  return currentStatus.state === 'running' ? currentStatus.connectionMode : null
+}
+
 export function getIncyStatus(): IncyStatus {
   const s = loadIncySettings()
   // The settings file is the source of truth for the persisted preferences:
@@ -2075,20 +2349,41 @@ export async function pingIncyNode(
   // честнее проверить через узел.
   if (underTun && !sourceIp) return httpViaCore(node, testUrl, 'HEAD', timeoutMs + 3000)
 
-  // UDP-транспорты: TCP-порта у такого узла может не быть вовсе.
+  // Задержка сети до сервера (TCP-рукопожатие / ICMP для UDP-узлов).
+  const rtt = await networkRtt(node, timeoutMs, sourceIp)
+  if (protocol === 'tcp') return rtt
+  // TCP-порт закрыт — сервер точно не работает, временное ядро не нужно.
+  // (У UDP-узлов ICMP часто закрыт, их всё равно проверяем запросом.)
+  if (rtt == null && !isUdpOnlyNode(node)) return null
+
+  // «Умный» режим (по умолчанию): задержка сама по себе ничего не говорит о
+  // том, работает ли VPN. Сервер, у которого порт открыт, а прокси упал или
+  // провайдер рвёт соединение, отвечал на рукопожатие за 1 мс и выглядел
+  // живым. Поэтому число показываем только после настоящего запроса через
+  // узел; не прошёл — «нет ответа».
+  const viaNode = await httpViaCore(node, testUrl, 'HEAD', timeoutMs + 3000)
+  if (viaNode == null) return null
+  return rtt ?? viaNode
+}
+
+/** UDP-транспорт: TCP-порта у такого узла может не быть вовсе. */
+function isUdpOnlyNode(node: IncyNode): boolean {
   const net0 = String((node.rawOutbound as any)?.streamSettings?.network ?? '').toLowerCase()
-  const udpOnly =
+  return (
     node.protocol === 'hysteria2' ||
     node.protocol === 'wireguard' ||
     (node.rawOutbound as any)?.type === 'tuic' ||
     net0 === 'kcp' ||
     net0 === 'mkcp' ||
     net0 === 'quic'
-  if (!udpOnly) return tcpRtt(node.server, node.port, timeoutMs, sourceIp ?? undefined)
+  )
+}
 
-  const icmp = await icmpRtt(node.server, timeoutMs, sourceIp)
-  if (icmp != null || protocol === 'tcp') return icmp
-  return httpViaCore(node, testUrl, 'HEAD', timeoutMs + 3000)
+/** Сетевая задержка до сервера узла в обход TUN: TCP или ICMP для UDP-узлов. */
+async function networkRtt(node: IncyNode, timeoutMs: number, sourceIp: string | null): Promise<number | null> {
+  const udpOnly = isUdpOnlyNode(node)
+  if (!udpOnly) return tcpRtt(node.server, node.port, timeoutMs, sourceIp ?? undefined)
+  return icmpRtt(node.server, timeoutMs, sourceIp)
 }
 
 /**
@@ -2173,7 +2468,7 @@ function resolveDnsPair(settings: IncySettings): { remote: string; local: string
     case 'Quad9':
       return { remote: 'https://dns.quad9.net/dns-query', local: '9.9.9.9' }
     case 'Xbox DNS':
-      return { remote: 'https://xbox-dns.ru/dns-query', local: '111.88.96.50' }
+      return { remote: 'https://xbox-dns.ru/dns-query', local: '111.88.96.54' }
     case 'Custom': {
       const custom = settings.customDns?.trim()
       return { remote: custom || fallbackRemote, local: custom || fallbackLocal }
@@ -2442,7 +2737,76 @@ function reuseProviderOutbound(node: IncyNode, settings: IncySettings): any {
   if (clone.multiplex === undefined && clone.type !== 'hysteria2' && clone.type !== 'wireguard') {
     applyMultiplex(clone, settings)
   }
+  // Фрагментация TLS — и для узлов провайдера в формате sing-box (кроме QUIC).
+  if (clone.type !== 'hysteria2' && clone.type !== 'hysteria' && clone.type !== 'tuic') {
+    applyTlsFragment(clone.tls, settings)
+  }
   return clone
+}
+
+/**
+ * Фрагментация TLS-рукопожатия на ядре sing-box (поле `fragment` в TLS
+ * outbound, sing-box ≥ 1.12). Раньше фрагментация работала только на Xray, и
+ * узлы, которые обслуживает sing-box (JSON-подписки в его формате, Hysteria2 и
+ * WireGuard не в счёт — там нет TLS поверх TCP), шли без неё.
+ */
+function applyTlsFragment(tls: any, settings: IncySettings): void {
+  if (!settings.fragmentation || !tls || tls.enabled !== true) return
+  if (tls.fragment === undefined && tls.record_fragment === undefined) tls.fragment = true
+}
+
+/** TLS-блок sing-box для узла из ссылки; `undefined`, если TLS не нужен. */
+function buildSingBoxTls(node: IncyNode, settings: IncySettings, opts: { utls: boolean }): any | undefined {
+  if (node.security !== 'tls' && node.security !== 'reality') return undefined
+  const tls: any = { enabled: true, server_name: node.sni || node.server }
+  if (node.insecure) tls.insecure = true
+  if (node.alpn && node.alpn.length > 0) tls.alpn = node.alpn
+  // Reality в sing-box работает только вместе с uTLS.
+  if (opts.utls || node.security === 'reality') {
+    tls.utls = { enabled: true, fingerprint: node.fingerprint || 'chrome' }
+  }
+  if (node.security === 'reality' && node.publicKey) {
+    tls.reality = { enabled: true, public_key: node.publicKey, short_id: node.shortId || '' }
+  }
+  applyTlsFragment(tls, settings)
+  return tls
+}
+
+/**
+ * Транспорт из ссылки → `transport` sing-box. Раньше поля ws/grpc читало
+ * только ядро Xray, а ссылки по умолчанию уходят на sing-box — и узел с
+ * `type=ws` набирался как голый TCP: рукопожатие падало, в логе только EOF.
+ */
+function buildSingBoxTransport(node: IncyNode): any | undefined {
+  const network = node.network || 'tcp'
+  if (network === 'ws') {
+    const t: any = { type: 'ws' }
+    let p = node.wsPath || '/'
+    // Запись Xray `/path?ed=2048` (ранние данные) → поля sing-box.
+    const q = p.indexOf('?')
+    if (q !== -1) {
+      const qs = new URLSearchParams(p.slice(q + 1))
+      const ed = Number(qs.get('ed'))
+      if (ed > 0) {
+        t.max_early_data = ed
+        t.early_data_header_name = 'Sec-WebSocket-Protocol'
+        qs.delete('ed')
+        const rest = qs.toString()
+        p = p.slice(0, q) + (rest ? `?${rest}` : '')
+      }
+    }
+    t.path = p || '/'
+    if (node.wsHost) t.headers = { Host: node.wsHost }
+    return t
+  }
+  if (network === 'httpupgrade') {
+    return { type: 'httpupgrade', path: node.wsPath || '/', ...(node.wsHost ? { host: node.wsHost } : {}) }
+  }
+  if (network === 'grpc') return { type: 'grpc', service_name: node.grpcServiceName || '' }
+  if (network === 'xhttp') {
+    throw new Error(`Узел «${node.name}»: транспорт xhttp умеет только ядро Xray, а оно не найдено`)
+  }
+  return undefined
 }
 
 export function buildSingBoxOutbound(node: IncyNode, settings: IncySettings): any {
@@ -2455,18 +2819,23 @@ export function buildSingBoxOutbound(node: IncyNode, settings: IncySettings): an
   }
 
   if (node.protocol === 'hysteria2') {
-    return {
+    const outbound: any = {
       type: 'hysteria2',
       tag: 'proxy',
       server: node.server,
-      server_port: node.port,
       password: node.password || '',
       tls: {
         enabled: true,
         server_name: node.sni || node.server,
-        alpn: ['h3']
+        alpn: node.alpn && node.alpn.length > 0 ? node.alpn : ['h3'],
+        ...(node.insecure ? { insecure: true } : {})
       }
     }
+    // server_ports и server_port взаимоисключающие.
+    if (node.hopPorts && node.hopPorts.length > 0) outbound.server_ports = node.hopPorts
+    else outbound.server_port = node.port
+    if (node.obfsPassword) outbound.obfs = { type: 'salamander', password: node.obfsPassword }
+    return outbound
   }
 
   if (node.protocol === 'vless') {
@@ -2475,27 +2844,15 @@ export function buildSingBoxOutbound(node: IncyNode, settings: IncySettings): an
       tag: 'proxy',
       server: node.server,
       server_port: node.port,
-      uuid: node.uuid,
-      tls: {
-        enabled: true,
-        server_name: node.sni || node.server,
-        utls: {
-          enabled: true,
-          fingerprint: node.fingerprint || 'chrome'
-        }
-      }
+      uuid: node.uuid
     }
+    const tls = buildSingBoxTls(node, settings, { utls: true })
+    if (tls) outbound.tls = tls
+    const transport = buildSingBoxTransport(node)
+    if (transport) outbound.transport = transport
 
     if (node.flow) {
       outbound.flow = node.flow
-    }
-
-    if (node.security === 'reality' && node.publicKey) {
-      outbound.tls.reality = {
-        enabled: true,
-        public_key: node.publicKey,
-        short_id: node.shortId || ''
-      }
     }
 
     // XUDP packs UDP into the VLESS stream instead of a plain UDP association.
@@ -2516,6 +2873,24 @@ export function buildSingBoxOutbound(node: IncyNode, settings: IncySettings): an
     return outbound
   }
 
+  if (node.protocol === 'vmess') {
+    const outbound: any = {
+      type: 'vmess',
+      tag: 'proxy',
+      server: node.server,
+      server_port: node.port,
+      uuid: node.uuid || '',
+      security: node.vmessCipher || 'auto',
+      alter_id: node.alterId || 0
+    }
+    const tls = buildSingBoxTls(node, settings, { utls: true })
+    if (tls) outbound.tls = tls
+    const transport = buildSingBoxTransport(node)
+    if (transport) outbound.transport = transport
+    applyMultiplex(outbound, settings)
+    return outbound
+  }
+
   if (node.protocol === 'shadowsocks') {
     const outbound: Record<string, unknown> = {
       type: 'shadowsocks',
@@ -2524,6 +2899,15 @@ export function buildSingBoxOutbound(node: IncyNode, settings: IncySettings): an
       server_port: node.port,
       method: node.method || 'aes-128-gcm',
       password: node.password || ''
+    }
+    if (node.plugin) {
+      // sing-box умеет два SIP003-плагина; simple-obfs — старое имя obfs-local.
+      const name = node.plugin === 'simple-obfs' ? 'obfs-local' : node.plugin
+      if (name !== 'obfs-local' && name !== 'v2ray-plugin') {
+        throw new Error(`Узел «${node.name}»: плагин Shadowsocks «${node.plugin}» не поддерживается`)
+      }
+      outbound.plugin = name
+      if (node.pluginOpts) outbound.plugin_opts = node.pluginOpts
     }
     applyMultiplex(outbound, settings)
     return outbound
@@ -2535,20 +2919,20 @@ export function buildSingBoxOutbound(node: IncyNode, settings: IncySettings): an
       tag: 'proxy',
       server: node.server,
       server_port: node.port,
-      password: node.password || '',
-      tls: {
-        enabled: true,
-        server_name: node.sni || node.server
-      }
+      password: node.password || ''
     }
+    // У старых сохранённых узлов поля security нет — trojan без TLS не бывает.
+    const tls = buildSingBoxTls({ ...node, security: node.security ?? 'tls' }, settings, { utls: true })
+    if (tls) outbound.tls = tls
+    const transport = buildSingBoxTransport(node)
+    if (transport) outbound.transport = transport
     applyMultiplex(outbound, settings)
     return outbound
   }
 
-  return {
-    type: 'direct',
-    tag: 'proxy'
-  }
+  // Раньше здесь возвращался `direct` с тегом proxy: неизвестный протокол
+  // «подключался», а трафик шёл с настоящего IP. Лучше честная ошибка.
+  throw new Error(`Узел «${node.name}»: протокол ${node.protocol} не поддерживается ядром sing-box`)
 }
 
 /**
@@ -2709,6 +3093,243 @@ async function stopRunningChild(): Promise<void> {
   await new Promise((r) => setTimeout(r, 150))
 }
 
+// ---- Kill Switch и переподключение при обрыве --------------------------------
+
+/**
+ * Какой была последняя поднятая сессия: от этого зависит, чем закрывать
+ * трафик при обрыве. Заполняется при успешном подключении.
+ */
+let lastSession: { nodeId: string; mode: 'tun' | 'system_proxy' | 'only_proxy'; singBox: boolean } | null = null
+/** Блокирующий sing-box Kill Switch (null — блокировки нет). */
+let blockerChild: ChildProcess | null = null
+/** Текущее автоматическое переподключение после обрыва. */
+let recovery: { nodeId: string; attempt: number; timer: ReturnType<typeof setTimeout> | null } | null = null
+const RECOVERY_DELAYS_SEC = [5, 15, 30, 60, 120]
+
+/**
+ * Конфиг «блокировки» из конфига упавшей сессии: всё, что шло через VPN,
+ * отклоняется; всё, что шло напрямую (обход РФ, локальная сеть, свои
+ * исключения, процессы ядер), продолжает работать. Тот же TUN / тот же порт
+ * системного прокси — поэтому трафик не утекает мимо VPN, пока тот лежит.
+ */
+export function buildKillSwitchConfig(cfg: any): any {
+  const c = JSON.parse(JSON.stringify(cfg))
+  const keptOutbounds = new Set<string>()
+  c.outbounds = (c.outbounds ?? []).filter((o: any) => {
+    const keep = o?.type === 'direct' || o?.type === 'dns'
+    if (keep && o.tag) keptOutbounds.add(o.tag)
+    return keep
+  })
+  if (!keptOutbounds.has('direct')) {
+    c.outbounds.push({ type: 'direct', tag: 'direct' })
+    keptOutbounds.add('direct')
+  }
+  delete c.endpoints
+  if (c.experimental) delete c.experimental.clash_api
+  const inboundTags = (c.inbounds ?? []).map((i: any) => i.tag).filter(Boolean)
+
+  const route = (c.route ??= {})
+  route.rules = (route.rules ?? []).map((r: any) => {
+    if (r && typeof r.outbound === 'string' && !keptOutbounds.has(r.outbound)) {
+      const { outbound: _drop, ...rest } = r
+      void _drop
+      return { ...rest, action: 'reject' }
+    }
+    return r
+  })
+  if (!keptOutbounds.has(route.final ?? 'direct')) {
+    // Всё, что не попало в правила «напрямую», раньше шло в VPN — закрываем.
+    route.rules.push({ inbound: inboundTags, action: 'reject' })
+    route.final = 'direct'
+  }
+
+  // DNS-серверы, ходившие через VPN, недоступны: убираем их, а правила,
+  // которые на них указывали, — отклоняют запрос.
+  const dnsCfg = c.dns
+  if (dnsCfg && Array.isArray(dnsCfg.servers)) {
+    const removed = new Set<string>()
+    dnsCfg.servers = dnsCfg.servers.filter((sv: any) => {
+      const detour = sv?.detour
+      const drop = typeof detour === 'string' && !keptOutbounds.has(detour)
+      if (drop && sv.tag) removed.add(sv.tag)
+      return !drop
+    })
+    if (Array.isArray(dnsCfg.rules)) {
+      dnsCfg.rules = dnsCfg.rules.map((r: any) => {
+        if (r && typeof r.server === 'string' && removed.has(r.server)) {
+          const { server: _s, ...rest } = r
+          void _s
+          return { ...rest, action: 'reject' }
+        }
+        return r
+      })
+    }
+    if (typeof dnsCfg.final === 'string' && removed.has(dnsCfg.final)) {
+      dnsCfg.final = dnsCfg.servers[0]?.tag
+    }
+  }
+  return c
+}
+
+async function startKillSwitchBlocker(): Promise<boolean> {
+  const file = incyRuntimeConfigFile()
+  if (!existsSync(file)) return false
+  let cfg: any
+  try {
+    cfg = buildKillSwitchConfig(JSON.parse(readFileSync(file, 'utf-8')))
+  } catch {
+    return false
+  }
+  const ksFile = path.join(dataDir(), 'sing-box-killswitch.json')
+  writeFileSync(ksFile, JSON.stringify(cfg, null, 2), 'utf-8')
+  const bin = incyBinaryPath()
+  if (!existsSync(bin)) return false
+  const cp = spawn(bin, ['run', '-c', ksFile], { windowsHide: true, cwd: path.dirname(bin), stdio: 'ignore' })
+  registerChild(cp.pid, bin)
+  cp.on('exit', () => {
+    unregisterChild(cp.pid)
+    if (blockerChild === cp) blockerChild = null
+  })
+  cp.on('error', () => void 0)
+  blockerChild = cp
+  await new Promise((r) => setTimeout(r, 900))
+  if (cp.exitCode !== null) {
+    blockerChild = null
+    appendLog('ВНИМАНИЕ: Kill Switch не смог закрыть трафик (ядро блокировки не запустилось).')
+    return false
+  }
+  return true
+}
+
+async function stopKillSwitchBlocker(): Promise<void> {
+  const b = blockerChild
+  if (!b) return
+  blockerChild = null
+  await killProcessTree(b)
+  await new Promise((r) => setTimeout(r, 150))
+}
+
+function cancelRecovery(): void {
+  if (recovery?.timer) clearTimeout(recovery.timer)
+  recovery = null
+}
+
+function scheduleRecoveryAttempt(): void {
+  const r = recovery
+  if (!r) return
+  const delay = RECOVERY_DELAYS_SEC[Math.min(r.attempt, RECOVERY_DELAYS_SEC.length - 1)]
+  r.timer = setTimeout(() => void recoveryAttempt(r), delay * 1000)
+}
+
+/**
+ * Одна попытка восстановить VPN: сначала проверяем узел настоящим запросом
+ * через временное ядро (блокировка его пропускает), и только если он ответил —
+ * снимаем блокировку и подключаемся. Так «окно» без защиты — одно, на секунду
+ * перед рабочим подключением, а не каждые несколько секунд.
+ */
+async function recoveryAttempt(r: NonNullable<typeof recovery>): Promise<void> {
+  if (recovery !== r) return
+  r.attempt++
+  const nodes = loadIncyNodes()
+  const node =
+    nodes.find((n) => n.id === r.nodeId) ??
+    nodes.find((n) => n.id === (currentStatus.selectedNodeId || loadIncySettings().selectedNodeId))
+  if (!node) {
+    appendLog('Переподключение остановлено: узел больше не найден в списке.')
+    cancelRecovery()
+    broadcastStatus({ recovering: false })
+    return
+  }
+  const s = loadIncySettings()
+  const ok = await httpViaCore(node, s.pingTestUrl || 'https://www.gstatic.com/generate_204', 'HEAD', 8000)
+  if (recovery !== r) return
+  if (ok == null) {
+    appendLog(`Переподключение: «${node.name}» пока не отвечает (попытка ${r.attempt}).`)
+    scheduleRecoveryAttempt()
+    return
+  }
+  recovery = null
+  await stopKillSwitchBlocker()
+  try {
+    await connectIncyNode(node.id)
+    if (currentStatus.state === 'running') {
+      appendLog(`VPN восстановлен: «${node.name}».`)
+      showSystemNotification('LAZEYKA — VPN восстановлен', `Подключено снова: «${node.name}».`)
+      return
+    }
+  } catch {
+    /* ниже — повтор */
+  }
+  // Не получилось подключиться — снова закрываем трафик и ждём.
+  handleTunnelDrop(node.id, 'повторное подключение не удалось')
+}
+
+/**
+ * Одно из ядер завершилось само (не через stopRunningChild). Гасим второе
+ * ядро, чтобы не осталось «полутуннеля», и, если сессия уже работала, —
+ * включаем Kill Switch / переподключение. Во время подключения обрыв
+ * обрабатывает сам connectIncyNode (ошибка запуска), здесь только статус.
+ */
+function onCoreDied(reason: string): void {
+  const wasRunning = currentStatus.state === 'running'
+  const droppedNode = wasRunning ? currentStatus.activeNodeId : null
+  const others = [child, xrayChild].filter((p): p is ChildProcess => Boolean(p))
+  child = null
+  xrayChild = null
+  childGeneration++
+  for (const p of others) void killProcessTree(p)
+  endStatsSession()
+  const s = loadIncySettings()
+  // При Kill Switch системный прокси не снимаем: блокировка встанет на тот же
+  // порт, и браузер не пойдёт в интернет мимо VPN.
+  const keepProxy = Boolean(droppedNode) && s.killSwitch && lastSession?.mode === 'system_proxy'
+  broadcastStatus({ state: 'stopped', activeNodeId: null })
+  if (!keepProxy) clearWindowsSystemProxy().catch(() => void 0)
+  if (droppedNode) handleTunnelDrop(droppedNode, reason)
+}
+
+/**
+ * VPN оборвался не по команде пользователя (ядро завершилось). Kill Switch
+ * закрывает трафик, который шёл через VPN; «Переподключаться при обрыве»
+ * запускает попытки восстановления.
+ */
+function handleTunnelDrop(nodeId: string | null, reason: string): void {
+  const s = loadIncySettings()
+  const reconnect = s.reconnectOnDrop !== false || s.killSwitch
+  if (!nodeId || !reconnect) return
+  void (async () => {
+    let blocked = false
+    if (s.killSwitch && lastSession && lastSession.mode !== 'only_proxy') {
+      // sing-box: блокирующее ядро на том же TUN/порту. Xray без sing-box —
+      // системный прокси оставлен на остановленном порту, мимо VPN не уйти.
+      blocked = lastSession.singBox ? await startKillSwitchBlocker() : lastSession.mode === 'system_proxy'
+    }
+    appendLog(
+      blocked
+        ? `VPN оборвался (${reason}). Kill Switch закрыл трафик мимо VPN — переподключаюсь.`
+        : `VPN оборвался (${reason}) — переподключаюсь.`
+    )
+    showSystemNotification(
+      'LAZEYKA — VPN оборвался',
+      blocked
+        ? 'Kill Switch не пускает трафик мимо VPN. Переподключаюсь автоматически.'
+        : 'Переподключаюсь автоматически.'
+    )
+    cancelRecovery()
+    recovery = { nodeId, attempt: 0, timer: null }
+    broadcastStatus({
+      state: 'error',
+      activeNodeId: null,
+      killSwitchActive: blocked,
+      recovering: true,
+      lastError: blocked
+        ? 'VPN оборвался. Kill Switch закрыл трафик мимо VPN, идёт переподключение…'
+        : 'VPN оборвался, идёт переподключение…'
+    })
+    scheduleRecoveryAttempt()
+  })()
+}
+
 export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
   if (isConnecting) {
     appendLog('Подключение уже выполняется, ожидание...')
@@ -2716,6 +3337,13 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
   }
   isConnecting = true
   try {
+    // Ручное (или повторное) подключение отменяет ожидание переподключения и
+    // снимает блокировку Kill Switch — новое ядро займёт её место.
+    if (recovery || blockerChild) {
+      cancelRecovery()
+      await stopKillSwitchBlocker()
+      broadcastStatus({ killSwitchActive: false, recovering: false })
+    }
     const nodes = loadIncyNodes()
     const settings = loadIncySettings()
     const targetId = nodeId || currentStatus.selectedNodeId || settings.selectedNodeId || nodes[0]?.id
@@ -2785,7 +3413,11 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // закрывает отдельное правило `ip_is_private`.
     const rawDomains = toDomainSuffixes(bypassDomains)
 
-    const idleTimeout = Math.max(0, Number(settings.idleTimeoutSec) || 0)
+    // Тайм-аут простоя UDP. Меньше 2 минут не ставим: короткое значение рвало
+    // долгие UDP-сессии (игры, звонки) на паузах. 0 / меньше 120 — стандартные
+    // 5 минут sing-box.
+    const idleRaw = Number(settings.idleTimeoutSec) || 0
+    const udpIdleSec = idleRaw >= 120 ? Math.min(idleRaw, 3600) : 0
 
     const mixedInbound: any = {
       type: 'mixed',
@@ -2797,14 +3429,10 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       // deprecated in 1.12 and removed in 1.13, while the rule action works
       // from 1.11 onwards. One config, every version.
     }
-    // `udp_timeout` is deliberately left at sing-box's own default (5 minutes).
-    //
-    // Mapping the "Таймаут простоя" field (default 60) onto it cut the UDP
-    // idle window five-fold, tearing down long-lived UDP sessions — voice
-    // calls, games, QUIC — mid-flight. The field means "how long before we
-    // consider the connection idle" in the UI's own terms, not a value safe to
-    // hand straight to the core.
-    void idleTimeout
+    // `udp_timeout`: по умолчанию стандартные 5 минут sing-box. Раньше сюда
+    // подставлялось значение поля как есть (60 с) — это рвало долгие
+    // UDP-сессии (звонки, игры, QUIC) на паузах. Теперь только ≥ 2 минут.
+    if (udpIdleSec) mixedInbound.udp_timeout = `${udpIdleSec}s`
 
     // A `mixed` inbound serves SOCKS5 and HTTP on the same port, and one
     // `users` list authenticates both — which is why there is no separate
@@ -2923,11 +3551,14 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         address: ['172.19.0.1/30'],
         auto_route: true,
         strict_route: true,
-        stack: 'mixed'
-        // No explicit `mtu` and no `udp_timeout`: sing-box's own defaults are
-        // tuned for this, and overriding them here bought nothing while adding
-        // two more variables to every failure.
+        // Стек и MTU — из настроек (по умолчанию mixed и MTU sing-box):
+        // некоторым играм и сетям нужен system или gvisor, а за PPPoE —
+        // MTU поменьше.
+        stack: settings.tunStack === 'system' || settings.tunStack === 'gvisor' ? settings.tunStack : 'mixed'
       }
+      const tunMtu = Number(settings.tunMtu) || 0
+      if (tunMtu >= 1280 && tunMtu <= 9000) tunInbound.mtu = tunMtu
+      if (udpIdleSec) tunInbound.udp_timeout = `${udpIdleSec}s`
       inbounds.push(tunInbound)
     }
 
@@ -3241,8 +3872,28 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         const value = rule.value.trim()
         const base =
           rule.action === 'block' ? { action: 'reject' } : { outbound: rule.action === 'proxy' ? 'proxy' : 'direct' }
-        if (/^[\d.]+\/\d{1,2}$/.test(value) || /^[\d.]+$/.test(value) || value.includes(':')) {
+        // geosite:/geoip: — синтаксис Xray. В sing-box такое значение попадало
+        // в ip_cidr, и ядро отказывалось запускаться с любым узлом.
+        if (/^(geosite|geoip|ext):/i.test(value)) {
+          appendLog(`Правило «${value}» пропущено: гео-категории работают только на ядре Xray`)
+          continue
+        }
+        const [ipPart, prefix] = value.split('/')
+        const isCidr =
+          net.isIP(ipPart) !== 0 &&
+          (prefix === undefined || (/^\d{1,3}$/.test(prefix) && Number(prefix) <= (net.isIPv6(ipPart) ? 128 : 32)))
+        if (isCidr) {
           config.route.rules.push({ ip_cidr: [value], ...base })
+        } else if (value.includes(':') || value.includes('/')) {
+          // URL вместо домена (`https://site.ru/...`) — берём из него хост.
+          let host = ''
+          try {
+            host = new URL(/^[a-z]+:\/\//i.test(value) ? value : `http://${value}`).hostname
+          } catch {
+            host = ''
+          }
+          const suffix = toDomainSuffixes([host])
+          if (suffix.length > 0) config.route.rules.push({ domain_suffix: suffix, ...base })
         } else {
           const suffix = toDomainSuffixes([value])
           if (suffix.length > 0) config.route.rules.push({ domain_suffix: suffix, ...base })
@@ -3531,9 +4182,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         appendLog(`Xray остановлен (код ${code})`)
         xrayChild = null
         // Losing Xray kills the tunnel in every topology that uses it.
-        endStatsSession()
-        broadcastStatus({ state: 'stopped', activeNodeId: null })
-        clearWindowsSystemProxy().catch(() => void 0)
+        onCoreDied(`Xray завершился, код ${code}`)
       })
 
       // Give Xray a beat to bind, then verify it did not die on a bad config.
@@ -3569,6 +4218,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       // the session still records duration and the connection itself.
       beginStatsSession(0)
       sessionTunnelSig = tunnelSig(settings)
+      lastSession = { nodeId: target.id, mode, singBox: false }
       const okStatus = broadcastStatus({
         state: 'running',
         activeNodeId: target.id,
@@ -3771,10 +4421,8 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       // the instance we deliberately killed, so it must not touch state.
       if (generation !== childGeneration) return
       appendLog(`Туннель остановлен (код ${code})`)
-      endStatsSession()
-      broadcastStatus({ state: 'stopped', activeNodeId: null })
-      clearWindowsSystemProxy().catch(() => void 0)
       child = null
+      onCoreDied(`sing-box завершился, код ${code}`)
     })
 
     // 2b. Fail fast if sing-box died on startup (bad node config, TUN adapter
@@ -3814,6 +4462,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
 
     exitLagLogTagging = isExitLagWhitelist
     sessionTunnelSig = tunnelSig(settings)
+    lastSession = { nodeId: target.id, mode, singBox: true }
     const status = broadcastStatus({
       state: 'running',
       activeNodeId: target.id,
@@ -3844,13 +4493,18 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
 }
 
 export async function disconnectIncy(): Promise<IncyStatus> {
+  cancelRecovery()
+  await stopKillSwitchBlocker()
+  lastSession = null
   await stopRunningChild()
   await clearWindowsSystemProxy()
   appendLog('Туннель отключен пользователем')
 
   const status = broadcastStatus({
     state: 'stopped',
-    activeNodeId: null
+    activeNodeId: null,
+    killSwitchActive: false,
+    recovering: false
   })
   showSystemNotification('INCY Proxy отключен', 'Соединение закрыто, системный прокси выключен')
   return status

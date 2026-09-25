@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, writeFileSync, copyFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, copyFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { zapretBundleDir, resourcesDir } from '../utils/dirs'
+import { writeFileAtomic } from '../utils/atomic-write'
 
 export interface CuratedIpSet {
   id: string
@@ -407,8 +408,67 @@ export function restoreIpListBackup(): IpListSnapshot {
 }
 
 function writeAtomic(file: string, content: string): void {
-  // list-general.txt is loaded once when winws.exe starts; live mid-write
-  // races aren't a real concern. A direct write is fine and avoids the
-  // Windows rename-over-existing-file caveat entirely.
-  writeFileSync(file, content, 'utf-8')
+  // Через временный файл: сбой посреди записи 2-мегабайтного списка раньше
+  // оставлял его пустым или обрезанным.
+  writeFileAtomic(file, content)
+}
+
+/**
+ * IP игрового сервера → ipset-all.txt. winws сопоставляет hostlist только с
+ * именами хостов, а IP-адреса берёт из ipset — без этого «IP сервера в
+ * список Zapret» на игровой трафик не влиял. Пишем только в режиме
+ * «список загружен»: в режиме «любой IP» ограничивать нельзя, а заглушку
+ * режима «ни один» трогать незачем.
+ */
+/**
+ * Наши добавления в IPset (серверы Valve, IP из оптимизатора) храним ещё и в
+ * отдельном файле. ipset-all.txt перезаписывается кнопкой «Обновить список» и
+ * обновлением Zapret — после этого добавления возвращаются из этого файла.
+ * Файл с нестандартным именем переживает обновление бандла.
+ */
+function lazeykaIpsetFile(): string {
+  return path.join(zapretBundleDir(), 'lists', 'ipset-lazeyka.txt')
+}
+
+function normalizeCidrs(ips: string[]): string[] {
+  return ips.map((ip) => ip.trim()).filter(Boolean).map((ip) => (ip.includes('/') ? ip : `${ip}/32`))
+}
+
+function rememberIpsetExtras(cidrs: string[]): void {
+  const file = lazeykaIpsetFile()
+  const have = existsSync(file)
+    ? readFileSync(file, 'utf-8').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+    : []
+  const set = new Set(have.map((l) => l.toLowerCase()))
+  const add = cidrs.filter((c) => !set.has(c.toLowerCase()))
+  if (add.length === 0) return
+  writeFileAtomic(file, [...have, ...add].join('\r\n') + '\r\n')
+}
+
+/** Вернуть наши добавления в ipset-all.txt (после обновления списка или Zapret). */
+export function mergeLazeykaIpset(): number {
+  const file = lazeykaIpsetFile()
+  if (!existsSync(file)) return 0
+  const extras = readFileSync(file, 'utf-8').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+  return appendToIpsetAll(extras)
+}
+
+export function addIpsToIpsetAll(ips: string[]): number {
+  const cidrs = normalizeCidrs(ips)
+  try {
+    rememberIpsetExtras(cidrs)
+  } catch { /* запомнить не удалось — добавим хотя бы сейчас */ }
+  return appendToIpsetAll(cidrs)
+}
+
+function appendToIpsetAll(ips: string[]): number {
+  const file = path.join(zapretBundleDir(), 'lists', 'ipset-all.txt')
+  if (!existsSync(file)) return 0
+  const lines = readFileSync(file, 'utf-8').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+  if (lines.length === 0 || lines.every((l) => l === '203.0.113.113/32')) return 0
+  const have = new Set(lines.map((l) => l.toLowerCase()))
+  const add = ips.map((ip) => (ip.includes('/') ? ip : `${ip}/32`)).filter((ip) => !have.has(ip.toLowerCase()))
+  if (add.length === 0) return 0
+  writeFileAtomic(file, [...lines, ...add].join('\r\n') + '\r\n')
+  return add.length
 }

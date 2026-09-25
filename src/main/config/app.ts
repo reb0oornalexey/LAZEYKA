@@ -21,13 +21,22 @@ async function safeWriteConfig(content: string): Promise<void> {
     await writeFile(tmpPath, content, 'utf-8')
     if (existsSync(configPath)) {
       await copyFile(configPath, backupPath)
-      if (process.platform === 'win32') {
-        await unlink(configPath)
+    }
+    // Без предварительного удаления: rename на Windows сам заменяет файл, а
+    // удаление открывало окно, в котором сбой оставлял программу без конфига.
+    // Антивирус или OneDrive могут держать файл долю секунды — пробуем ещё.
+    let lastErr: unknown = null
+    for (let i = 0; i < 4; i++) {
+      try {
+        await rename(tmpPath, configPath)
+        lastErr = null
+        break
+      } catch (e) {
+        lastErr = e
+        await new Promise((r) => setTimeout(r, 80 * (i + 1)))
       }
     }
-    if (existsSync(tmpPath)) {
-      await rename(tmpPath, configPath)
-    }
+    if (lastErr) throw lastErr
   } catch (e) {
     if (existsSync(tmpPath)) {
       try { await unlink(tmpPath) } catch { /* noop */ }
@@ -48,7 +57,13 @@ export async function getAppConfig(force = false): Promise<AppConfig> {
         appConfig = parsed
       }
     } catch {
-      appConfig = defaultConfig
+      // Основной файл не читается — пробуем копию, и только потом умолчания.
+      try {
+        const backup = parseYaml<AppConfig>(await readFile(`${appConfigPath()}.backup`, 'utf-8'))
+        appConfig = backup && isValidConfig(backup) ? backup : defaultConfig
+      } catch {
+        appConfig = defaultConfig
+      }
     }
   }
   if (!appConfig || typeof appConfig !== 'object') appConfig = defaultConfig
@@ -117,9 +132,13 @@ export async function patchAppConfig(patch: Partial<AppConfig>): Promise<void> {
   const prevDisableTray = appConfig?.disableTray
   const prevHideTaskbarIcon = appConfig?.hideTaskbarIcon
   writePromise = (async () => {
-    await previous
-    appConfig = deepMerge(appConfig ?? defaultConfig, patch)
-    await safeWriteConfig(stringifyYaml(appConfig))
+    // Ошибка прошлой записи не должна ломать все следующие: раньше одна
+    // неудача (файл занят антивирусом) отравляла цепочку до перезапуска.
+    await previous.catch(() => void 0)
+    const next = deepMerge(appConfig ?? defaultConfig, patch)
+    await safeWriteConfig(stringifyYaml(next))
+    // Память меняем только после успешной записи — иначе они расходились.
+    appConfig = next
   })()
   await writePromise
   notifyConfigChanged()
@@ -127,7 +146,13 @@ export async function patchAppConfig(patch: Partial<AppConfig>): Promise<void> {
     try {
       if (patch.autoLaunch) await enableAutoRun()
       else await disableAutoRun()
-    } catch { /* noop */ }
+    } catch (e) {
+      // Задача не создалась — не делаем вид, что автозапуск включён.
+      if (patch.autoLaunch) {
+        await patchAppConfig({ autoLaunch: false })
+        throw new Error(`Не удалось включить автозапуск: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
   }
   // React to tray toggle: create or destroy tray on the fly so the user
   // doesn't have to relaunch the app for the change to take effect.

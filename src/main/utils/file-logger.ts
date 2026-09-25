@@ -22,7 +22,7 @@
  */
 
 import { appendFile, readdir, unlink } from 'node:fs/promises'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { logDir } from './dirs'
 
@@ -36,6 +36,13 @@ const FLUSH_INTERVAL_MS = 1000
 
 /** Hard cap so a runaway core cannot grow the queue without bound. */
 const MAX_QUEUE = 5000
+
+/** Не больше 50 МБ лога в день: зациклившееся ядро не должно забить диск. */
+const MAX_FILE_BYTES = 50 * 1024 * 1024
+let capNotedFor = ''
+/** Сколько дней хранить (последнее значение из pruneOldLogs). */
+let keepDays = 0
+let lastLogFile = ''
 
 function currentLogFile(): string {
   const d = new Date()
@@ -53,11 +60,29 @@ async function flush(): Promise<void> {
   try {
     const dir = logDir()
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-    await appendFile(currentLogFile(), batch.join('\n') + '\n', 'utf-8')
+    const file = currentLogFile()
+    // Новый день при работе в трее неделями: чистим старые логи и тут, а не
+    // только при запуске.
+    if (file !== lastLogFile) {
+      if (lastLogFile && keepDays > 0) void pruneOldLogs(keepDays)
+      lastLogFile = file
+    }
+    let size = 0
+    try {
+      size = existsSync(file) ? statSync(file).size : 0
+    } catch { /* noop */ }
+    if (size < MAX_FILE_BYTES) {
+      await appendFile(file, batch.join('\n') + '\n', 'utf-8')
+    } else if (capNotedFor !== file) {
+      capNotedFor = file
+      await appendFile(file, '--- лог за день превысил 50 МБ, дальше строки не пишутся ---\n', 'utf-8')
+    }
   } catch {
     /* disk full, permissions, folder removed — dropping the batch is correct */
   } finally {
     writing = false
+    // Строки, пришедшие во время записи, не должны ждать следующего события.
+    if (queue.length > 0) scheduleFlush()
   }
 }
 
@@ -102,6 +127,7 @@ export function logToFile(entry: ControllerLog): void {
 export async function pruneOldLogs(maxDays: number): Promise<void> {
   const days = Number(maxDays)
   if (!Number.isFinite(days) || days <= 0) return
+  keepDays = days
   try {
     const dir = logDir()
     if (!existsSync(dir)) return
@@ -129,6 +155,9 @@ export async function flushLogsNow(): Promise<void> {
     clearTimeout(flushTimer)
     flushTimer = null
   }
+  // Если запись уже идёт, ждём её и дописываем хвост — раньше при выходе
+  // последние строки терялись.
+  for (let i = 0; i < 20 && writing; i++) await new Promise((r) => setTimeout(r, 25))
   await flush()
 }
 

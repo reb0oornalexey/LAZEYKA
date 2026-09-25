@@ -26,12 +26,13 @@ import {
   loadIncyNodes,
   loadIncySettings,
   getIncyStatus,
+  getLiveConnectionMode,
   connectIncyNode,
   selectIncyNode,
   isNodeAllowedForAuto,
   type IncyNode
 } from './incy-engine'
-import { startTempCore, withCoreSlot, physicalSourceIp, tcpRtt, sleep, type TempCore } from './core-probe'
+import { startTempCore, withCoreSlot, physicalSourceIp, tcpRtt, icmpRtt, sleep, type TempCore } from './core-probe'
 import {
   parseGameServerAddress,
   resolveGameServerGeo,
@@ -194,7 +195,9 @@ async function a2sSeries(
       results.push(rtt)
       // Первые три запроса без ответа — сервер A2S не отвечает, дальше не ждём.
       if (i === 2 && results.every((r) => r === null)) break
-      await sleep(SAMPLE_GAP_MS)
+      // После таймаута ждём дольше: опоздавший ответ иначе засчитался бы
+      // следующему запросу с почти нулевым RTT и занизил бы пинг узла.
+      await sleep(rtt === null ? SAMPLE_GAP_MS + 300 : SAMPLE_GAP_MS)
     }
   } finally {
     sock.off('message', onMessage)
@@ -258,6 +261,9 @@ function socksUdpAssociate(port: number): Promise<{ ctrl: net.Socket; relayPort:
     }
     ctrl.setTimeout(4000, () => fail(new Error('SOCKS timeout')))
     ctrl.once('error', fail)
+    // Закрытие до ответа — ошибка, а не вечное ожидание (после resolve
+    // reject уже ничего не делает).
+    ctrl.once('close', () => fail(new Error('SOCKS closed')))
     ctrl.once('connect', () => ctrl.write(Buffer.from([0x05, 0x01, 0x00])))
     ctrl.on('data', (d) => {
       buf = Buffer.concat([buf, d])
@@ -314,8 +320,11 @@ async function a2sViaSocks(socksPort: number, ip: string, port: number): Promise
 async function userToNode(node: IncyNode): Promise<number | null> {
   // UDP-протоколы (Hysteria2, WireGuard) по TCP не ответят — берём последний
   // замер из списка узлов, если он свежий.
+  // Сохранённый замер обнуляется через 15 минут и после перезапуска, и такие
+  // узлы (часто лучшие для игр) не попадали в глубокий замер — меряем ICMP.
   if (node.protocol === 'hysteria2' || node.protocol === 'wireguard') {
-    return typeof node.latencyMs === 'number' && node.latencyMs > 0 ? node.latencyMs : null
+    if (typeof node.latencyMs === 'number' && node.latencyMs > 0) return node.latencyMs
+    return icmpRtt(node.server, 1500, await physicalSourceIp())
   }
   return tcpRtt(node.server, node.port, 1500, (await physicalSourceIp()) ?? undefined)
 }
@@ -351,7 +360,7 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
     const warnings: string[] = []
 
     const incy = getIncyStatus()
-    const tunUp = incy.state === 'running' && incy.connectionMode === 'tun'
+    const tunUp = getLiveConnectionMode() === 'tun'
     const sourceIp = tunUp ? ((await physicalSourceIp()) ?? undefined) : undefined
     const directViaTunnel = tunUp && !incy.exitLagActive && !sourceIp
     if (directViaTunnel) {
@@ -432,9 +441,11 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
         'Сервер не отвечает на игровые запросы (A2S) — задержку «через VPN до сервера» измерить нельзя. ' +
           'Показана оценка: задержка до узла + расчёт по расстоянию.'
       )
-      const tLat = geo.lat ?? 50.11
-      const tLon = geo.lon ?? 8.68
+      const tLat = geo.lat
+      const tLon = geo.lon
       for (const m of measured) {
+        // Где сервер, неизвестно — оценивать по расстоянию не из чего.
+        if (typeof tLat !== 'number' || typeof tLon !== 'number') break
         if (m.userToNodePing == null) continue
         let est: number | null = null
         try {
@@ -486,7 +497,10 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
       try {
         selectIncyNode(bestNode.nodeId)
         await connectIncyNode(bestNode.nodeId)
-        autoConnectedNodeId = bestNode.nodeId
+        // connectIncyNode молча выходит, если подключение уже идёт, — сверяем.
+        const st = getIncyStatus()
+        if (st.state === 'running' && st.activeNodeId === bestNode.nodeId) autoConnectedNodeId = bestNode.nodeId
+        else warnings.push(`Автоподключение к «${bestNode.nodeName}» не состоялось: идёт другое подключение.`)
       } catch (e) {
         warnings.push(`Автоподключение к «${bestNode.nodeName}» не удалось: ${e instanceof Error ? e.message : String(e)}`)
       }

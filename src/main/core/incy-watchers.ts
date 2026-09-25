@@ -5,6 +5,8 @@
  *  - "Отключать при сне"      → suspend/resume via Electron's powerMonitor
  *  - "Уведомление об истечении" → a real notification N days before expiry
  *  - "Монитор памяти"          → the cores' actual RSS, polled for the header
+ *  - "Обновлять при старте" / "Интервал автообновления" → подписки сами
+ *    обновляются при запуске и по расписанию (раньше не делали ничего)
  *
  * Each one is opt-in and re-reads its setting on every tick, so toggling a
  * switch takes effect immediately without a restart.
@@ -16,7 +18,8 @@ import {
   disconnectIncy,
   getIncyStatus,
   loadIncySettings,
-  loadIncySubscriptions
+  loadIncySubscriptions,
+  refreshIncySubscription
 } from './incy-engine'
 import { showSystemNotification } from '../utils/notifications'
 import { appLog } from '../utils/app-logger'
@@ -143,7 +146,9 @@ export function readCoreMemory(): Promise<CoreMemoryUsage> {
     if (process.platform !== 'win32') return resolve(empty)
 
     exec(
-      'tasklist /FI "IMAGENAME eq sing-box.exe" /FI "IMAGENAME eq xray.exe" /FO CSV /NH',
+      // Несколько /FI в tasklist объединяются через «И» — процесса с двумя
+      // именами сразу не бывает, и монитор всегда показывал ноль.
+      'tasklist /FO CSV /NH',
       { windowsHide: true, timeout: 4000 },
       (err, stdout) => {
         if (err || !stdout) return resolve(empty)
@@ -153,6 +158,7 @@ export function readCoreMemory(): Promise<CoreMemoryUsage> {
           const cols = line.match(/"([^"]*)"/g)
           if (!cols || cols.length < 5) continue
           const name = cols[0].replace(/"/g, '')
+          if (!/^(sing-box|xray)\.exe$/i.test(name)) continue
           // The memory column is localised and space-grouped; keep the digits.
           const kb = Number(cols[4].replace(/"/g, '').replace(/[^\d]/g, ''))
           if (!name || !Number.isFinite(kb) || kb <= 0) continue
@@ -191,8 +197,64 @@ export function installMemoryMonitor(): void {
   memoryTimer.unref?.()
 }
 
+// ---- Автообновление подписок ------------------------------------------------
+
+let subsUpdating = false
+
+/**
+ * Обновить подписки: при запуске — все (если включено «Обновлять при старте»),
+ * по таймеру — только те, что не обновлялись дольше выбранного интервала.
+ * Ошибка одной подписки не мешает остальным; открытая вкладка INCY получает
+ * событие и перечитывает список серверов.
+ */
+async function autoUpdateSubscriptions(reason: 'launch' | 'interval'): Promise<void> {
+  if (subsUpdating) return
+  const settings = loadIncySettings()
+  const subs = loadIncySubscriptions()
+  if (subs.length === 0) return
+  const hours = Number(settings.autoUpdateIntervalHours) || 0
+  const due =
+    reason === 'launch'
+      ? settings.updateOnLaunch
+        ? subs
+        : []
+      : hours > 0
+        ? subs.filter((sub) => Date.now() - (sub.lastUpdated || 0) >= hours * 3_600_000)
+        : []
+  if (due.length === 0) return
+  subsUpdating = true
+  let updated = 0
+  try {
+    for (const sub of due) {
+      try {
+        await refreshIncySubscription(sub.id)
+        updated++
+      } catch (e) {
+        appLog('warn', `[incy] автообновление «${sub.title}» не удалось: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+  } finally {
+    subsUpdating = false
+  }
+  if (updated > 0) {
+    appLog('info', `[incy] подписки обновлены автоматически (${reason === 'launch' ? 'при запуске' : 'по расписанию'}): ${updated}`)
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send('incy:nodesChanged')
+    }
+  }
+}
+
+export function installSubscriptionUpdater(): void {
+  // Не сразу: при автозапуске с Windows сеть поднимается не мгновенно.
+  setTimeout(() => void autoUpdateSubscriptions('launch'), 20_000).unref?.()
+  // Раз в 15 минут проверяем, не пора ли — сам запрос уходит только по интервалу.
+  const timer = setInterval(() => void autoUpdateSubscriptions('interval'), 15 * 60_000)
+  timer.unref?.()
+}
+
 export function installIncyWatchers(): void {
   installSleepWatcher()
   installExpiryWatcher()
   installMemoryMonitor()
+  installSubscriptionUpdater()
 }

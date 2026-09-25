@@ -329,6 +329,26 @@ export const appCancelUpdateDownload = (): Promise<void> =>
 export const appDismissUpdate = (tag: string, forever = false): Promise<void> =>
   invoke('app:dismissUpdate', tag, forever)
 
+/** Одна версия в истории изменений (окно обновления). */
+export interface AppReleaseNote {
+  tag: string
+  version: string
+  title: string
+  /** Заметки к релизу в markdown. */
+  body: string
+  publishedAt?: string
+  url?: string
+  /** Эта версия сейчас установлена. */
+  installed: boolean
+}
+/** История версий страницами: page 1 — самые свежие. */
+export const appGetReleaseHistory = (page = 1, perPage = 4): Promise<AppReleaseNote[]> =>
+  invoke('app:getReleaseHistory', page, perPage)
+/** Закрыть отдельное окно обновления. */
+export const updateWindowClose = (): Promise<void> => invoke('updateWindow:close')
+/** Открыть главное окно LAZEYKA из окна обновления. */
+export const updateWindowOpenMain = (): Promise<void> => invoke('updateWindow:openMain')
+
 // ---- App control ------------------------------------------------------------
 export const appQuit = (): Promise<void> => invoke('app:quit')
 export const appRelaunch = (): Promise<void> => invoke('app:relaunch')
@@ -403,6 +423,9 @@ export const dnsGetProviders = (): Promise<DohProvider[]> =>
   invoke('dns:getProviders')
 export const dnsApplySystem = (ip: string | 'dhcp'): Promise<{ success: boolean; message: string }> =>
   invoke('dns:applySystemDns', ip)
+/** DNS-серверы, которые сейчас стоят на рабочих адаптерах Windows. */
+export const dnsGetSystemState = (): Promise<{ servers: string[]; changedByApp: boolean }> =>
+  invoke('dns:getSystemState')
 
 // ---- Smart Game Mode ---------------------------------------------------------
 export interface GameModeStatus {
@@ -621,9 +644,16 @@ export interface IncySettings {
   pingTimeoutSec: number
 
   // Performance
+  /** Тайм-аут простоя UDP, с (0 или < 120 — стандарт ядра, 5 мин). */
   idleTimeoutSec: number
   maxTcpConnections: number
   maxUdpConnections: number
+  /** Переподключаться, если ядро VPN неожиданно завершилось. */
+  reconnectOnDrop?: boolean
+  /** Сетевой стек TUN. */
+  tunStack?: 'mixed' | 'system' | 'gvisor'
+  /** MTU адаптера TUN (0 — авто). */
+  tunMtu?: number
   disconnectOnSleep: boolean
   memoryMonitor: boolean
 }
@@ -639,10 +669,36 @@ export interface IncyStatus {
   /** Сессия поднята в режиме ExitLag (через VPN только приложения из списка). */
   exitLagActive?: boolean
   exitLagApps?: string[]
+  /** VPN оборвался, Kill Switch закрыл трафик мимо VPN. */
+  killSwitchActive?: boolean
+  /** Идёт автоматическое переподключение после обрыва. */
+  recovering?: boolean
 }
 
 export const incyGetNodes = (): Promise<IncyNode[]> => invoke('incy:getNodes')
 export const incySaveNodes = (nodes: IncyNode[]): Promise<void> => invoke('incy:saveNodes', nodes)
+
+export interface IncySpeedTestProgress {
+  nodeId: string
+  phase: 'connect' | 'ping' | 'download' | 'upload' | 'done' | 'error'
+  mbps?: number
+  pingMs?: number | null
+  downloadMbps?: number | null
+}
+export interface IncySpeedTestResult {
+  nodeId: string
+  nodeName: string
+  pingMs: number | null
+  downloadMbps: number | null
+  uploadMbps: number | null
+  downloadedMB: number
+  error?: string
+}
+/** Тест скорости через сервер; ход замера приходит событием `incy:speedTestProgress`. */
+export const incySpeedTest = (nodeId: string): Promise<IncySpeedTestResult> => invoke('incy:speedTest', nodeId)
+/** Записать результаты замера пинга в текущий список узлов (слияние по id). */
+export const incySaveLatencies = (results: { id: string; latencyMs: number | null }[]): Promise<IncyNode[]> =>
+  invoke('incy:saveLatencies', results)
 export const incyRemoveNode = (nodeId: string): Promise<IncyNode[]> => invoke('incy:removeNode', nodeId)
 export const incyClearManualNodes = (): Promise<IncyNode[]> => invoke('incy:clearManualNodes')
 export const incyGetSubscription = (): Promise<IncySubscription | null> => invoke('incy:getSubscription')
@@ -839,6 +895,51 @@ export interface RunningProcessInfo {
   name: string
   title?: string
 }
+export interface InstalledGame {
+  name: string
+  source: 'Steam' | 'Epic'
+  dir: string
+  exes: string[]
+}
+/** Игры из библиотек Steam и Epic (главный процесс — первым). */
+export const systemScanInstalledGames = (): Promise<InstalledGame[]> => invoke('system:scanInstalledGames')
+
+export interface AppActivity {
+  name: string
+  viaVpn: number
+  direct: number
+  upload: number
+  download: number
+}
+/** Какие приложения сейчас держат соединения и через что (null — туннель не поднят). */
+export const incyGetAppActivity = (): Promise<AppActivity[] | null> => invoke('incy:appActivity')
+
+export interface ValveRegionsReport {
+  regions: {
+    code: string
+    name: string
+    directMs: number | null
+    best?: { nodeId: string; nodeName: string; estimateMs: number }
+  }[]
+  nodesMeasured: number
+  nodesWithoutGeo: number
+  fetchedAt: number
+}
+export const optimizerValveRegions = (): Promise<ValveRegionsReport> => invoke('optimizer:valveRegions')
+export interface ValveZapretResult {
+  subnets: number
+  added: number
+  ipsetAdded: number
+  total: number
+  restarted: boolean
+  running: boolean
+  /** Game Filter обрабатывает UDP (режим «все» или «UDP»). */
+  gameFilterUdp: boolean
+  ipsetMode: 'loaded' | 'none' | 'any'
+}
+/** Подсети серверов Valve (CS2, Dota 2) → списки Zapret. */
+export const zapretAddValveServers = (): Promise<ValveZapretResult> => invoke('zapret:addValveServers')
+
 export const systemGetRunningProcesses = (): Promise<RunningProcessInfo[]> =>
   invoke('system:getRunningProcesses')
 export const dialogPickExecutable = (): Promise<string | null> =>

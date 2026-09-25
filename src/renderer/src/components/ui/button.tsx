@@ -5,19 +5,19 @@ import { Slot } from "radix-ui"
 import { cn } from "@renderer/lib/utils"
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl text-sm font-semibold cursor-pointer transition-all duration-200 active:scale-[0.95] disabled:pointer-events-none disabled:opacity-50 disabled:cursor-not-allowed [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-primary aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive select-none",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl text-sm font-semibold cursor-pointer transition-colors duration-150 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50 disabled:cursor-not-allowed [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-primary aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive select-none",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90 shadow-[0_0_15px_-3px_rgba(99,102,241,0.3)] hover:shadow-[0_0_20px_-2px_rgba(99,102,241,0.45)]",
+        default: "bg-primary text-primary-foreground hover:bg-primary/90",
         destructive:
-          "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/30 dark:focus-visible:ring-destructive/40 shadow-[0_0_15px_-3px_rgba(244,63,94,0.3)]",
+          "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/30 dark:focus-visible:ring-destructive/40",
         outline:
-          "border border-border/80 bg-card/60 backdrop-blur-xl hover:bg-foreground/[0.06] hover:border-primary/40 text-foreground",
+          "border border-border bg-card hover:bg-accent hover:border-primary/40 text-foreground",
         secondary:
-          "bg-foreground/[0.07] text-foreground hover:bg-foreground/[0.12] border border-border/60",
+          "bg-secondary text-secondary-foreground hover:bg-accent border border-border",
         ghost:
-          "hover:bg-foreground/[0.06] text-foreground",
+          "hover:bg-accent text-foreground",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

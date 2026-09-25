@@ -2,107 +2,202 @@
 @import 'tw-animate-css';
 @custom-variant dark (&:is(.dark *));
 
+/* Флаги стран. Windows не рисует эмодзи-флаги (🇩🇪 превращается в «DE»),
+   а они есть в названиях почти всех узлов подписок. Шрифт Twemoji Country
+   Flags (CC-BY 4.0) подключён локально и действует ТОЛЬКО на символы флагов
+   (unicode-range), весь остальной текст рисуется системным шрифтом. */
+/* Шрифт интерфейса — Onest (OFL-1.1), встроен в программу. */
+@font-face {
+  font-family: 'Onest';
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/onest-cyrillic-400-normal.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Onest';
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/onest-latin-400-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Onest';
+  font-weight: 500;
+  font-display: swap;
+  src: url('./fonts/onest-cyrillic-500-normal.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Onest';
+  font-weight: 500;
+  font-display: swap;
+  src: url('./fonts/onest-latin-500-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Onest';
+  font-weight: 600;
+  font-display: swap;
+  src: url('./fonts/onest-cyrillic-600-normal.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Onest';
+  font-weight: 600;
+  font-display: swap;
+  src: url('./fonts/onest-latin-600-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Onest';
+  font-weight: 700;
+  font-display: swap;
+  src: url('./fonts/onest-cyrillic-700-normal.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Onest';
+  font-weight: 700;
+  font-display: swap;
+  src: url('./fonts/onest-latin-700-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Onest';
+  font-weight: 800;
+  font-display: swap;
+  src: url('./fonts/onest-cyrillic-800-normal.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Onest';
+  font-weight: 800;
+  font-display: swap;
+  src: url('./fonts/onest-latin-800-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Twemoji Country Flags';
+  unicode-range: U+1F1E6-1F1FF, U+1F3F4, U+E0062-E0063, U+E0065, U+E0067, U+E006C, U+E006E, U+E0073-E0074,
+    U+E0077, U+E007F;
+  src: url('./fonts/TwemojiCountryFlags.woff2') format('woff2');
+  font-display: swap;
+}
+
+@theme {
+  --font-sans:
+    'Twemoji Country Flags', 'Onest', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+    'Segoe UI Symbol', 'Noto Color Emoji';
+  --font-mono:
+    'Twemoji Country Flags', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+}
+
 :root {
+  /* ── «Графит», светлая тема ─────────────────────────────────────────
+     Сплошные поверхности без полупрозрачности и размытия: карточки не
+     заставляют видеокарту пересчитывать фон под собой на каждом кадре. */
   --radius: 0.75rem;
-  /* Comfortable Titanium Slate light background - easy on the eyes, never blinding */
-  --background: oklch(0.935 0.012 245);
-  --foreground: oklch(0.18 0.025 250);
-  --card: oklch(0.985 0.005 240 / 96%);
-  --card-foreground: oklch(0.18 0.025 250);
-  --popover: oklch(0.985 0.005 240);
-  --popover-foreground: oklch(0.18 0.025 250);
-  --primary: oklch(0.52 0.22 260);
-  --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.89 0.015 245);
-  --secondary-foreground: oklch(0.18 0.025 250);
-  --muted: oklch(0.89 0.015 245);
-  --muted-foreground: oklch(0.42 0.025 250);
-  --stroke-power-off: oklch(0.75 0.04 250);
-  --gradient-start-power-off: oklch(0.88 0.03 250);
-  --gradient-end-power-off: oklch(0.8 0.03 250);
-  --stroke-power-on: oklch(0.6 0.18 155);
-  --gradient-start-power-on: oklch(0.65 0.2 155);
-  --gradient-end-power-on: oklch(0.5 0.18 155);
-  --profile-active: oklch(0.6 0.18 155 / 15%);
-  --stroke-profile-active: oklch(0.6 0.18 155);
-  --profile-inactive: oklch(0.88 0.01 245 / 50%);
-  --stroke-profile-inactive: oklch(0.75 0.015 245);
-  --stroke: oklch(0.84 0.015 245);
-  --accent: oklch(0.89 0.015 245);
-  --accent-foreground: oklch(0.18 0.025 250);
-  --destructive: oklch(0.55 0.22 25);
-  --destructive-foreground: oklch(0.99 0 0);
-  --border: oklch(0.84 0.015 245);
-  --input: oklch(0.84 0.015 245);
-  --ring: oklch(0.52 0.22 260);
-  --chart-1: oklch(0.52 0.22 260);
-  --chart-2: oklch(0.55 0.2 155);
-  --chart-3: oklch(0.65 0.18 75);
-  --chart-4: oklch(0.6 0.22 310);
-  --chart-5: oklch(0.55 0.22 25);
-  --success: oklch(0.55 0.2 155);
-  --success-foreground: oklch(0.99 0 0);
-  --warning: oklch(0.65 0.18 75);
-  --warning-foreground: oklch(0.15 0 0);
-  --sidebar: oklch(0.95 0.01 240 / 95%);
-  --sidebar-foreground: oklch(0.18 0.025 250);
-  --sidebar-primary: oklch(0.52 0.22 260);
-  --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: oklch(0.89 0.015 245);
-  --sidebar-accent-foreground: oklch(0.18 0.025 250);
-  --sidebar-border: oklch(0.84 0.015 245);
-  --sidebar-ring: oklch(0.52 0.22 260);
+  --background: #eef1f4;
+  --foreground: #12171d;
+  --card: #ffffff;
+  --card-foreground: #12171d;
+  --popover: #ffffff;
+  --popover-foreground: #12171d;
+  --primary: #0e9a5a;
+  --primary-foreground: #ffffff;
+  --secondary: #e5e9ee;
+  --secondary-foreground: #12171d;
+  --muted: #e9edf1;
+  --muted-foreground: #5a6571;
+  --stroke-power-off: #c9d1da;
+  --gradient-start-power-off: #eef1f4;
+  --gradient-end-power-off: #e1e6eb;
+  --stroke-power-on: #0e9a5a;
+  --gradient-start-power-on: #2fd07f;
+  --gradient-end-power-on: #0e9a5a;
+  --profile-active: rgba(14, 154, 90, 0.12);
+  --stroke-profile-active: #0e9a5a;
+  --profile-inactive: #eef1f4;
+  --stroke-profile-inactive: #d3dae1;
+  --stroke: #d9dfe6;
+  --accent: #e5e9ee;
+  --accent-foreground: #12171d;
+  --destructive: #d93a50;
+  --destructive-foreground: #ffffff;
+  --border: #dde3e9;
+  --input: #d3dae1;
+  --ring: #0e9a5a;
+  --chart-1: #0e9a5a;
+  --chart-2: #3b6fe0;
+  --chart-3: #c7860d;
+  --chart-4: #8a5cf0;
+  --chart-5: #d93a50;
+  --success: #0e9a5a;
+  --success-foreground: #ffffff;
+  --warning: #c7860d;
+  --warning-foreground: #ffffff;
+  --sidebar: #f8fafb;
+  --sidebar-foreground: #1d242c;
+  --sidebar-primary: #0e9a5a;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e8ecf0;
+  --sidebar-accent-foreground: #12171d;
+  --sidebar-border: #e1e6eb;
+  --sidebar-ring: #0e9a5a;
 }
 
 .dark {
-  /* High-tech Obsidian void background */
-  --background: oklch(0.1 0.015 250);
-  --foreground: oklch(0.98 0 0);
-  --card: oklch(0.14 0.02 250 / 80%);
-  --card-foreground: oklch(0.98 0 0);
-  --popover: oklch(0.13 0.02 250);
-  --popover-foreground: oklch(0.98 0 0);
-  --primary: oklch(0.65 0.22 260);
-  --primary-foreground: oklch(0.98 0 0);
-  --secondary: oklch(0.2 0.025 250);
-  --secondary-foreground: oklch(0.98 0 0);
-  --muted: oklch(0.18 0.02 250);
-  --muted-foreground: oklch(0.72 0.02 250);
-  --stroke-power-off: oklch(0.35 0.03 250);
-  --gradient-start-power-off: oklch(0.25 0.02 250);
-  --gradient-end-power-off: oklch(0.16 0.02 250);
-  --stroke-power-on: oklch(0.75 0.22 155);
-  --gradient-start-power-on: oklch(0.65 0.24 155);
-  --gradient-end-power-on: oklch(0.45 0.2 155);
-  --profile-active: oklch(0.65 0.22 155 / 25%);
-  --stroke-profile-active: oklch(0.75 0.22 155);
-  --profile-inactive: oklch(0.18 0.02 250 / 60%);
-  --stroke-profile-inactive: oklch(0.28 0.02 250);
-  --stroke: oklch(1 0 0 / 10%);
-  --accent: oklch(0.22 0.03 250);
-  --accent-foreground: oklch(0.98 0 0);
-  --destructive: oklch(0.65 0.24 25);
-  --destructive-foreground: oklch(0.98 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.65 0.22 260);
-  --success: oklch(0.72 0.22 155);
-  --success-foreground: oklch(0.08 0 0);
-  --warning: oklch(0.78 0.18 75);
-  --warning-foreground: oklch(0.1 0 0);
-  --chart-1: oklch(0.65 0.22 260);
-  --chart-2: oklch(0.72 0.22 155);
-  --chart-3: oklch(0.78 0.18 75);
-  --chart-4: oklch(0.68 0.25 310);
-  --chart-5: oklch(0.68 0.24 25);
-  --sidebar: oklch(0.11 0.018 250 / 90%);
-  --sidebar-foreground: oklch(0.98 0 0);
-  --sidebar-primary: oklch(0.65 0.22 260);
-  --sidebar-primary-foreground: oklch(0.98 0 0);
-  --sidebar-accent: oklch(0.2 0.025 250);
-  --sidebar-accent-foreground: oklch(0.98 0 0);
-  --sidebar-border: oklch(1 0 0 / 8%);
-  --sidebar-ring: oklch(0.65 0.22 260);
+  /* ── «Графит», тёмная тема. Зелёный — из логотипа LAZEYKA. ─────────── */
+  --background: #0b0d10;
+  --foreground: #e8edf2;
+  --card: #12151a;
+  --card-foreground: #e8edf2;
+  --popover: #15191f;
+  --popover-foreground: #e8edf2;
+  --primary: #4ce896;
+  --primary-foreground: #06140d;
+  --secondary: #1a1f26;
+  --secondary-foreground: #e8edf2;
+  --muted: #171b21;
+  --muted-foreground: #8a96a3;
+  --stroke-power-off: #2f3742;
+  --gradient-start-power-off: #1e232b;
+  --gradient-end-power-off: #14181e;
+  --stroke-power-on: #4ce896;
+  --gradient-start-power-on: #4ce896;
+  --gradient-end-power-on: #1f9d63;
+  --profile-active: rgba(76, 232, 150, 0.14);
+  --stroke-profile-active: #4ce896;
+  --profile-inactive: #171b21;
+  --stroke-profile-inactive: #2a323c;
+  --stroke: #262d36;
+  --accent: #1e232b;
+  --accent-foreground: #e8edf2;
+  --destructive: #f0556a;
+  --destructive-foreground: #ffffff;
+  --border: #232a33;
+  --input: #2a323c;
+  --ring: #4ce896;
+  --success: #4ce896;
+  --success-foreground: #06140d;
+  --warning: #f5b544;
+  --warning-foreground: #1a1200;
+  --chart-1: #4ce896;
+  --chart-2: #5b8cff;
+  --chart-3: #f5b544;
+  --chart-4: #b07cff;
+  --chart-5: #f0556a;
+  --sidebar: #0f1216;
+  --sidebar-foreground: #c9d2db;
+  --sidebar-primary: #4ce896;
+  --sidebar-primary-foreground: #06140d;
+  --sidebar-accent: #1b2028;
+  --sidebar-accent-foreground: #e8edf2;
+  --sidebar-border: #1d232b;
+  --sidebar-ring: #4ce896;
 }
 
 @theme inline {
@@ -336,6 +431,7 @@
 
 .flag-emoji {
   font-family:
+    'Twemoji Country Flags',
     system-ui,
     -apple-system,
     BlinkMacSystemFont,
@@ -404,28 +500,19 @@ body.hover-reset * {
    ═════════════════════════════════════════════════════════════════════ */
 
 .cyber-card {
-  background: color-mix(in oklab, var(--card) 94%, transparent);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  /* Сплошная поверхность: без backdrop-filter и полупрозрачности. */
+  background: var(--card);
   border: 1px solid var(--border);
-  box-shadow: 0 4px 20px -4px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.04);
-  transition: border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.15s ease;
 }
 
 .dark .cyber-card {
-  background: color-mix(in oklab, var(--card) 92%, transparent);
-  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.45);
+  box-shadow: none;
 }
 
 .cyber-card-hover:hover {
-  border-color: color-mix(in oklab, var(--primary) 40%, var(--border));
-  box-shadow: 0 8px 30px -4px rgba(15, 23, 42, 0.12), 0 0 15px -3px rgba(99, 102, 241, 0.15);
-  transform: translateY(-1px);
-}
-
-.dark .cyber-card-hover:hover {
-  border-color: rgba(255, 255, 255, 0.18);
-  box-shadow: 0 14px 38px -8px rgba(0, 0, 0, 0.55), 0 0 20px -5px rgba(99, 102, 241, 0.15);
+  border-color: color-mix(in oklab, var(--primary) 35%, var(--border));
 }
 
 .cyber-glow-emerald {

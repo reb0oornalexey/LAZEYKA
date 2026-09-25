@@ -59,12 +59,47 @@ const TelegramPage: React.FC = () => {
   const [link, setLink] = useState('')
   const [shareInfo, setShareInfo] = useState<TgwsShareInfo | null>(null)
   const [showQr, setShowQr] = useState(false)
-  const [qrMode, setQrMode] = useState<'local' | 'lan'>('lan')
+  const [qrMode, setQrMode] = useState<'local' | 'lan'>('local')
   const [dcs, setDcs] = useState<TelegramDCPing[]>([])
   const [pingingDcs, setPingingDcs] = useState(false)
 
   const tgws = appConfig?.tgws
   const [workerDraft, setWorkerDraft] = useState<string | null>(null)
+  // Черновик параметров соединения. Раньше каждое нажатие клавиши сразу
+  // сохранялось (а при вводе секрета — ещё и генерировало случайный ключ),
+  // и прокси продолжал работать со старыми значениями.
+  const [hostDraft, setHostDraft] = useState<string | null>(null)
+  const [portDraft, setPortDraft] = useState<string | null>(null)
+  const [secretDraft, setSecretDraft] = useState<string | null>(null)
+  const connDirty = hostDraft !== null || portDraft !== null || secretDraft !== null
+
+  const handleSaveConnection = async (): Promise<void> => {
+    const host = (hostDraft ?? tgws?.host ?? '127.0.0.1').trim() || '127.0.0.1'
+    const port = Number(portDraft ?? tgws?.port ?? 1443)
+    const secret = (secretDraft ?? tgws?.secret ?? '').trim().toLowerCase()
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      toast.error('Порт должен быть числом от 1 до 65535')
+      return
+    }
+    if (!/^[0-9a-f]{32}$/.test(secret)) {
+      toast.error('Секрет — ровно 32 шестнадцатеричных символа (0–9, a–f)')
+      return
+    }
+    try {
+      await patchAppConfig({ tgws: { ...tgws!, host, port, secret } })
+      setHostDraft(null)
+      setPortDraft(null)
+      setSecretDraft(null)
+      if (status.state === 'running') {
+        await tgwsRestart()
+        toast.success('Параметры сохранены, Telegram Proxy перезапущен', { style: POWER_ON_TOAST_STYLE })
+      } else {
+        toast.success('Параметры сохранены')
+      }
+    } catch (e) {
+      toast.error('Не удалось применить параметры', { description: e instanceof Error ? e.message : String(e) })
+    }
+  }
 
   /** Пускать TgWsProxy через VPN INCY. Туннель переподключается сам, если поднят. */
   const handleToggleViaIncy = async (v: boolean): Promise<void> => {
@@ -83,8 +118,14 @@ const TelegramPage: React.FC = () => {
     await patchAppConfig({ tgws: { ...tgws!, cfproxyWorkerDomain: value } })
     setWorkerDraft(null)
     if (status.state === 'running') {
-      await tgwsRestart().catch(() => void 0)
-      toast.success('Cloudflare Worker сохранён, Telegram Proxy перезапущен')
+      try {
+        await tgwsRestart()
+        toast.success('Cloudflare Worker сохранён, Telegram Proxy перезапущен')
+      } catch (e) {
+        toast.error('Worker сохранён, но прокси не перезапустился', {
+          description: e instanceof Error ? e.message : String(e)
+        })
+      }
     } else {
       toast.success('Cloudflare Worker сохранён')
     }
@@ -200,10 +241,10 @@ const TelegramPage: React.FC = () => {
       <div className="px-4 pb-6 space-y-4">
         {showBanner && updateInfo && (
           <div className={cn(
-            'relative flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 backdrop-blur-xl px-4 py-3 shadow-[0_0_15px_rgba(99,102,241,0.15)] transition',
+            'relative flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 transition',
             installing && 'pointer-events-none opacity-80'
           )}>
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/20 text-primary shadow-[0_0_10px_rgba(99,102,241,0.25)]">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/20 text-primary ">
               {installing
                 ? <Loader2 className="h-4 w-4 animate-spin" />
                 : <Sparkles className="h-4 w-4" />}
@@ -263,7 +304,7 @@ const TelegramPage: React.FC = () => {
                 variant="outline"
                 className={cn(
                   'h-8 text-xs gap-1.5 rounded-xl border-border/80 transition-all',
-                  showQr && 'bg-primary/15 border-primary/40 text-primary shadow-[0_0_12px_rgba(99,102,241,0.25)]'
+                  showQr && 'bg-primary/15 border-primary/40 text-primary '
                 )}
                 onClick={() => setShowQr((v) => !v)}
               >
@@ -321,7 +362,7 @@ const TelegramPage: React.FC = () => {
 
             {/* QR Code Section */}
             {showQr && (
-              <div className="rounded-2xl border border-border/80 bg-background/60 backdrop-blur-xl p-5 animate-in fade-in zoom-in-95">
+              <div className="rounded-2xl border border-border/80 bg-background/60 p-5 animate-in fade-in zoom-in-95">
                 <div className="flex flex-col md:flex-row items-center gap-6">
                   <div className="rounded-2xl bg-white p-3.5 shadow-[0_0_25px_rgba(255,255,255,0.15)] shrink-0">
                     <QRCodeSVG
@@ -346,10 +387,17 @@ const TelegramPage: React.FC = () => {
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => setQrMode('lan')}
+                        disabled={!shareInfo?.lanLink}
+                        title={
+                          shareInfo?.lanLink
+                            ? undefined
+                            : 'Прокси слушает только этот ПК. Чтобы подключить телефон, укажите хост 0.0.0.0 в параметрах ниже.'
+                        }
                         className={cn(
+                          !shareInfo?.lanLink && 'opacity-50 cursor-not-allowed',
                           'rounded-xl border px-3 py-1.5 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer',
                           qrMode === 'lan'
-                            ? 'border-primary/50 bg-primary/20 text-primary shadow-[0_0_12px_rgba(99,102,241,0.2)]'
+                            ? 'border-primary/50 bg-primary/20 text-primary '
                             : 'border-border/60 text-muted-foreground hover:bg-foreground/[0.04]'
                         )}
                       >
@@ -361,7 +409,7 @@ const TelegramPage: React.FC = () => {
                         className={cn(
                           'rounded-xl border px-3 py-1.5 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer',
                           qrMode === 'local'
-                            ? 'border-primary/50 bg-primary/20 text-primary shadow-[0_0_12px_rgba(99,102,241,0.2)]'
+                            ? 'border-primary/50 bg-primary/20 text-primary '
                             : 'border-border/60 text-muted-foreground hover:bg-foreground/[0.04]'
                         )}
                       >
@@ -459,7 +507,7 @@ const TelegramPage: React.FC = () => {
                   <div
                     key={d.dc}
                     className={cn(
-                      'rounded-xl border p-3 flex flex-col justify-between transition-all duration-200 bg-card/60 backdrop-blur-md',
+                      'rounded-xl border p-3 flex flex-col justify-between transition-all duration-200 bg-card/60 ',
                       isGood && 'border-emerald-500/30 hover:border-emerald-500/50 shadow-[0_0_15px_-4px_rgba(16,185,129,0.15)]',
                       isMedium && 'border-amber-500/30 hover:border-amber-500/50',
                       isBad && 'border-rose-500/30 hover:border-rose-500/50',
@@ -505,8 +553,8 @@ const TelegramPage: React.FC = () => {
             <div className="space-y-1.5">
               <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Хост</Label>
               <Input
-                value={tgws?.host ?? ''}
-                onChange={(e) => patchAppConfig({ tgws: { ...tgws!, host: e.target.value } })}
+                value={hostDraft ?? tgws?.host ?? ''}
+                onChange={(e) => setHostDraft(e.target.value)}
                 placeholder="127.0.0.1"
                 className="rounded-xl bg-background/50 border-border/70 font-mono text-xs"
               />
@@ -515,20 +563,41 @@ const TelegramPage: React.FC = () => {
               <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Порт</Label>
               <Input
                 type="number"
-                value={tgws?.port ?? 1443}
-                onChange={(e) =>
-                  patchAppConfig({ tgws: { ...tgws!, port: Number(e.target.value) || 1443 } })
-                }
+                value={portDraft ?? String(tgws?.port ?? 1443)}
+                onChange={(e) => setPortDraft(e.target.value)}
                 className="rounded-xl bg-background/50 border-border/70 font-mono text-xs"
               />
             </div>
             <div className="md:col-span-2 space-y-1.5">
               <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Секретный ключ (32-hex MTProto)</Label>
               <Input
-                value={tgws?.secret ?? ''}
-                onChange={(e) => patchAppConfig({ tgws: { ...tgws!, secret: e.target.value.trim() } })}
+                value={secretDraft ?? tgws?.secret ?? ''}
+                onChange={(e) => setSecretDraft(e.target.value)}
                 className="font-mono text-xs rounded-xl bg-background/50 border-border/70"
               />
+            </div>
+            <div className="md:col-span-2 flex items-center justify-between gap-3">
+              <p className="text-[11px] text-muted-foreground">
+                Хост 0.0.0.0 открывает прокси для телефона в той же Wi-Fi сети.
+              </p>
+              <div className="flex gap-2">
+                {connDirty && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setHostDraft(null)
+                      setPortDraft(null)
+                      setSecretDraft(null)
+                    }}
+                  >
+                    Отменить
+                  </Button>
+                )}
+                <Button size="sm" disabled={!connDirty} onClick={() => void handleSaveConnection()}>
+                  Сохранить
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -589,7 +658,7 @@ const TelegramPage: React.FC = () => {
         </Card>
 
         {status.lastError && (
-          <Card className="border-rose-500/40 bg-rose-950/20 backdrop-blur-xl">
+          <Card className="border-rose-500/40 bg-rose-950/20 ">
             <CardContent className="pt-4">
               <p className="text-xs text-rose-700 dark:text-rose-400 font-mono">{status.lastError}</p>
             </CardContent>

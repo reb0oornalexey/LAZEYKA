@@ -12,6 +12,7 @@ import {
   zapretInstallUpdate,
   zapretDismissUpdate,
   zapretRunStrategyTest,
+  getAppConfig,
   type ZapretUpdateInfo
 } from '@renderer/utils/ipc'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
@@ -37,6 +38,15 @@ const Zapret: React.FC = () => {
   const autoStartRef = useRef<boolean>(
     Boolean((location.state as { autoStart?: boolean } | null)?.autoStart)
   )
+  // Переход из «Регионов Valve»: сразу открыть настройки на Game Filter и IPset.
+  const focusFiltersRef = useRef<boolean>(
+    Boolean((location.state as { focusFilters?: boolean } | null)?.focusFilters)
+  )
+  useEffect(() => {
+    // Флаг одноразовый: убираем его из истории, чтобы подсказка не всплывала
+    // снова после перезагрузки окна.
+    if (focusFiltersRef.current) navigate(location.pathname, { replace: true, state: null })
+  }, [])
 
   // ---- Auto-update banner
   const [updateInfo, setUpdateInfo] = useState<ZapretUpdateInfo | null>(null)
@@ -149,7 +159,10 @@ const Zapret: React.FC = () => {
       if (zapret && active) {
         const fresh = await zapretListStrategies().catch(() => [])
         if (!fresh.some((s) => s.file === active)) {
-          await patchAppConfig({ zapret: { ...zapret, activeStrategy: undefined } })
+          // Свежий конфиг, а не снимок до обновления: иначе вместе со
+          // стратегией откатывалась и версия, и баннер обновления возвращался.
+          const cfgNow = await getAppConfig()
+          await patchAppConfig({ zapret: { ...(cfgNow.zapret ?? zapret), activeStrategy: undefined } })
         }
       }
       // Re-check so the banner disappears immediately.
@@ -173,8 +186,8 @@ const Zapret: React.FC = () => {
   const pickStrategy = async (file: string): Promise<void> => {
     // Defensive: if the user manages to click a disabled strategy via
     // keyboard or a stale render, drop the request silently.
-    const r = testReport?.results[file]
-    if (r && r.tested && !r.passed) return
+    // Стратегию, не прошедшую тест, всё равно можно выбрать: сеть и
+    // провайдер меняются, а старый отчёт иначе блокировал её навсегда.
     if (isTestRunning) return
     await patchAppConfig({ zapret: { ...zapret!, activeStrategy: file } })
     if (!autoStartRef.current) return
@@ -195,10 +208,10 @@ const Zapret: React.FC = () => {
       <div className="px-4 pb-6 space-y-4">
         {showBanner && updateInfo && (
           <div className={cn(
-            'relative flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 backdrop-blur-xl px-4 py-3 shadow-[0_0_15px_rgba(99,102,241,0.15)] transition',
+            'relative flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 transition',
             installing && 'pointer-events-none opacity-80'
           )}>
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/20 text-primary shadow-[0_0_10px_rgba(99,102,241,0.25)]">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/20 text-primary ">
               {installing
                 ? <Loader2 className="h-4 w-4 animate-spin" />
                 : <Sparkles className="h-4 w-4" />}
@@ -263,6 +276,7 @@ const Zapret: React.FC = () => {
       />
 
       <ZapretServiceSettingsCard
+        focusFilters={focusFiltersRef.current}
         disabled={isTestRunning || status.state === 'starting' || status.state === 'stopping'}
         disabledReason={
           isTestRunning
@@ -345,7 +359,7 @@ const Zapret: React.FC = () => {
             const isPassed = !!result && result.tested && result.passed
             const isBest = testReport?.bestStrategy === s.file
             const isActive = active === s.file
-            const disabled = isFailed || isTestRunning
+            const disabled = isTestRunning
 
             return (
               <button
@@ -355,13 +369,13 @@ const Zapret: React.FC = () => {
                 aria-disabled={disabled}
                 title={
                   isFailed
-                    ? `Не прошла тест (${result?.okCount ?? 0}/${result?.totalCount ?? 0} целей доступны).`
+                    ? `Не прошла последний тест (${result?.okCount ?? 0}/${result?.totalCount ?? 0} целей доступны). Выбрать всё равно можно.`
                     : undefined
                 }
                 className={cn(
                   'group relative w-full text-left p-3.5 rounded-xl border transition-all duration-200 cursor-pointer',
                   isActive
-                    ? 'border-primary/60 bg-primary/15 shadow-[0_0_20px_-3px_rgba(99,102,241,0.3)]'
+                    ? 'border-primary/60 bg-primary/15 '
                     : 'border-border/60 bg-card/40 hover:bg-foreground/[0.04] hover:border-border',
                   disabled && 'opacity-40 grayscale cursor-not-allowed pointer-events-none'
                 )}
@@ -373,7 +387,7 @@ const Zapret: React.FC = () => {
                         {s.title}
                       </span>
                       {isBest && (
-                        <span className="shrink-0 text-[10px] uppercase tracking-wide font-mono font-bold rounded-full px-2 py-0.5 bg-primary/20 text-primary border border-primary/30 shadow-[0_0_8px_rgba(99,102,241,0.3)]">
+                        <span className="shrink-0 text-[10px] uppercase tracking-wide font-mono font-bold rounded-full px-2 py-0.5 bg-primary/20 text-primary border border-primary/30 ">
                           лучшая
                         </span>
                       )}
@@ -406,7 +420,7 @@ const Zapret: React.FC = () => {
       </Card>
 
       {status.lastError && (
-        <Card className="border-rose-500/40 bg-rose-950/20 backdrop-blur-xl">
+        <Card className="border-rose-500/40 bg-rose-950/20 ">
           <CardContent className="pt-4">
             <p className="text-xs text-rose-700 dark:text-rose-400 font-mono">{status.lastError}</p>
           </CardContent>

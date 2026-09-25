@@ -14,18 +14,23 @@
  *   - постоянный пункт в меню трея;
  *   - событие в рендерер, чтобы открытое окно показало окно обновления сразу.
  *
- * Окно само по себе не всплывает: перебивать полноэкранную игру или звонок
- * ради «вышла новая версия» — не то поведение, за которое скажут спасибо.
+ * При ЗАПУСКЕ программы (в том числе автозапуске вместе с Windows) вышедшее
+ * обновление показывается отдельным окном (update-window.ts) — не главным
+ * окном и не модалкой в нём. Пока программа уже работает, окно само не
+ * всплывает (не перебиваем игру или звонок): только уведомление и трей.
  */
 import { powerMonitor, BrowserWindow } from 'electron'
-import { mainWindow, showMainWindow } from '..'
+import { openUpdateSplash } from './update-window'
 import { checkAppUpdate, type AppUpdateInfo } from './app-updater'
 import { getAppConfig } from '../config'
 import { showSystemNotification } from '../utils/notifications'
 import { appLog } from '../utils/app-logger'
 
-/** Первая проверка — не сразу: на старте сеть ещё может подниматься. */
-const FIRST_CHECK_DELAY_MS = 40_000
+/**
+ * Проверка при запуске: первая попытка почти сразу, а если сеть ещё не
+ * поднялась (автозапуск вместе с Windows) — повторы, пока не получится.
+ */
+const STARTUP_ATTEMPTS_MS = [8_000, 30_000, 120_000, 300_000]
 /** Совпадает с кэшем релизов GitHub — чаще ходить незачем. */
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 /** После пробуждения сети нужно время, иначе запрос упадёт впустую. */
@@ -49,32 +54,10 @@ export function getPendingAppUpdate(): AppUpdateInfo | null {
   return pending
 }
 
-/**
- * Развернуть окно и открыть в нём окно обновления.
- *
- * Импорт из `..` замыкает цикл с `src/main/index.ts`, который импортирует этот
- * модуль. Это допустимо и уже используется в `resolve/tray.ts`: обращение к
- * `showMainWindow` происходит внутри колбэка, когда оба модуля давно готовы.
- */
+/** Открыть отдельное окно обновления (уведомление, трей, кнопки проверки). */
 export async function openUpdateWindow(): Promise<void> {
-  try {
-    await showMainWindow()
-
-    // Поднять окно поверх остальных. На Windows `show()` из фонового процесса
-    // часто лишь мигает кнопкой в панели задач — окно остаётся под чужими.
-    // Короткий «всегда сверху» заставляет его действительно выйти вперёд и
-    // тут же снимается, чтобы не мешать дальше.
-    const win = mainWindow
-    if (win && !win.isDestroyed()) {
-      win.setAlwaysOnTop(true)
-      win.show()
-      win.setAlwaysOnTop(false)
-      win.focus()
-    }
-    broadcast(true)
-  } catch (e) {
-    appLog('warn', `[update] не удалось показать окно: ${String(e)}`)
-  }
+  openUpdateSplash()
+  broadcast(true)
 }
 
 /**
@@ -154,8 +137,44 @@ async function runCheck(force: boolean): Promise<void> {
 export async function checkAppUpdateFromUi(): Promise<AppUpdateInfo> {
   const info = await checkAppUpdate(true)
   pending = info.hasUpdate && info.assetUrl ? info : null
-  if (pending) broadcast(true)
+  if (pending) void openUpdateWindow()
   return info
+}
+
+/**
+ * Проверка при запуске программы. Если вышла новая версия — сразу отдельное
+ * окно обновления. «Позже» здесь не действует (оно глушит только фоновые
+ * напоминания на сутки): при каждом запуске человек видит, что есть новая
+ * версия. Молчим только для версии, пропущенной кнопкой «Пропустить».
+ */
+async function startupCheck(attempt = 0): Promise<void> {
+  let cfg: Awaited<ReturnType<typeof getAppConfig>>
+  try {
+    cfg = await getAppConfig()
+  } catch {
+    return
+  }
+  if (cfg.autoCheckUpdate === false) return
+  let info: AppUpdateInfo
+  try {
+    info = await checkAppUpdate(true)
+  } catch (e) {
+    const next = STARTUP_ATTEMPTS_MS[attempt + 1]
+    appLog('warn', `[update] проверка при запуске не удалась${next ? ', повторю позже' : ''}: ${String(e)}`)
+    if (next) setTimeout(() => { void startupCheck(attempt + 1) }, next - STARTUP_ATTEMPTS_MS[attempt]).unref?.()
+    return
+  }
+  if (!info.hasUpdate || !info.assetUrl) {
+    pending = null
+    return
+  }
+  pending = info
+  // Трей и фоновое напоминание знают, что про эту версию уже сказали.
+  notifiedTag = info.tag ?? null
+  notifiedAt = Date.now()
+  if (info.skipped) return
+  appLog('info', `[update] при запуске: доступна версия ${info.latest ?? '?'} (установлена ${info.installed})`)
+  openUpdateSplash()
 }
 
 /** Забыть, что уведомление уже показывали. */
@@ -166,7 +185,7 @@ export function resetUpdateNotice(): void {
 
 export function installAppUpdateWatcher(): void {
   if (timer) return
-  setTimeout(() => { void runCheck(false) }, FIRST_CHECK_DELAY_MS).unref?.()
+  setTimeout(() => { void startupCheck(0) }, STARTUP_ATTEMPTS_MS[0]).unref?.()
   timer = setInterval(() => { void runCheck(true) }, CHECK_INTERVAL_MS)
   timer.unref?.()
 

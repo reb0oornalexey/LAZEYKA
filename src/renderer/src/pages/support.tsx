@@ -63,7 +63,7 @@ const Support: React.FC = () => {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center gap-3">
-              <div className="size-11 rounded-2xl bg-primary/20 border border-primary/40 flex items-center justify-center font-bold text-base text-primary shadow-[0_0_14px_rgba(99,102,241,0.3)] font-mono">
+              <div className="size-11 rounded-2xl bg-primary/20 border border-primary/40 flex items-center justify-center font-bold text-base text-primary font-mono">
                 R
               </div>
               <div>
@@ -73,11 +73,11 @@ const Support: React.FC = () => {
                     variant="outline"
                     className="text-[10px] px-2 py-0 font-mono text-primary border-primary/40 bg-primary/10"
                   >
-                    Author
+                    Автор
                   </Badge>
                 </div>
                 <div className="text-[11px] text-muted-foreground font-mono">
-                  Lead Developer &amp; Project Creator
+                  Разработчик и создатель проекта
                 </div>
               </div>
             </div>
@@ -124,7 +124,7 @@ const Support: React.FC = () => {
             <button
               type="button"
               onClick={() => openExternalUrl(SUPPORT_TELEGRAM_URL)}
-              className="group w-full cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-primary/20 via-primary/15 to-primary/20 text-primary border border-primary/40 hover:border-primary/70 shadow-[0_0_12px_rgba(99,102,241,0.15)] hover:shadow-[0_0_18px_rgba(99,102,241,0.3)] transition-all duration-200 active:scale-[0.98]"
+              className="group w-full cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-primary/20 via-primary/15 to-primary/20 text-primary border border-primary/40 hover:border-primary/70 transition-all duration-200 active:scale-[0.98]"
             >
               <LifeBuoy className="size-4 group-hover:scale-110 transition-transform" />
               <span>Открыть поддержку LAZEYKA в Telegram</span>

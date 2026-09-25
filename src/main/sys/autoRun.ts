@@ -28,8 +28,19 @@ function runSchtasks(args: string[]): Promise<{ code: number; out: string }> {
  * /TR/SC short-form because only XML supports `RunLevel=HighestAvailable`
  * + `MultipleInstancesPolicy=IgnoreNew` + delay tweaks in one call.
  */
-function buildTaskXml(exe: string): string {
-  const userId = `${process.env.USERDOMAIN || ''}\\${process.env.USERNAME || ''}`.replace(/^\\/, '')
+/** Экранирование для XML: путь «D:\\Tools & Apps\\» ломал задачу автозапуска. */
+function xmlEscape(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
+function buildTaskXml(exePathRaw: string): string {
+  const exe = xmlEscape(exePathRaw)
+  const userId = xmlEscape(`${process.env.USERDOMAIN || ''}\\${process.env.USERNAME || ''}`.replace(/^\\/, ''))
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>

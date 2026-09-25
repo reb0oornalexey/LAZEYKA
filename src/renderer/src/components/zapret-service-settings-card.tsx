@@ -58,6 +58,8 @@ interface Props {
   autoUpdateCheck: boolean
   onAutoUpdateCheckChange: (v: boolean) => void
   onManualCheckUpdate: () => Promise<void>
+  /** Открыть карточку и прокрутить к Game Filter и IPset (переход из «Регионов Valve»). */
+  focusFilters?: boolean
 }
 
 const GAME_FILTER_OPTIONS: { value: GameFilterMode; label: string; title: string }[] = [
@@ -78,9 +80,24 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
   disabledReason,
   autoUpdateCheck,
   onAutoUpdateCheckChange,
-  onManualCheckUpdate
+  onManualCheckUpdate,
+  focusFilters = false
 }) => {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(focusFilters)
+  // Режим подсказки (переход из «Регионов Valve»): подсвечиваем только то, что
+  // ещё не включено, и выключаем подсветку, как только всё выставлено.
+  const [guide, setGuide] = useState(focusFilters)
+  const filtersRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!focusFilters) return
+    setOpen(true)
+    // Ждём отрисовки раскрытой карточки, потом прокручиваем к фильтрам.
+    const t = setTimeout(() => {
+      filtersRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 150)
+    return () => clearTimeout(t)
+  }, [focusFilters])
   const [gameFilter, setGameFilterState] = useState<GameFilterMode | null>(null)
   const [ipset, setIpset] = useState<IpsetFilterSnapshot | null>(null)
   const [fakes, setFakes] = useState<ActiveFakesState | null>(null)
@@ -97,6 +114,17 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
   const [busyFix, setBusyFix] = useState<string | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const loadedRef = useRef(false)
+
+  const gameNeedsUdp = gameFilter !== null && gameFilter !== 'all' && gameFilter !== 'udp'
+  const ipsetOff = ipset !== null && ipset.mode === 'none'
+  const highlightGame = guide && gameNeedsUdp
+  const highlightIpset = guide && ipsetOff
+
+  useEffect(() => {
+    // Оба условия выполнены — подсказка больше не нужна, даже если потом
+    // пользователь сам переключит что-то обратно.
+    if (guide && gameFilter !== null && ipset !== null && !gameNeedsUdp && !ipsetOff) setGuide(false)
+  }, [guide, gameFilter, ipset, gameNeedsUdp, ipsetOff])
 
   const refresh = async (): Promise<void> => {
     try {
@@ -134,7 +162,7 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
       const next = await zapretSetGameFilter(mode)
       setGameFilterState(next)
       toast.success('Game Filter обновлён', {
-        description: 'Изменения применятся после перезапуска Zapret',
+        description: 'Если Zapret включён, он перезапущен — изменения уже действуют',
         style: POWER_ON_BANNER_STYLE
       })
     } catch (e) {
@@ -153,7 +181,7 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
       const next = await zapretSetIpsetFilter(mode)
       setIpset(next)
       toast.success('IPset Filter обновлён', {
-        description: 'Изменения применятся после перезапуска Zapret',
+        description: 'Если Zapret включён, он перезапущен — изменения уже действуют',
         style: POWER_ON_BANNER_STYLE
       })
     } catch (e) {
@@ -232,6 +260,7 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
     try {
       const next = await zapretRemoveWindowsService()
       setServiceStatus(next)
+      if (next.installed) throw new Error('Служба осталась в системе. Перезагрузите компьютер и попробуйте снова.')
       toast.success('Службы успешно удалены', {
         id: tId,
         description: 'Службы Zapret и WinDivert остановлены и очищены',
@@ -346,7 +375,7 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
         <div className="min-w-0 flex-1">
           <CardTitle className="flex items-center gap-2">
             <Settings2 className="h-4 w-4 text-muted-foreground" />
-            Настройки Zapret (Service Manager)
+            Настройки Zapret
           </CardTitle>
         </div>
         <Button
@@ -377,7 +406,7 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
               Установка Zapret в качестве системной службы Windows — обход будет работать всегда в фоновом режиме даже при закрытом LAZEYKA.
             </p>
 
-            <div className="flex flex-col gap-3 rounded-xl border border-border/80 bg-card/50 backdrop-blur-md p-3.5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-3 rounded-xl border border-border/80 bg-card/50 p-3.5 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-semibold text-foreground">Статус службы:</span>
@@ -434,7 +463,10 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
           {/* ================================================================ */}
           {/* 2. SETTINGS: Game Filter & IPSet Filter                          */}
           {/* ================================================================ */}
-          <div>
+          <div
+            ref={filtersRef}
+            className={cn('-mx-2 rounded-xl px-2 py-1 transition-shadow duration-300', highlightGame && 'ring-2 ring-primary/70')}
+          >
             <div className="mb-2 flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted-foreground">
               <Gamepad2 className="h-3.5 w-3.5" />
               Game Filter
@@ -469,7 +501,9 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
             )}
           </div>
 
-          <div>
+          <div
+            className={cn('-mx-2 rounded-xl px-2 py-1 transition-shadow duration-300', highlightIpset && 'ring-2 ring-primary/70')}
+          >
             <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
               IPset Filter
               {ipset && (

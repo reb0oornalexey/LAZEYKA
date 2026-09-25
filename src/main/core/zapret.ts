@@ -1,5 +1,5 @@
 import { spawn, spawnSync, ChildProcess } from 'child_process'
-import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync, writeFileSync, statSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync, writeFileSync, statSync, renameSync, cpSync } from 'fs'
 import path from 'path'
 import AdmZip from 'adm-zip'
 import { BrowserWindow } from 'electron'
@@ -8,7 +8,8 @@ import { getAppConfig } from '../config'
 import { showSystemNotification } from '../utils/notifications'
 import { logToFile } from '../utils/file-logger'
 import { getGameFilterMode, getZapretWindowsServiceStatus } from './zapret-service-settings'
-import { createConsoleDecoder } from '../utils/console-decode'
+import { createConsoleDecoder, decodeConsole } from '../utils/console-decode'
+import { mergeLazeykaIpset } from './zapret-iplist'
 
 export interface StrategyDescriptor {
   file: string
@@ -92,7 +93,8 @@ export async function installZapretBundle(
 
   // Stop a running winws.exe before touching the bundle directory; locked
   // files on Windows would otherwise make rmSync fail with EBUSY.
-  if (status.state === 'running' || status.state === 'starting') {
+  const wasRunning = status.state === 'running' || status.state === 'starting'
+  if (wasRunning) {
     try { await stopZapret() } catch { /* best-effort */ }
   }
 
@@ -138,24 +140,18 @@ export async function installZapretBundle(
 
   const dest = zapretRuntimeDir()
 
-  // Zapret itself already keeps user customisations in dedicated files
-  // that general.bat loads *alongside* the upstream-maintained ones —
-  // lists/list-general-user.txt, lists/list-exclude-user.txt, and
-  // lists/ipset-exclude-user.txt (created on first run by service.bat's
-  // own `load_user_lists`, never overwritten by it afterwards). Update
-  // .zip archives never include these files at all, so upstream's own
-  // update process — which copies files in place — naturally never
-  // touches them.
+  // Раньше папка удалялась целиком ДО распаковки, а пользовательские списки
+  // возвращались только после неё. Если антивирус не давал записать
+  // winws.exe или WinDivert64.sys (у zapret это частая история), списки
+  // пропадали навсегда. Теперь всё собирается во временной папке рядом и
+  // подменяет рабочую только когда полностью готово.
   //
-  // Our own update install is more aggressive (full `rmSync` of the
-  // runtime dir, then a clean re-extract from the zip) so it can't rely
-  // on that same "never listed in the zip" safety net the way an in-place
-  // copy would: wiping the whole directory would delete these files
-  // outright, since nothing in the fresh zip would recreate them. So we
-  // carry every lists/*-user.txt* file (including our own in-app editor's
-  // list-general-user.txt.backup "undo" snapshot, see zapret-iplist.ts)
-  // across the wipe verbatim — no merging needed, since these files are
-  // entirely user-owned and never shipped by upstream in the first place.
+  // Что переносится из старой версии:
+  //  - все lists/*-user.txt, *.backup и нестандартные списки;
+  //  - ваши добавления в стандартные списки (слияние построчно);
+  //  - utils/*.enabled (игровой фильтр, проверка обновлений и т. п.);
+  //  - стратегии из конструктора «general (…).bat», которых нет в новой версии;
+  //  - режим IPset (none/any): иначе обновление молча включало полный список.
   const currentBundleDir = zapretBundleDir()
   const currentListsDir = path.join(currentBundleDir, 'lists')
   const cachedExistingLists = new Map<string, Buffer>()
@@ -171,111 +167,172 @@ export async function installZapretBundle(
     }
   }
 
-  if (existsSync(dest)) {
-    rmSync(dest, { recursive: true, force: true })
-  }
-  mkdirSync(dest, { recursive: true })
+  const staging = `${dest}.new`
+  rmSync(staging, { recursive: true, force: true })
+  mkdirSync(staging, { recursive: true })
 
   let written = 0
-  for (const e of entries) {
-    if (e.isDirectory) continue
-    const name = normalize(e.entryName)
-    if (rootPrefix && !name.startsWith(rootPrefix)) continue
-    const rel = name.slice(rootPrefix.length)
-    if (!rel) continue
-    // Defensive: refuse path-traversal entries.
-    if (rel.includes('..')) continue
-    const out = path.join(dest, rel)
-    mkdirSync(path.dirname(out), { recursive: true })
-    writeFileSync(out, e.getData())
-    written++
-  }
-
-  const listsDir = path.join(dest, 'lists')
-  mkdirSync(listsDir, { recursive: true })
-
-  // 1. Restore all user-owned files (*-user.txt), all backups (*.backup), and custom user files
-  for (const [name, data] of cachedExistingLists) {
-    const isStandardUpstream = /^(list-general|list-google|list-exclude|ipset-all|ipset-exclude)\.txt$/i.test(name)
-    const isUserOrBackup = /-user\.txt(\.backup)?$/i.test(name) || /\.backup$/i.test(name) || !isStandardUpstream
-
-    if (isUserOrBackup) {
-      writeFileSync(path.join(listsDir, name), data)
-    }
-  }
-
-  // 2. Intelligently merge user additions from standard upstream lists (list-general, list-google, list-exclude)
-  for (const listName of ['list-general.txt', 'list-google.txt', 'list-exclude.txt']) {
-    const prevBuf = cachedExistingLists.get(listName)
-    if (!prevBuf) continue
-
-    const destFile = path.join(listsDir, listName)
-    if (!existsSync(destFile)) {
-      writeFileSync(destFile, prevBuf)
-      continue
+  try {
+    for (const e of entries) {
+      if (e.isDirectory) continue
+      const name = normalize(e.entryName)
+      if (rootPrefix && !name.startsWith(rootPrefix)) continue
+      const rel = name.slice(rootPrefix.length)
+      if (!rel) continue
+      // Defensive: refuse path-traversal entries.
+      if (rel.includes('..')) continue
+      const out = path.join(staging, rel)
+      mkdirSync(path.dirname(out), { recursive: true })
+      writeFileSync(out, e.getData())
+      written++
     }
 
-    try {
-      const existingLines = prevBuf
+    const listsDir = path.join(staging, 'lists')
+    mkdirSync(listsDir, { recursive: true })
+
+    // 1. Restore all user-owned files (*-user.txt), all backups (*.backup), and custom user files
+    for (const [name, data] of cachedExistingLists) {
+      const isStandardUpstream = /^(list-general|list-google|list-exclude|ipset-all|ipset-exclude)\.txt$/i.test(name)
+      const isUserOrBackup = /-user\.txt(\.backup)?$/i.test(name) || /\.backup$/i.test(name) || !isStandardUpstream
+
+      if (isUserOrBackup) {
+        writeFileSync(path.join(listsDir, name), data)
+      }
+    }
+
+    // 1b. Режим IPset «none»/«any»: старый ipset-all.txt был заглушкой.
+    // Оставляем заглушку, а свежий полный список кладём в .backup — тогда
+    // «Загрузить список» вернёт уже новую версию.
+    const oldIpset = cachedExistingLists.get('ipset-all.txt')
+    if (oldIpset) {
+      const oldLines = oldIpset
         .toString('utf-8')
         .split(/\r?\n/)
-        .map((s) => s.replace(/^\uFEFF/, '').trim())
-        .filter((s) => s.length > 0 && !s.startsWith('#') && !s.startsWith(';'))
-
-      if (!existingLines.length) continue
-
-      const freshLines = readFileSync(destFile, 'utf-8')
-        .split(/\r?\n/)
-        .map((s) => s.replace(/^\uFEFF/, '').trim())
+        .map((s) => s.trim())
         .filter(Boolean)
+      const wasPlaceholder = oldLines.length === 0 || oldLines.every((l) => l === '203.0.113.113/32')
+      const freshIpset = path.join(listsDir, 'ipset-all.txt')
+      if (wasPlaceholder && existsSync(freshIpset)) {
+        writeFileSync(`${freshIpset}.backup`, readFileSync(freshIpset))
+        writeFileSync(freshIpset, oldIpset)
+      }
+    }
 
-      const seenLower = new Set(freshLines.map((s) => s.toLowerCase()))
-      const merged = [...freshLines]
-      let addedCustom = 0
+    // 2. Intelligently merge user additions from standard upstream lists (list-general, list-google, list-exclude)
+    for (const listName of ['list-general.txt', 'list-google.txt', 'list-exclude.txt']) {
+      const prevBuf = cachedExistingLists.get(listName)
+      if (!prevBuf) continue
 
-      for (const line of existingLines) {
-        const lower = line.toLowerCase()
-        if (!seenLower.has(lower)) {
-          seenLower.add(lower)
-          merged.push(line)
-          addedCustom++
+      const destFile = path.join(listsDir, listName)
+      if (!existsSync(destFile)) {
+        writeFileSync(destFile, prevBuf)
+        continue
+      }
+
+      try {
+        const existingLines = prevBuf
+          .toString('utf-8')
+          .split(/\r?\n/)
+          .map((s) => s.replace(/^﻿/, '').trim())
+          .filter((s) => s.length > 0 && !s.startsWith('#') && !s.startsWith(';'))
+
+        if (!existingLines.length) continue
+
+        const freshLines = readFileSync(destFile, 'utf-8')
+          .split(/\r?\n/)
+          .map((s) => s.replace(/^﻿/, '').trim())
+          .filter(Boolean)
+
+        const seenLower = new Set(freshLines.map((s) => s.toLowerCase()))
+        const merged = [...freshLines]
+        let addedCustom = 0
+
+        for (const line of existingLines) {
+          const lower = line.toLowerCase()
+          if (!seenLower.has(lower)) {
+            seenLower.add(lower)
+            merged.push(line)
+            addedCustom++
+          }
+        }
+
+        if (addedCustom > 0) {
+          writeFileSync(destFile, merged.join('\r\n') + '\r\n', 'utf-8')
+          log('info', `merged ${addedCustom} custom entry(ies) into updated ${listName}`)
+        }
+      } catch (e) {
+        log('warn', `failed to merge list ${listName}: ${e}`)
+      }
+    }
+
+    // 3. Флаги utils/*.enabled и стратегии из конструктора.
+    try {
+      const oldUtils = path.join(currentBundleDir, 'utils')
+      if (existsSync(oldUtils)) {
+        for (const f of readdirSync(oldUtils)) {
+          if (!/\.enabled$/i.test(f)) continue
+          mkdirSync(path.join(staging, 'utils'), { recursive: true })
+          writeFileSync(path.join(staging, 'utils', f), readFileSync(path.join(oldUtils, f)))
         }
       }
-
-      if (addedCustom > 0) {
-        writeFileSync(destFile, merged.join('\r\n') + '\r\n', 'utf-8')
-        log('info', `merged ${addedCustom} custom entry(ies) into updated ${listName}`)
+      if (existsSync(currentBundleDir)) {
+        for (const f of readdirSync(currentBundleDir)) {
+          if (!/^general \(.+\)\.bat$/i.test(f)) continue
+          const target = path.join(staging, f)
+          if (!existsSync(target)) writeFileSync(target, readFileSync(path.join(currentBundleDir, f)))
+        }
       }
     } catch (e) {
-      log('warn', `failed to merge list ${listName}: ${e}`)
+      log('warn', `failed to carry over utils/custom strategies: ${e}`)
     }
+
+    const startWrapperRe = /start\s+"zapret:\s*%~n0"\s+\/min\s+/gi
+    for (const f of readdirSync(staging)) {
+      if (!/^general.*\.bat$/i.test(f)) continue
+      const full = path.join(staging, f)
+      try {
+        const before = readFileSync(full, 'utf-8')
+        const after = before.replace(startWrapperRe, '')
+        if (after !== before) writeFileSync(full, after, 'utf-8')
+      } catch { /* best-effort patch — bad encoding etc. */ }
+    }
+
+    const serviceBat = path.join(staging, 'service.bat')
+    if (existsSync(serviceBat)) {
+      try {
+        let content = readFileSync(serviceBat, 'utf-8')
+        content = content.replace(/(?<!if not defined NO_UPDATE_CHECK\s+)pause\b/gi, 'if not defined NO_UPDATE_CHECK pause')
+        writeFileSync(serviceBat, content, 'utf-8')
+      } catch { /* best-effort patch */ }
+    }
+
+    // Validate winws.exe can execute
+    if (!existsSync(path.join(staging, 'bin', 'winws.exe'))) {
+      throw new Error('Установка не удалась: файл bin/winws.exe не найден в распакованном бандле')
+    }
+  } catch (e) {
+    rmSync(staging, { recursive: true, force: true })
+    throw e
   }
 
-  const startWrapperRe = /start\s+"zapret:\s*%~n0"\s+\/min\s+/gi
-  for (const f of readdirSync(dest)) {
-    if (!/^general.*\.bat$/i.test(f)) continue
-    const full = path.join(dest, f)
+  // Подмена: старая папка → .old, новая → на её место. Если старую не
+  // сдвинуть (файл занят), копируем новую поверх неё.
+  const old = `${dest}.old`
+  rmSync(old, { recursive: true, force: true })
+  if (existsSync(dest)) {
     try {
-      const before = readFileSync(full, 'utf-8')
-      const after = before.replace(startWrapperRe, '')
-      if (after !== before) writeFileSync(full, after, 'utf-8')
-    } catch { /* best-effort patch — bad encoding etc. */ }
+      renameSync(dest, old)
+    } catch { /* занято — ниже копирование поверх */ }
   }
-
-  const serviceBat = path.join(dest, 'service.bat')
-  if (existsSync(serviceBat)) {
-    try {
-      let content = readFileSync(serviceBat, 'utf-8')
-      content = content.replace(/(?<!if not defined NO_UPDATE_CHECK\s+)pause\b/gi, 'if not defined NO_UPDATE_CHECK pause')
-      writeFileSync(serviceBat, content, 'utf-8')
-    } catch { /* best-effort patch */ }
+  if (!existsSync(dest)) {
+    renameSync(staging, dest)
+  } else {
+    cpSync(staging, dest, { recursive: true, force: true })
+    rmSync(staging, { recursive: true, force: true })
   }
-
-  // Validate winws.exe can execute
-  const winwsPath = path.join(dest, 'bin', 'winws.exe')
-  if (!existsSync(winwsPath)) {
-    throw new Error('Установка не удалась: файл bin/winws.exe не найден в распакованном бандле')
-  }
+  rmSync(old, { recursive: true, force: true })
+  // Новый ipset-all.txt из бандла — возвращаем в него наши добавления.
+  try { mergeLazeykaIpset() } catch { /* не критично */ }
 
   // Try to infer the upstream release version from the archive's top-level
   // folder, e.g. "zapret-discord-youtube-1.7.7/" → "1.7.7". Falls back to
@@ -292,6 +349,14 @@ export async function installZapretBundle(
     `Zapret bundle installed: ${written} files, ${list.length} strategies` +
       (installedVersion ? `, version ${installedVersion}` : '')
   )
+  // Работавший до обновления Zapret запускаем снова — раньше он оставался
+  // выключенным, хотя уведомление говорило «Zapret обновлён».
+  if (wasRunning) {
+    const active = (await getAppConfig()).zapret?.activeStrategy
+    if (active && list.some((s) => s.file === active)) {
+      startZapret().catch((e) => log('warn', `restart after update failed: ${e}`))
+    }
+  }
   return { strategies: list.length, installedVersion }
 }
 
@@ -340,9 +405,10 @@ interface ScQueryResult {
 
 /** Run `sc query` + `sc qc` for a single service name. */
 function scQueryOne(name: string): ScQueryResult {
-  const q = spawnSync('sc.exe', ['query', name], { windowsHide: true, timeout: 2000, encoding: 'utf8' })
-  if (q.status !== 0 || !q.stdout) return { exists: false, state: 'unknown', binaryPath: null }
-  const stateMatch = q.stdout.match(/STATE\s*:\s*\d+\s+(\w+)/i)
+  const q = spawnSync('sc.exe', ['query', name], { windowsHide: true, timeout: 2000 })
+  const qOut = q.stdout ? decodeConsole(q.stdout) : ''
+  if (q.status !== 0 || !qOut) return { exists: false, state: 'unknown', binaryPath: null }
+  const stateMatch = qOut.match(/STATE\s*:\s*\d+\s+(\w+)/i) ?? qOut.match(/:\s*\d+\s+(RUNNING|STOPPED|START_PENDING|STOP_PENDING)/i)
   const stateRaw = (stateMatch?.[1] ?? '').toLowerCase()
   const state: ScQueryResult['state'] =
     stateRaw === 'running' ? 'running' :
@@ -351,8 +417,12 @@ function scQueryOne(name: string): ScQueryResult {
     stateRaw === 'stop_pending' ? 'stop_pending' : 'unknown'
   // `sc qc` exposes BINARY_PATH_NAME — needed so we can detect a stale
   // registration pointing at a previous install directory.
-  const qc = spawnSync('sc.exe', ['qc', name], { windowsHide: true, timeout: 2000, encoding: 'utf8' })
-  const pathMatch = qc.stdout?.match(/BINARY_PATH_NAME\s*:\s*(.+)$/im)
+  // sc.exe пишет в кодировке консоли (CP866), а не UTF-8: путь
+  // C:\Users\Алексей\... приходил испорченным, проверка «файл существует»
+  // проваливалась, и служба WinDivert удалялась при каждом запуске.
+  const qc = spawnSync('sc.exe', ['qc', name], { windowsHide: true, timeout: 2000 })
+  const qcOut = qc.stdout ? decodeConsole(qc.stdout) : ''
+  const pathMatch = qcOut.match(/BINARY_PATH_NAME\s*:\s*(.+)$/im) ?? qcOut.match(/(?:ИМЯ_ДВОИЧНОГО_ФАЙЛА|BINARY_PATH_NAME)\s*:\s*(.+)$/im)
   return {
     exists: true,
     state,
@@ -485,8 +555,40 @@ function ingestWinwsLine(raw: string): void {
   }
 }
 
+/**
+ * Служба Windows «zapret» запущена? Тогда её winws.exe и драйвер WinDivert
+ * трогать нельзя: служба обещает обход и при закрытой программе.
+ */
+export function isZapretServiceRunningSync(): boolean {
+  if (process.platform !== 'win32') return false
+  try {
+    const r = spawnSync('sc.exe', ['query', 'zapret'], { windowsHide: true, timeout: 2000 })
+    if (r.status !== 0 || !r.stdout) return false
+    return /:\s*4\s+RUNNING|\bRUNNING\b/i.test(decodeConsole(r.stdout))
+  } catch {
+    return false
+  }
+}
+
+async function killOwnTree(): Promise<void> {
+  if (!child?.pid) return
+  const pid = child.pid
+  await new Promise<void>((resolve) => {
+    const p = spawn('taskkill.exe', ['/F', '/T', '/PID', String(pid)], { windowsHide: true })
+    p.on('exit', () => resolve())
+    p.on('error', () => resolve())
+  })
+}
+
 async function startZapretImpl(): Promise<void> {
+  // Процесс остался от запуска, который не дождался winws (таймаут), —
+  // гасим его, иначе повторный «Старт» молча ничего не делал.
+  if (child && status.state === 'error') {
+    await killOwnTree()
+    child = null
+  }
   if (child) return
+  stopRequested = false
   const cfg = await getAppConfig()
   const z = cfg.zapret
   if (!z || !z.activeStrategy) {
@@ -562,6 +664,9 @@ async function startZapretImpl(): Promise<void> {
   child.on('exit', (code, signal) => {
     log('info', `zapret exited code=${code} signal=${signal ?? 'none'}`)
     child = null
+    // Понятная ошибка уже показана (например, про WinDivert) — не затираем её
+    // общим «exited with code 1».
+    if (status.state === 'error') return
     if (stopRequested) {
       setStatus({ state: 'stopped', pid: undefined, lastError: undefined })
     } else {
@@ -610,6 +715,9 @@ async function startZapretImpl(): Promise<void> {
     lastError: 'winws.exe не запустился за 7с — запустите приложение от администратора'
   })
   log('error', 'winws.exe did not appear — check admin rights / antivirus')
+  // Не оставляем висящий cmd: иначе следующий «Старт» упирался в `if (child)`.
+  await killOwnTree()
+  child = null
 }
 
 async function stopZapretImpl(): Promise<void> {

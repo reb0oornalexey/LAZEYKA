@@ -133,6 +133,10 @@ export function corePreferenceFor(node: IncyNode, settings?: IncySettings): Incy
   if (node.rawOutboundDialect === 'sing-box') return 'sing-box'
   if (node.rawOutboundDialect === 'xray') return 'xray'
 
+  // xhttp есть только в Xray; плагины Shadowsocks — только в sing-box.
+  if (node.network === 'xhttp' && XRAY_PROTOCOLS.has(node.protocol)) return 'xray'
+  if (node.protocol === 'shadowsocks' && node.plugin) return 'sing-box'
+
   // URI-parsed node: both cores can carry it, so prefer the simpler path.
   //
   // sing-box alone means no SOCKS bridge, no second process to exclude from

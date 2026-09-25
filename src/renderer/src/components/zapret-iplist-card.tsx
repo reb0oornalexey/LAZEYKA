@@ -238,7 +238,7 @@ const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason })
                             ? 'cursor-not-allowed border-amber-500/40 bg-amber-500/[0.04]'
                             : 'cursor-pointer',
                           checked
-                            ? 'border-primary/60 bg-primary/10 shadow-[0_0_15px_rgba(99,102,241,0.2)]'
+                            ? 'border-primary/60 bg-primary/10 '
                             : s.recommended && !missing
                               ? 'border-amber-500/50 bg-amber-500/[0.06] hover:bg-amber-500/10'
                               : !missing && 'border-border/70 bg-card/40 hover:bg-foreground/[0.04]',
@@ -317,7 +317,7 @@ const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason })
                   rows={4}
                   spellCheck={false}
                   className={cn(
-                    'w-full rounded-xl border border-border/80 bg-background/50 backdrop-blur-md p-3 font-mono text-xs',
+                    'w-full rounded-xl border border-border/80 bg-background/50 p-3 font-mono text-xs',
                     'placeholder:text-muted-foreground/60 focus:border-primary/60 focus:ring-1 focus:ring-primary/40 focus:outline-none transition-all',
                     (disabled || busy) && 'pointer-events-none opacity-50'
                   )}
@@ -332,7 +332,7 @@ const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason })
                   <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground font-mono">
                     Текущий список (первые {snapshot.preview.length} из {snapshot.total})
                   </div>
-                  <pre className="max-h-32 overflow-auto rounded-xl border border-border/70 bg-black/40 backdrop-blur-md p-3 font-mono text-[11px] leading-snug">
+                  <pre className="max-h-32 overflow-auto rounded-xl border border-border/70 bg-black/40 p-3 font-mono text-[11px] leading-snug">
                     {snapshot.preview.join('\n')}
                     {snapshot.total > snapshot.preview.length ? '\n…' : ''}
                   </pre>

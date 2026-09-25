@@ -1,6 +1,10 @@
 import { ipcMain, app, shell, clipboard, BrowserWindow, dialog, desktopCapturer, screen } from 'electron'
 import { generateCloudflareWarpNode } from '../core/incy-warp'
 import { optimizeRoute } from '../core/route-optimizer'
+import { runIncySpeedTest } from '../core/incy-speedtest'
+import { scanInstalledGames } from '../core/game-scan'
+import { measureValveRegions, valveRelaySubnets } from '../core/valve-regions'
+import { fetchAppActivity } from '../core/incy-stats'
 import { extractServerIp, extractServerHost } from './server-ip'
 import { listRunningProcesses } from './process-helper'
 import { getAppConfig, patchAppConfig } from '../config'
@@ -21,13 +25,14 @@ import {
   setAutopilotEnabled,
   runAutopilotCycle
 } from '../core/zapret-autopilot'
-import { getDohProvidersWithPing, applySystemDns } from '../core/dns-doh'
+import { getDohProvidersWithPing, applySystemDns, getSystemDnsState } from '../core/dns-doh'
 import { getRealNetworkSpeed } from './network-stats'
 import { getGameModeStatus, setGameModeWatcher } from '../core/game-mode'
 import { pingDiscordVoiceRegions } from '../core/discord-ping'
 import {
   loadIncyNodes,
   saveIncyNodes,
+  saveIncyLatencies,
   removeIncyNode,
   clearManualIncyNodes,
   loadIncySubscription,
@@ -100,6 +105,7 @@ import {
   getCuratedIpSets,
   getIpListSnapshot,
   applyIpListPatch,
+  addIpsToIpsetAll,
   clearIpList,
   restoreIpListBackup,
   type IpListPatch
@@ -133,8 +139,10 @@ import {
   checkAppUpdate,
   installAppUpdate,
   cancelAppUpdateDownload,
-  dismissAppUpdate
+  dismissAppUpdate,
+  getReleaseHistory
 } from '../core/app-updater'
+import { closeUpdateSplash } from '../core/update-window'
 import { checkAppUpdateFromUi } from '../core/app-update-watcher'
 import { getHwidHeaders } from '../core/incy-hwid'
 import { execFile } from 'node:child_process'
@@ -318,13 +326,19 @@ export function registerIpcMainHandlers(): void {
 
   // ---- Zapret service.bat settings (Game Filter / IPset Filter) ---------
   ipcMain.handle('zapret:getGameFilter', h(() => getGameFilterMode()))
-  ipcMain.handle('zapret:setGameFilter', h((mode) =>
-    setGameFilterMode(mode as GameFilterMode)
-  ))
+  // GameFilter и IPset читаются при запуске winws — работающий Zapret
+  // перезапускаем, иначе переключатель действовал только «когда-нибудь».
+  ipcMain.handle('zapret:setGameFilter', h(async (mode) => {
+    const next = await setGameFilterMode(mode as GameFilterMode)
+    if (getZapretStatus().state === 'running') await restartZapret()
+    return next
+  }))
   ipcMain.handle('zapret:getIpsetFilter', h(() => getIpsetFilterSnapshot()))
-  ipcMain.handle('zapret:setIpsetFilter', h((mode) =>
-    setIpsetFilterMode(mode as IpsetFilterMode)
-  ))
+  ipcMain.handle('zapret:setIpsetFilter', h(async (mode) => {
+    const next = await setIpsetFilterMode(mode as IpsetFilterMode)
+    if (getZapretStatus().state === 'running') await restartZapret()
+    return next
+  }))
   ipcMain.handle('zapret:updateIpsetList', h(() => updateIpsetList()))
 
   // ---- Zapret active fakes (Replace Active Fakes) -----------------------
@@ -379,6 +393,7 @@ export function registerIpcMainHandlers(): void {
   // ---- Encrypted DNS (DoH) -----------------------------------------------
   ipcMain.handle('dns:getProviders', h(() => getDohProvidersWithPing()))
   ipcMain.handle('dns:applySystemDns', h((ip) => applySystemDns(String(ip) as any)))
+  ipcMain.handle('dns:getSystemState', h(() => getSystemDnsState()))
 
   // ---- Smart Game Mode ---------------------------------------------------
   ipcMain.handle('gameMode:getStatus', h(() => getGameModeStatus()))
@@ -393,6 +408,16 @@ export function registerIpcMainHandlers(): void {
   // ---- INCY Proxy / VPN --------------------------------------------------
   ipcMain.handle('incy:getNodes', h(() => loadIncyNodes()))
   ipcMain.handle('incy:saveNodes', h((nodes) => saveIncyNodes(nodes as any)))
+  ipcMain.handle(
+    'incy:saveLatencies',
+    h((results) =>
+      saveIncyLatencies(
+        (Array.isArray(results) ? results : [])
+          .filter((r: any) => r && typeof r.id === 'string')
+          .map((r: any) => ({ id: r.id, latencyMs: typeof r.latencyMs === 'number' ? r.latencyMs : null }))
+      )
+    )
+  )
   ipcMain.handle('incy:removeNode', h((nodeId) => removeIncyNode(String(nodeId))))
   ipcMain.handle('incy:clearManualNodes', h(() => clearManualIncyNodes()))
   ipcMain.handle('incy:getSubscription', h(() => loadIncySubscription()))
@@ -491,6 +516,8 @@ export function registerIpcMainHandlers(): void {
   // Оптимизатор маршрута: реальный замер пинга/джиттера/потерь до игрового
   // сервера через каждый узел (см. route-optimizer.ts).
   ipcMain.handle('incy:pingGameServer', h((target) => optimizeRoute(String(target))))
+  // Тест скорости через выбранный сервер (временное ядро, VPN не рвётся).
+  ipcMain.handle('incy:speedTest', h((nodeId) => runIncySpeedTest(String(nodeId))))
   // IP сервера из оптимизатора → наш список Zapret (тот же, что на вкладке
   // Zapret, list-general.txt). Только IP: без connect, порта и пароля.
   // Работающий Zapret перезапускается, чтобы winws перечитал список.
@@ -511,8 +538,13 @@ export function registerIpcMainHandlers(): void {
     const running = getZapretStatus().state === 'running'
     if (!ip) return { ip: null, added: false, total: 0, restarted: false, running }
     const res = applyIpListPatch({ customCidrs: [ip] })
+    // Для игрового (UDP) трафика winws смотрит в ipset, а не в hostlist.
+    let ipsetAdded = 0
+    try {
+      ipsetAdded = addIpsToIpsetAll([ip])
+    } catch { /* список может быть занят — не критично */ }
     let restarted = false
-    if (res.added > 0 && running) {
+    if ((res.added > 0 || ipsetAdded > 0) && running) {
       await restartZapret()
       restarted = true
     }
@@ -521,6 +553,41 @@ export function registerIpcMainHandlers(): void {
 
   // ---- Process & Dialog Helpers (Per-App Routing & QR Import) ------------
   ipcMain.handle('system:getRunningProcesses', h(() => listRunningProcesses()))
+  // ExitLag: игры из библиотек Steam и Epic; кто из приложений сейчас в сети.
+  ipcMain.handle('system:scanInstalledGames', h(() => scanInstalledGames()))
+  ipcMain.handle('incy:appActivity', h(() => fetchAppActivity()))
+  // Оптимизатор: пинг до регионов Valve (CS2, Dota 2).
+  ipcMain.handle('optimizer:valveRegions', h(() => measureValveRegions()))
+  // Серверы Valve → списки Zapret: подсети ретрансляторов в list-general.txt
+  // (как IP из оптимизатора) и в ipset-all.txt, если IPset в режиме «список».
+  ipcMain.handle('zapret:addValveServers', h(async () => {
+    const subnets = await valveRelaySubnets()
+    const running = getZapretStatus().state === 'running'
+    const res = applyIpListPatch({ customCidrs: subnets })
+    let ipsetAdded = 0
+    try {
+      ipsetAdded = addIpsToIpsetAll(subnets)
+    } catch { /* список занят — не критично */ }
+    let restarted = false
+    if ((res.added > 0 || ipsetAdded > 0) && running) {
+      await restartZapret()
+      restarted = true
+    }
+    // Чтобы это реально работало с игрой, winws должен обрабатывать UDP игр
+    // (Game Filter c UDP) и сверять адреса по загруженному IPset.
+    const gameFilter = getGameFilterMode()
+    const ipsetMode = getIpsetFilterSnapshot().mode
+    return {
+      subnets: subnets.length,
+      added: res.added,
+      ipsetAdded,
+      total: res.total,
+      restarted,
+      running,
+      gameFilterUdp: gameFilter === 'all' || gameFilter === 'udp',
+      ipsetMode
+    }
+  }))
   ipcMain.handle('dialog:pickExecutable', h(async () => {
     const res = await dialog.showOpenDialog({
       title: 'Выберите исполняемый файл приложения',
@@ -589,12 +656,23 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('app:dismissUpdate', h((tag, forever) =>
     dismissAppUpdate(tag as string, Boolean(forever))
   ))
+  // Окно обновления: история версий (страницами), закрыть окно, открыть LAZEYKA.
+  ipcMain.handle('app:getReleaseHistory', h((page, perPage) =>
+    getReleaseHistory(Number(page) || 1, Math.min(10, Number(perPage) || 4))
+  ))
+  ipcMain.handle('updateWindow:close', h(() => closeUpdateSplash()))
+  ipcMain.handle('updateWindow:openMain', h(async () => {
+    const { showMainWindow } = await import('..')
+    await showMainWindow()
+  }))
 
   // ---- Quit / restart -----------------------------------------------------
   ipcMain.handle('app:quit', h(() => app.quit()))
+  // quit(), а не exit(): иначе пропускалась штатная остановка служб и
+  // сохранение последних строк лога и счётчиков трафика.
   ipcMain.handle('app:relaunch', h(() => {
     app.relaunch()
-    app.exit(0)
+    app.quit()
   }))
 
   // ---- Window controls (called from window-controls.tsx & i18n.ts) -------

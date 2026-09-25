@@ -352,7 +352,7 @@ const About: React.FC = () => {
         <Card className="cyber-card border-primary/40 bg-gradient-to-br from-card via-card/90 to-primary/10 shadow-xl">
           <CardContent className="p-6 space-y-3">
             <div className="flex items-center gap-3">
-              <div className="p-2.5 rounded-2xl bg-primary/20 border border-primary/30 text-primary shadow-[0_0_15px_rgba(99,102,241,0.3)]">
+              <div className="p-2.5 rounded-2xl bg-primary/20 border border-primary/30 text-primary ">
                 <Sparkles className="size-6" />
               </div>
               <div>

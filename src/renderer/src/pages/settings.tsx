@@ -25,8 +25,10 @@ import {
   profileImport,
   dnsGetProviders,
   dnsApplySystem,
+  dnsGetSystemState,
   splitTunnelingGetConfig,
   splitTunnelingSaveConfig,
+  incyReapplyTunnel,
   type DohProvider,
   type SplitTunnelingConfig,
   type CustomDomainExclusion
@@ -53,7 +55,15 @@ const Settings: React.FC = () => {
   const [checkingUpdate, setCheckingUpdate] = useState(false)
 
   useEffect(() => {
-    dnsGetProviders().then(setDohProviders).catch(() => {})
+    // Подсветка реально стоящего DNS: раньше после перезапуска активным
+    // всегда считался «стандартный», даже если выбран Cloudflare.
+    Promise.all([dnsGetProviders(), dnsGetSystemState().catch(() => null)])
+      .then(([providers, state]) => {
+        setDohProviders(providers)
+        const match = state ? providers.find((p) => state.servers.includes(p.ip)) : undefined
+        setActiveDnsIp(match ? match.id : 'dhcp')
+      })
+      .catch(() => {})
     splitTunnelingGetConfig().then(setSplitConfig).catch(() => {})
   }, [])
 
@@ -116,6 +126,10 @@ const Settings: React.FC = () => {
     setLoadingDns(true)
     try {
       const res = await dnsApplySystem(ip)
+      if (!res.success) {
+        toast.error('DNS не изменён', { description: res.message })
+        return
+      }
       setActiveDnsIp(ip)
       toast.success(res.message, { style: POWER_ON_BANNER_STYLE })
     } catch (e: any) {
@@ -125,12 +139,34 @@ const Settings: React.FC = () => {
     }
   }
 
+  /**
+   * Сохранить список прямого доступа и применить его к работающему VPN.
+   * Раньше список читался только при подключении: toast обещал «напрямую»,
+   * а трафик шёл как прежде до ручного переподключения. Ошибки сохранения
+   * тоже терялись, и экран расходился с файлом.
+   */
+  const saveSplit = async (next: SplitTunnelingConfig, message?: string): Promise<boolean> => {
+    const prev = splitConfig
+    setSplitConfig(next)
+    try {
+      await splitTunnelingSaveConfig(next)
+    } catch (e) {
+      setSplitConfig(prev)
+      toast.error('Не удалось сохранить список', { description: e instanceof Error ? e.message : String(e) })
+      return false
+    }
+    const reapplied = await incyReapplyTunnel().catch(() => false)
+    if (message) {
+      toast.success(message, reapplied ? { description: 'VPN переподключается, чтобы применить.' } : undefined)
+    }
+    return true
+  }
+
   const handleToggleBypassRu = async (bypassAllRu: boolean): Promise<void> => {
     if (!splitConfig) return
     const next: SplitTunnelingConfig = { ...splitConfig, bypassAllRu }
-    setSplitConfig(next)
-    await splitTunnelingSaveConfig(next)
-    toast.success(
+    await saveSplit(
+      next,
       bypassAllRu
         ? 'Прямой доступ для всех российских сайтов (.RU / .РФ) включен'
         : 'Прямой доступ для .RU сайтов отключен'
@@ -141,10 +177,9 @@ const Settings: React.FC = () => {
     if (!splitConfig) return
     const nextCategories = splitConfig.categories.map((c) => (c.id === catId ? { ...c, enabled } : c))
     const next: SplitTunnelingConfig = { ...splitConfig, categories: nextCategories }
-    setSplitConfig(next)
-    await splitTunnelingSaveConfig(next)
     const targetCat = splitConfig.categories.find((c) => c.id === catId)
-    toast.success(
+    await saveSplit(
+      next,
       enabled
         ? `Категория «${targetCat?.name || catId}» направляется напрямую`
         : `Категория «${targetCat?.name || catId}» исключена из прямого доступа`
@@ -155,16 +190,25 @@ const Settings: React.FC = () => {
     if (!splitConfig) return
     const nextDomains = splitConfig.customDomains.map((d) => (d.id === id ? { ...d, enabled } : d))
     const next: SplitTunnelingConfig = { ...splitConfig, customDomains: nextDomains }
-    setSplitConfig(next)
-    await splitTunnelingSaveConfig(next)
+    await saveSplit(next)
   }
 
   const handleAddCustomDomain = async (): Promise<void> => {
     if (!newDomain.trim() || !splitConfig) return
+    // «https://site.ru/page» → «*.site.ru»: раньше адрес со схемой сохранялся
+    // как есть и молча отбрасывался при сборке правил.
     let clean = newDomain.trim().toLowerCase()
-    if (!clean.startsWith('*.') && !clean.startsWith('http')) {
-      clean = `*.${clean}`
+    if (/^[a-z]+:\/\//.test(clean) || clean.includes('/')) {
+      try {
+        clean = new URL(/^[a-z]+:\/\//.test(clean) ? clean : `http://${clean}`).hostname
+      } catch { /* оставим как ввели */ }
     }
+    clean = clean.replace(/^\*\./, '')
+    if (!clean || !clean.includes('.')) {
+      toast.error('Введите домен, например site.ru')
+      return
+    }
+    clean = `*.${clean}`
     const item: CustomDomainExclusion = {
       id: String(Date.now()),
       domain: clean,
@@ -175,20 +219,16 @@ const Settings: React.FC = () => {
       ...splitConfig,
       customDomains: [...splitConfig.customDomains, item]
     }
-    setSplitConfig(next)
-    await splitTunnelingSaveConfig(next)
+    if (!(await saveSplit(next, `Домен ${clean} добавлен в список прямого доступа`))) return
     setNewDomain('')
     setNewComment('')
-    toast.success(`Домен ${clean} добавлен в список прямого доступа`)
   }
 
   const handleDeleteCustomDomain = async (id: string): Promise<void> => {
     if (!splitConfig) return
     const nextDomains = splitConfig.customDomains.filter((d) => d.id !== id)
     const next: SplitTunnelingConfig = { ...splitConfig, customDomains: nextDomains }
-    setSplitConfig(next)
-    await splitTunnelingSaveConfig(next)
-    toast.success('Домен удален')
+    await saveSplit(next, 'Домен удалён')
   }
 
   return (
@@ -287,7 +327,7 @@ const Settings: React.FC = () => {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <ShieldCheck className="h-4 w-4 text-primary" />
-              Раздельное туннелирование по сайтам (Split Tunneling)
+              Раздельное туннелирование по сайтам
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">

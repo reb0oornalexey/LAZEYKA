@@ -31,7 +31,7 @@ import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync, copyFileS
 import path from 'node:path'
 import os from 'node:os'
 import AdmZip from 'adm-zip'
-import { dataDir, incyRuntimeDir, incyBinaryPath, xrayBinaryPath } from '../utils/dirs'
+import { dataDir, incyRuntimeDir, incyBinaryPath, xrayBinaryPath, xrayAssetsDir } from '../utils/dirs'
 
 const REQUEST_HEADERS: Record<string, string> = {
   'User-Agent': 'LAZEYKA-Updater',
@@ -123,7 +123,12 @@ export function classifyUpdate(installed?: string, latest?: string): UpdateKind 
   return 'none'
 }
 
-function runCapture(bin: string, args: string[], timeoutMs = 8000): Promise<{ code: number; out: string }> {
+function runCapture(
+  bin: string,
+  args: string[],
+  timeoutMs = 8000,
+  env?: NodeJS.ProcessEnv
+): Promise<{ code: number; out: string }> {
   return new Promise((resolve) => {
     let out = ''
     let done = false
@@ -133,7 +138,7 @@ function runCapture(bin: string, args: string[], timeoutMs = 8000): Promise<{ co
       resolve({ code, out })
     }
     try {
-      const p = spawn(bin, args, { windowsHide: true })
+      const p = spawn(bin, args, { windowsHide: true, ...(env ? { env } : {}) })
       p.stdout?.on('data', (b) => { out += b.toString() })
       p.stderr?.on('data', (b) => { out += b.toString() })
       p.on('exit', (code) => finish(code ?? 1))
@@ -236,7 +241,11 @@ async function validateCandidate(
   if (!existsSync(cfg)) {
     return { ok: true, reason: 'конфиг ещё не создан — проверка пропущена' }
   }
-  const { code, out } = await runCapture(candidatePath, spec.validateArgs(cfg), 15000)
+  // Xray проверяем с теми же гео-базами, что и при настоящем запуске: без
+  // XRAY_LOCATION_ASSET конфиг с geosite: не проходил проверку, и каждое
+  // обновление Xray отклонялось.
+  const env = spec.id === 'xray' ? { ...process.env, XRAY_LOCATION_ASSET: xrayAssetsDir() } : undefined
+  const { code, out } = await runCapture(candidatePath, spec.validateArgs(cfg), 15000, env)
   if (code === 0) return { ok: true }
   // eslint-disable-next-line no-control-regex
   const clean = out.replace(/\[[0-9;]*[A-Za-z]/g, '').trim().split('\n').slice(-3).join(' | ')
@@ -258,6 +267,21 @@ export async function installCoreUpdate(
   const spec = CORES.find((c) => c.id === id)
   if (!spec) return { id, success: false, message: `Неизвестное ядро: ${id}` }
   if (!assetUrl) return { id, success: false, message: 'Пустая ссылка на архив' }
+  // Ссылка приходит из окна программы, а файл потом запускается с правами
+  // администратора — принимаем только релизы нужного репозитория на GitHub.
+  {
+    let ok = false
+    try {
+      const u = new URL(assetUrl)
+      ok =
+        u.protocol === 'https:' &&
+        u.hostname === 'github.com' &&
+        u.pathname.toLowerCase().startsWith(`/${spec.repo.toLowerCase()}/releases/download/`)
+    } catch {
+      ok = false
+    }
+    if (!ok) return { id, success: false, message: 'Ссылка на архив не из официальных релизов ядра' }
+  }
 
   let buf: Buffer
   try {
@@ -302,17 +326,25 @@ export async function installCoreUpdate(
   const live = path.join(dir, spec.exeName)
   const backup = `${live}.bak`
 
+  let movedTo = ''
   try {
     if (existsSync(live)) {
-      try { if (existsSync(backup)) unlinkSync(backup) } catch { /* noop */ }
-      copyFileSync(live, backup)
-      unlinkSync(live)
+      // Удалить запущенный exe Windows не даёт (EPERM), а переименовать —
+      // разрешает. Раньше обновление при работающем VPN всегда падало.
+      try { if (existsSync(backup)) unlinkSync(backup) } catch { /* старый .bak ещё занят */ }
+      movedTo = existsSync(backup) ? `${live}.old-${Date.now()}` : backup
+      renameSync(live, movedTo)
     }
-    renameSync(candidate, live)
+    try {
+      renameSync(candidate, live)
+    } catch {
+      // Временная папка на другом диске — переименование между дисками невозможно.
+      copyFileSync(candidate, live)
+    }
   } catch (e) {
     // Put the old binary back if the swap failed halfway.
     try {
-      if (!existsSync(live) && existsSync(backup)) copyFileSync(backup, live)
+      if (!existsSync(live) && movedTo && existsSync(movedTo)) renameSync(movedTo, live)
     } catch { /* noop */ }
     return {
       id,

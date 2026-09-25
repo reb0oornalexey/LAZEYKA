@@ -18,10 +18,15 @@ import {
   Square,
   ArrowRight,
   RefreshCw,
-  SlidersHorizontal
+  SlidersHorizontal,
+  ShieldCheck,
+  MessageCircle,
+  Globe
 } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
 import { useIncyStore } from '@renderer/store/incy-store'
+import InstalledGamesModal from '@renderer/components/installed-games-modal'
+import AppActivityCard from '@renderer/components/app-activity-card'
 import {
   incyGetSettings,
   incyPatchSettings,
@@ -59,6 +64,7 @@ export default function ExitLagPage(): React.ReactElement {
   // Apps management
   const [newAppInput, setNewAppInput] = useState('')
   const [showProcessPickerModal, setShowProcessPickerModal] = useState(false)
+  const [showGamesModal, setShowGamesModal] = useState(false)
   const [runningProcesses, setRunningProcesses] = useState<RunningProcessInfo[]>([])
   const [loadingProcesses, setLoadingProcesses] = useState(false)
   const [processFilterText, setProcessFilterText] = useState('')
@@ -105,13 +111,18 @@ export default function ExitLagPage(): React.ReactElement {
   }
 
   const handleTogglePerAppProxy = async (enabled: boolean): Promise<void> => {
+    // Режим, выбранный карточкой («Все, кроме выбранных»), не трогаем —
+    // раньше включение всегда сбрасывало его на белый список.
+    const mode = settings?.perAppMode ?? 'proxy_only'
     const reapplied = await handleUpdateSettings(
-      enabled ? { perAppProxy: true, perAppMode: 'proxy_only' } : { perAppProxy: false }
+      enabled ? { perAppProxy: true, perAppMode: mode } : { perAppProxy: false }
     )
     if (reapplied) {
       toast.info(enabled ? 'ExitLag включён' : 'ExitLag выключен', {
         description: enabled
-          ? 'Туннель переподключается: через VPN пойдут только приложения из списка.'
+          ? mode === 'bypass_only'
+            ? 'Туннель переподключается: через VPN идёт всё, кроме приложений из списка.'
+            : 'Туннель переподключается: через VPN пойдут только приложения из списка.'
           : 'Туннель переподключается: весь трафик снова идёт через VPN.'
       })
     } else {
@@ -132,7 +143,7 @@ export default function ExitLagPage(): React.ReactElement {
     if (!base || !settings) return
     const cleaned = /\.exe$/i.test(base) ? base : `${base}.exe`
     const current = settings.perAppProcesses ?? []
-    if (current.some((p) => p.toLowerCase() === cleaned)) {
+    if (current.some((p) => p.toLowerCase() === cleaned.toLowerCase())) {
       toast.info('Это приложение уже в списке')
       return
     }
@@ -210,7 +221,9 @@ export default function ExitLagPage(): React.ReactElement {
   }
 
 
-  const activeNode = nodes.find((n) => n.id === status.selectedNodeId) || nodes[0]
+  // Подключённый узел, а не выбранный: выбор на вкладке INCY без
+  // переподключения не меняет того, через что реально идёт трафик.
+  const activeNode = nodes.find((n) => n.id === (status.activeNodeId ?? status.selectedNodeId)) || nodes[0]
   const isPerAppEnabled = Boolean(settings?.perAppProxy)
   const appCount = settings?.perAppProcesses?.length ?? 0
   // «Работает» — это подтверждение от ядра, а не просто включённый флажок:
@@ -227,7 +240,7 @@ export default function ExitLagPage(): React.ReactElement {
 
           <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3">
             <div className="flex items-start gap-3.5">
-              <div className="h-10 w-10 rounded-2xl bg-gradient-to-br from-primary/30 to-primary/10 border border-primary/50 flex items-center justify-center shrink-0 shadow-[0_0_20px_rgba(99,102,241,0.25)]">
+              <div className="h-10 w-10 rounded-2xl bg-gradient-to-br from-primary/30 to-primary/10 border border-primary/50 flex items-center justify-center shrink-0 ">
                 <Gamepad2 className="h-5 w-5 text-primary" />
               </div>
               <div>
@@ -305,8 +318,8 @@ export default function ExitLagPage(): React.ReactElement {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-background/50 p-3 rounded-xl border border-border/40">
               <div className="flex items-center gap-3 min-w-0">
                 <div className={cn(
-                  'size-3 rounded-full shrink-0 animate-pulse',
-                  isConnected ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]' : 'bg-muted-foreground/40'
+                  'size-2.5 rounded-full shrink-0',
+                  isConnected ? 'bg-primary' : 'bg-muted-foreground/40'
                 )} />
                 <div className="min-w-0">
                   <div className="text-xs font-semibold text-foreground flex items-center gap-1.5 truncate">
@@ -387,12 +400,13 @@ export default function ExitLagPage(): React.ReactElement {
                   className={cn(
                     'p-3.5 rounded-xl border text-left transition-all cursor-pointer relative overflow-hidden',
                     settings.perAppMode !== 'bypass_only'
-                      ? 'border-primary bg-primary/15 shadow-[0_0_20px_rgba(99,102,241,0.15)] ring-1 ring-primary/40'
+                      ? 'border-primary bg-primary/15 ring-1 ring-primary/40'
                       : 'border-border/60 bg-card/40 hover:bg-card/80 opacity-70 hover:opacity-100'
                   )}
                 >
                   <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                    🎯 Только выбранные (Режим ExitLag)
+                    <Target className="h-3.5 w-3.5 text-primary shrink-0" />
+                    Только выбранные (режим ExitLag)
                   </div>
                   <div className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
                     Через VPN-туннель направляются <b>исключительно</b> указанные игры и программы. Браузеры, Windows, торренты и рабочий софт идут напрямую с нулевым влиянием на сетевой стек.
@@ -405,12 +419,13 @@ export default function ExitLagPage(): React.ReactElement {
                   className={cn(
                     'p-3.5 rounded-xl border text-left transition-all cursor-pointer relative overflow-hidden',
                     settings.perAppMode === 'bypass_only'
-                      ? 'border-primary bg-primary/15 shadow-[0_0_20px_rgba(99,102,241,0.15)] ring-1 ring-primary/40'
+                      ? 'border-primary bg-primary/15 ring-1 ring-primary/40'
                       : 'border-border/60 bg-card/40 hover:bg-card/80 opacity-70 hover:opacity-100'
                   )}
                 >
                   <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                    🛡️ Все, кроме выбранных (Исключения)
+                    <ShieldCheck className="h-3.5 w-3.5 text-sky-500 shrink-0" />
+                    Все, кроме выбранных (исключения)
                   </div>
                   <div className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
                     Весь компьютер защищён туннелем VPN, а указанные приложения соединяются напрямую через локального провайдера в обход шифрования.
@@ -439,7 +454,8 @@ export default function ExitLagPage(): React.ReactElement {
                     ])}
                     className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/15 hover:border-primary"
                   >
-                    🎮 Игры (CS2, Dota 2, Steam, Riot, Epic)
+                    <Gamepad2 className="h-3.5 w-3.5 shrink-0" />
+                    Игры (CS2, Dota 2, Steam, Riot, Epic)
                   </Button>
                   <Button
                     size="sm"
@@ -448,7 +464,8 @@ export default function ExitLagPage(): React.ReactElement {
                     onClick={() => void handleApplyPreset(['discord.exe', 'telegram.exe'])}
                     className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/15 hover:border-primary"
                   >
-                    💬 Связь (Discord, Telegram)
+                    <MessageCircle className="h-3.5 w-3.5 shrink-0" />
+                    Связь (Discord, Telegram)
                   </Button>
                   <Button
                     size="sm"
@@ -457,7 +474,8 @@ export default function ExitLagPage(): React.ReactElement {
                     onClick={() => void handleApplyPreset(['chrome.exe', 'msedge.exe', 'firefox.exe', 'browser.exe'])}
                     className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/15 hover:border-primary"
                   >
-                    🌐 Браузеры (Chrome, Edge, Firefox, Yandex)
+                    <Globe className="h-3.5 w-3.5 shrink-0" />
+                    Браузеры (Chrome, Edge, Firefox, Yandex)
                   </Button>
                 </div>
               </div>
@@ -469,6 +487,15 @@ export default function ExitLagPage(): React.ReactElement {
                     Список приложений ({settings.perAppProcesses?.length ?? 0}):
                   </div>
                   <div className="flex items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      type="button"
+                      onClick={() => setShowGamesModal(true)}
+                      className="text-xs h-7 gap-1.5 border-primary/40 hover:bg-primary/15 text-primary"
+                    >
+                      <Gamepad2 className="h-3.5 w-3.5" /> Найти игры
+                    </Button>
                     <Button
                       size="sm"
                       variant="outline"
@@ -543,9 +570,15 @@ export default function ExitLagPage(): React.ReactElement {
                   </div>
                 ) : (
                   <div className="p-6 rounded-xl border border-dashed border-border/60 text-center text-xs text-muted-foreground">
-                    Приложения пока не выбраны. Выберите игру из запущенных процессов выше или добавьте вручную.
+                    Приложения пока не выбраны. Нажмите «Найти игры», выберите из запущенных процессов или добавьте вручную.
                   </div>
                 )}
+
+                <AppActivityCard
+                  apps={settings.perAppProcesses ?? []}
+                  active={exitLagRunning}
+                  mode={settings.perAppMode ?? 'proxy_only'}
+                />
               </div>
             </CardContent>
           </Card>
@@ -569,14 +602,28 @@ export default function ExitLagPage(): React.ReactElement {
           <ArrowRight className="h-4 w-4 text-primary shrink-0" />
         </button>
 
+        <InstalledGamesModal
+          open={showGamesModal}
+          onClose={() => setShowGamesModal(false)}
+          existing={settings?.perAppProcesses ?? []}
+          onAdd={async (names) => {
+            const current = settings?.perAppProcesses ?? []
+            const have = new Set(current.map((p) => p.toLowerCase()))
+            const add = names.filter((n) => !have.has(n.toLowerCase()))
+            if (add.length === 0) return
+            await handleUpdateSettings({ perAppProcesses: [...current, ...add] })
+            toast.success(`Добавлено: ${add.join(', ')}`)
+          }}
+        />
+
         {/* MODAL: PROCESS PICKER */}
         {showProcessPickerModal && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-in fade-in duration-200"
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 animate-in fade-in duration-200"
             onClick={() => setShowProcessPickerModal(false)}
           >
             <div
-              className="w-full max-w-lg border border-primary/40 bg-card/95 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col max-h-[85vh] backdrop-blur-2xl"
+              className="w-full max-w-lg border border-primary/40 bg-card/95 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col max-h-[85vh] "
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between p-4 border-b border-border/40 bg-card/80">

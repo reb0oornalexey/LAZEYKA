@@ -5,6 +5,7 @@ import { ThemeProvider as NextThemesProvider } from 'next-themes'
 import { init, platform } from '@renderer/utils/init'
 import '@renderer/assets/main.css'
 import App from '@renderer/App'
+import UpdateWindow from '@renderer/components/update-window'
 import BaseErrorBoundary from './components/base/base-error-boundary'
 import { Toaster } from './components/ui/sonner'
 import { appQuit } from './utils/ipc'
@@ -23,7 +24,23 @@ init().then(() => {
   })
 })
 
+// Отдельное окно обновления открывается на том же index.html с маршрутом
+// #/update-window — для него рисуем только окно обновления, без сайдбара,
+// сторов и подписок главного окна.
+const isUpdateWindow = window.location.hash.startsWith('#/update-window')
+
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+  isUpdateWindow ? (
+    <React.StrictMode>
+      <NextThemesProvider attribute="class" enableSystem defaultTheme="dark">
+        <BaseErrorBoundary>
+          <AppConfigProvider>
+            <UpdateWindow />
+          </AppConfigProvider>
+        </BaseErrorBoundary>
+      </NextThemesProvider>
+    </React.StrictMode>
+  ) : (
   <React.StrictMode>
     <NextThemesProvider attribute="class" enableSystem defaultTheme="dark">
       <BaseErrorBoundary>
@@ -36,4 +53,5 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
       </BaseErrorBoundary>
     </NextThemesProvider>
   </React.StrictMode>
+  )
 )

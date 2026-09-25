@@ -3,6 +3,13 @@ import { promisify } from 'node:util'
 import { patchAppConfig } from '../config'
 import { getGameFilterMode, setGameFilterMode, type GameFilterMode } from './zapret-service-settings'
 import { showSystemNotification } from '../utils/notifications'
+import { getZapretStatus, restartZapret } from './zapret'
+
+/** GameFilter читается bat-файлом при запуске — работающий Zapret перезапускаем. */
+async function applyGameFilter(mode: GameFilterMode): Promise<void> {
+  await setGameFilterMode(mode)
+  if (getZapretStatus().state === 'running') await restartZapret().catch(() => void 0)
+}
 
 const execAsync = promisify(exec)
 
@@ -137,7 +144,7 @@ export async function runGameModeWatcherCycle(): Promise<void> {
     activeGame = matched.title
     savedPreviousMode = currentMode
     if (currentMode !== 'all') {
-      await setGameFilterMode('all')
+      await applyGameFilter('all')
       showSystemNotification('Игровой режим LAZEYKA', `Обнаружена игра: ${matched.title}. Game Filter включен (TCP + UDP).`)
     }
     return
@@ -161,7 +168,7 @@ export async function runGameModeWatcherCycle(): Promise<void> {
     activeProcess = null
     activeGame = null
     if (currentMode !== savedPreviousMode) {
-      await setGameFilterMode(savedPreviousMode)
+      await applyGameFilter(savedPreviousMode)
       showSystemNotification('Игровой режим LAZEYKA', `${old} закрыта. Game Filter возвращён в исходный режим.`)
     }
   }

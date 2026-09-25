@@ -1,14 +1,12 @@
 import { useEffect } from 'react'
-import { useLocation, useRoutes } from 'react-router-dom'
+import { useRoutes } from 'react-router-dom'
 import { toast } from 'sonner'
 import { useTheme } from 'next-themes'
 import './i18n'
 import routes from '@renderer/routes'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
 import { applyTheme, setNativeTheme } from '@renderer/utils/ipc'
-import { SidebarProvider } from '@renderer/components/ui/sidebar'
 import AppSidebar from '@renderer/components/app-sidebar'
-import AppUpdateOverlay from '@renderer/components/app-update-overlay'
 import WindowControls from '@renderer/components/window-controls'
 import { platform } from '@renderer/utils/init'
 import { attachLogsStore } from '@renderer/store/logs-store'
@@ -16,17 +14,12 @@ import { attachTgwsStore } from '@renderer/store/tgws-store'
 import { attachZapretStore } from '@renderer/store/zapret-store'
 import { attachZapretTestStore } from '@renderer/store/zapret-test-store'
 import { attachIncyStore } from '@renderer/store/incy-store'
-import mapDark from '@renderer/assets/map_darktheme.svg'
-import mapLight from '@renderer/assets/map_lighttheme.svg'
 
 const App: React.FC = () => {
   const { appConfig } = useAppConfig()
   const { appTheme = 'dark', customTheme } = appConfig || {}
-  const { setTheme, resolvedTheme } = useTheme()
+  const { setTheme } = useTheme()
   const page = useRoutes(routes)
-  const location = useLocation()
-  const isHome = location.pathname === '/' || location.pathname.includes('/home')
-  const mapBg = resolvedTheme === 'dark' ? mapDark : mapLight
 
   useEffect(() => {
     const d1 = attachLogsStore()
@@ -93,30 +86,17 @@ const App: React.FC = () => {
   }, [])
 
   return (
-    // Dark = pure black (was #080F16, deep navy). Light = neutral light
-    // gray (was #C5D4F1, periwinkle blue) so light mode also drops the
-    // blue tint and stays consistent with the new monochrome palette.
-    <SidebarProvider
-      defaultOpen={false}
-      className="relative w-full h-screen overflow-hidden bg-background text-foreground"
-    >
-      <img
-        src={mapBg}
-        alt=""
-        draggable={false}
-        className={`pointer-events-none absolute inset-0 opacity-80 w-full h-full object-cover z-0 transition-[filter,opacity] duration-500 select-none ${
-          isHome ? '' : 'blur-2xl opacity-40'
-        }`}
-      />
+    // Меню + страница. Без фоновой картинки и размытия: сплошной фон темы
+    // ничего не стоит видеокарте.
+    <div className="relative flex w-full h-screen overflow-hidden bg-background text-foreground">
       {platform === 'darwin' && (
         <div className="fixed top-0.5 -left-1 h-14.25 flex items-center pl-3 z-100 app-drag">
           <WindowControls />
         </div>
       )}
       <AppSidebar />
-      <div className="relative z-10 main grow h-full overflow-y-auto">{page}</div>
-      <AppUpdateOverlay />
-    </SidebarProvider>
+      <div className="relative z-10 main min-w-0 grow h-full overflow-y-auto">{page}</div>
+    </div>
   )
 }
 
