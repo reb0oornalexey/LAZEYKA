@@ -5,6 +5,8 @@ import os from 'node:os'
 import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
 import { zapretBundleDir } from '../utils/dirs'
+import { isRunningAsAdmin } from '../utils/elevation'
+import { mergeLazeykaIpset } from './zapret-iplist'
 import { getAppConfig, patchAppConfig } from '../config'
 
 const execAsync = promisify(exec)
@@ -125,6 +127,7 @@ export async function setIpsetFilterMode(mode: IpsetFilterMode): Promise<IpsetFi
         }
         if (existsSync(file)) unlinkSync(file)
         renameSync(backup, file)
+        try { mergeLazeykaIpset() } catch { /* не критично */ }
       } else {
         if (current === 'loaded' && existsSync(file)) {
           if (existsSync(backup)) unlinkSync(backup)
@@ -164,6 +167,8 @@ export async function updateIpsetList(): Promise<IpsetFilterSnapshot> {
   if (existsSync(backup)) {
     try { unlinkSync(backup) } catch { /* best-effort */ }
   }
+  // Свежий список не знает про наши добавления (серверы Valve и т. п.).
+  try { mergeLazeykaIpset() } catch { /* не критично */ }
 
   const cfg = await getAppConfig()
   await patchAppConfig({ zapret: { ...(cfg.zapret as ZapretConfig), ipsetMode: 'loaded' } })
@@ -288,19 +293,16 @@ async function executeScriptWithAdmin(scriptContent: string): Promise<void> {
   writeFileSync(tmpScript, body + '\r\nexit /b 0\r\n', 'utf-8')
 
   try {
-    // 1. First try direct execution (succeeds instantly if running as admin or UAC disabled)
-    try {
-      await execAsync(`cmd.exe /c "${tmpScript}"`, {
-        windowsHide: true,
-        timeout: 30_000
-      })
-    } catch (e) {
-      console.warn('Direct cmd execution warning:', e)
+    // Программа работает с правами администратора — тогда скрипт выполняется
+    // один раз напрямую. Раньше после прямого запуска он ВСЕГДА повторялся
+    // через UAC: второй проход установки тут же удалял только что созданную
+    // службу, а при «помеченной на удаление» службе она пропадала совсем.
+    if (await isRunningAsAdmin()) {
+      await execAsync(`cmd.exe /c "${tmpScript}"`, { windowsHide: true, timeout: 30_000 })
+      return
     }
 
-    await new Promise((r) => setTimeout(r, 600))
-
-    // 2. Check if the service state was changed. If not, try UAC elevation.
+    // Без прав администратора — только через запрос UAC.
     const escaped = tmpScript.replace(/'/g, "''")
     try {
       await execAsync(

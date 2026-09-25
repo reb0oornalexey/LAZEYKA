@@ -200,7 +200,11 @@ function commit(): void {
  * which is what we want — `/traffic` is a streaming endpoint of per-second
  * rates and would need a long-lived socket.
  */
+const STATS_POLL_MS = 15_000
+let lastPollAt = 0
+
 function pollOnce(): void {
+  lastPollAt = Date.now()
   if (!session || !apiPort) return
   const req = http.request(
     {
@@ -271,7 +275,11 @@ export function beginSession(clashPort: number): void {
   scheduleSave()
 
   if (clashPort > 0) {
-    poller = setInterval(pollOnce, 1000)
+    // Счётчики в /connections накопительные, поэтому частый опрос ничего не
+    // уточняет. Раньше он шёл раз в секунду: sing-box сериализовал список
+    // всех соединений (десятки КБ JSON), main его разбирал — постоянно, пока
+    // подключён VPN. Раз в 15 с + свежий замер при открытии «Статистики».
+    poller = setInterval(pollOnce, STATS_POLL_MS)
     poller.unref?.()
     // Do not wait a full second for the first sample.
     setTimeout(pollOnce, 300)
@@ -292,6 +300,9 @@ export function endSession(): void {
 }
 
 export function getStatsSnapshot(): IncyStatsSnapshot {
+  // Вкладка «Статистика» открыта и спрашивает цифры — подтянуть свежие
+  // (ответ придёт к следующему запросу вкладки, через ~3 с).
+  if (session && apiPort && Date.now() - lastPollAt > 2500) pollOnce()
   const store = load()
   // Fold in whatever the live session has accumulated but not yet committed,
   // so the tab never shows a value that lags a few seconds behind reality.
@@ -347,4 +358,84 @@ export function resetTodayStats(): IncyStatsSnapshot {
   }
   flushStats()
   return getStatsSnapshot()
+}
+
+// ---- активность приложений (ExitLag) -------------------------------------------
+
+export interface AppActivity {
+  /** Имя процесса, как у Windows (cs2.exe). */
+  name: string
+  /** Соединений через VPN сейчас. */
+  viaVpn: number
+  /** Соединений напрямую сейчас. */
+  direct: number
+  /** Суммарно байт по открытым соединениям (для расчёта скорости в окне). */
+  upload: number
+  download: number
+}
+
+/**
+ * Какие приложения сейчас держат соединения и через что они идут.
+ *
+ * Берётся из Clash API ядра (`/connections`): у каждого соединения есть путь
+ * процесса и цепочка выхода (`proxy` или `direct`). Возвращает null, если
+ * туннель не поднят или ядро статистику не отдаёт (топология только с Xray).
+ */
+export function fetchAppActivity(): Promise<AppActivity[] | null> {
+  if (!session || !apiPort) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port: apiPort,
+        path: '/connections',
+        method: 'GET',
+        timeout: 2000,
+        headers: apiSecret ? { Authorization: `Bearer ${apiSecret}` } : undefined
+      },
+      (res) => {
+        let body = ''
+        res.setEncoding('utf-8')
+        res.on('data', (c) => {
+          if (body.length < 8_000_000) body += c
+        })
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(body) as {
+              connections?: {
+                upload?: number
+                download?: number
+                chains?: string[]
+                metadata?: { processPath?: string }
+              }[]
+            }
+            const byApp = new Map<string, AppActivity>()
+            for (const c of data.connections ?? []) {
+              const p = c.metadata?.processPath
+              if (!p) continue
+              const name = path.win32.basename(p)
+              const key = name.toLowerCase()
+              const a = byApp.get(key) ?? { name, viaVpn: 0, direct: 0, upload: 0, download: 0 }
+              const chains = c.chains ?? []
+              if (chains.includes('proxy')) a.viaVpn++
+              else if (chains.includes('direct')) a.direct++
+              else continue
+              a.upload += Number(c.upload) || 0
+              a.download += Number(c.download) || 0
+              byApp.set(key, a)
+            }
+            resolve([...byApp.values()])
+          } catch {
+            resolve(null)
+          }
+        })
+      }
+    )
+    req.on('error', () => resolve(null))
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(null)
+    })
+    req.end()
+  })
 }

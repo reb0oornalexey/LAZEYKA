@@ -74,8 +74,12 @@ export async function runAutopilotCycle(force = false): Promise<AutopilotStatus>
     return getAutopilotStatus()
   }
 
+  // Выключенный Zapret автопилот не трогает даже по кнопке «Проверить
+  // сейчас»: раньше он перебирал стратегии и оставлял Zapret включённым,
+  // хотя пользователь его остановил.
   const zapretRunning = getZapretStatus().state === 'running'
-  if (!zapretRunning && !force) {
+  if (!zapretRunning) {
+    if (force) appendLog('Zapret выключен — проверять нечего.')
     isChecking = false
     lastStatus = 'idle'
     return getAutopilotStatus()
@@ -99,7 +103,13 @@ export async function runAutopilotCycle(force = false): Promise<AutopilotStatus>
       let bestStrategy: string | null = null
 
       // Test up to 3 candidate strategies
+      let stoppedByUser = false
       for (const cand of candidates.slice(0, 3)) {
+        // Пользователь нажал «Стоп» посреди перебора — прекращаем.
+        if (getZapretStatus().state !== 'running') {
+          stoppedByUser = true
+          break
+        }
         appendLog(`Тестирование: ${cand.title}…`)
         // Re-read the config on every iteration: `cfg` was captured before the
         // loop, so reusing it would roll back any zapret setting the user (or
@@ -119,7 +129,12 @@ export async function runAutopilotCycle(force = false): Promise<AutopilotStatus>
         } catch { /* try next */ }
       }
 
-      if (bestStrategy) {
+      if (stoppedByUser) {
+        appendLog('Zapret остановлен во время проверки — автопилот прерван.')
+        const fresh = await getAppConfig()
+        await patchAppConfig({ zapret: { ...(fresh.zapret as ZapretConfig), activeStrategy } })
+        lastStatus = 'idle'
+      } else if (bestStrategy) {
         lastStatus = 'healthy'
         lastSwitched = bestStrategy
         appendLog(`Успешное автопереключение на стратегию: ${bestStrategy}`)

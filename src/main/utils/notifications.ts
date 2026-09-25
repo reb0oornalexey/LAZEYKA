@@ -9,6 +9,13 @@ import { existsSync } from 'node:fs'
  * без него клик по всплывашке не делает ничего, и единственный способ дойти
  * до окна — вспомнить про значок в трее.
  */
+/**
+ * Держим ссылки на показанные уведомления: без них сборщик мусора удалял
+ * объект, и клик по всплывашке (например, «Открыть окно обновления») не
+ * срабатывал.
+ */
+const alive = new Set<Notification>()
+
 export function showSystemNotification(title: string, body: string, onClick?: () => void): void {
   if (!Notification.isSupported()) return
 
@@ -22,6 +29,15 @@ export function showSystemNotification(title: string, body: string, onClick?: ()
     })
 
     if (onClick) notification.on('click', onClick)
+    alive.add(notification)
+    const release = (): void => {
+      alive.delete(notification)
+    }
+    notification.on('close', release)
+    notification.on('click', release)
+    notification.on('failed', release)
+    // Страховка: даже если Windows не прислала «close», держим не дольше часа.
+    setTimeout(release, 3_600_000).unref?.()
     notification.show()
   } catch { /* ignore notification errors */ }
 }

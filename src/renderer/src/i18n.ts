@@ -24,11 +24,9 @@ const getSavedLanguage = (): string => {
     return saved
   }
 
-  // Try to detect system language
-  const systemLang = navigator.language || 'zh-CN'
-  if (systemLang.startsWith('zh')) return 'zh-CN'
-  if (systemLang.startsWith('ru')) return 'ru-RU'
-  if (systemLang.startsWith('en')) return 'en-US'
+  // Язык системы больше не учитываем: весь интерфейс написан по-русски прямо
+  // в разметке, а через i18next идут лишь отдельные подписи. На английской
+  // Windows это давало «CONNECTED» посреди русского текста.
 
   // LAZEYKA's UI is written in Russian, so that is the fallback for any
   // system language we do not ship. (The comment here used to say "Default to

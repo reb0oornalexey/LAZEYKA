@@ -170,6 +170,9 @@ export function socksConnect(socksPort: number, host: string, port: number, time
     }
     s.setTimeout(timeoutMs, () => fail(new Error('timeout')))
     s.once('error', fail)
+    // Ядро закрыло соединение без ошибки (узел недоступен) — иначе промис
+    // не завершился бы никогда: ни 'error', ни таймаут на закрытом сокете.
+    s.once('close', () => fail(new Error('closed')))
     s.once('connect', () => s.write(Buffer.from([0x05, 0x01, 0x00])))
     const onData = (d: Buffer): void => {
       buf = Buffer.concat([buf, d])
@@ -230,12 +233,17 @@ export async function httpViaCore(
             })
             t.once('secureConnect', () => resolve(t))
             t.once('error', reject)
+            t.once('close', () => reject(new Error('closed')))
           })
         : raw
       const ms = await new Promise<number | null>((resolve) => {
         sock.setTimeout(timeoutMs, () => resolve(null))
         sock.once('data', () => resolve(performance.now() - t0))
         sock.once('error', () => resolve(null))
+        // Узел закрыл соединение, не ответив, — «нет ответа», а не вечное
+        // ожидание (оно держало слот временного ядра, и после трёх таких
+        // зависаний вставали все проверки узлов и оптимизатор).
+        sock.once('close', () => resolve(null))
         sock.write(
           `${method} ${url.pathname || '/'}${url.search} HTTP/1.1\r\nHost: ${url.hostname}\r\nUser-Agent: LAZEYKA\r\nConnection: close\r\n\r\n`
         )

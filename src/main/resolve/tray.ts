@@ -175,7 +175,9 @@ export async function createTray(): Promise<void> {
   }
 
   tray.on('click', () => showMainWindow())
-  tray.on('double-click', () => triggerMainWindow())
+  // На Windows двойной клик приходит ПОСЛЕ одиночного: одиночный показывал
+  // окно, а двойной тут же прятал его обратно. Оба теперь просто показывают.
+  tray.on('double-click', () => showMainWindow())
 
   // Expose rebuild() so external triggers (window show/hide/minimize) can
   // refresh the «Показать/Скрыть окно» label instantly via refreshTray().

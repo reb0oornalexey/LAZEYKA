@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react'
 import { toast } from 'sonner'
 import BasePage from '@renderer/components/base/base-page'
 import AutoSelectCard from '@renderer/components/auto-select-card'
+import ValveRegionsCard from '@renderer/components/valve-regions-card'
 import { Card, CardHeader, CardTitle, CardContent } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import { Badge } from '@renderer/components/ui/badge'
 import { Input } from '@renderer/components/ui/input'
 import { Switch } from '@renderer/components/ui/switch'
-import { Target, Copy, Zap, RefreshCw } from 'lucide-react'
+import { Target, Copy, Zap, RefreshCw, Trophy, MapPin } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
 import { useIncyStore } from '@renderer/store/incy-store'
 import {
@@ -138,6 +139,8 @@ export default function OptimizerPage(): React.ReactElement {
   }
 
   const handleMeasureGamePing = async (targetOverride?: string): Promise<void> => {
+    // Второй замер поверх идущего сбрасывал прогресс первого.
+    if (measuringGamePing) return
     const targetToMeasure = (targetOverride || gameServerTarget).trim()
     if (!targetToMeasure) {
       toast.error('Введите IP-адрес или строку подключения сервера Faceit / CS2')
@@ -181,6 +184,10 @@ export default function OptimizerPage(): React.ReactElement {
       if (text && text.trim()) {
         const val = text.trim()
         setGameServerTarget(val)
+        if (measuringGamePing) {
+          toast.info('Адрес вставлен — замер начнётся после текущего')
+          return
+        }
         toast.info('Адрес сервера вставлен из буфера')
         void handleMeasureGamePing(val)
       } else {
@@ -225,9 +232,9 @@ export default function OptimizerPage(): React.ReactElement {
                 </div>
                 <div>
                   <CardTitle className="text-sm font-bold flex items-center gap-2">
-                    Оптимизатор маршрута Faceit / CS2 (Route Optimizer)
+                    Оптимизатор маршрута Faceit / CS2
                     <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-primary/50 text-primary font-mono uppercase">
-                      Game Ping
+                      Игровой пинг
                     </Badge>
                   </CardTitle>
                   <p className="text-[11px] text-muted-foreground mt-0.5">
@@ -326,12 +333,12 @@ export default function OptimizerPage(): React.ReactElement {
 
             {/* Results */}
             {gamePingResult && (
-              <div className="space-y-3 p-3.5 rounded-xl border border-primary/30 bg-primary/5 backdrop-blur-sm animate-in fade-in duration-200">
+              <div className="space-y-3 p-3.5 rounded-xl border border-primary/30 bg-primary/5 animate-in fade-in duration-200">
                 {/* Header */}
                 <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-border/40 text-xs">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="font-semibold text-foreground truncate">
-                      📍 {gamePingResult.geo.city ? `${gamePingResult.geo.city}, ` : ''}
+                      <MapPin className="inline h-3.5 w-3.5 mr-1 text-primary align-[-2px]" />{gamePingResult.geo.city ? `${gamePingResult.geo.city}, ` : ''}
                       {gamePingResult.geo.country || gamePingResult.targetIp}
                     </span>
                     <span className="text-[10px] font-mono text-muted-foreground">
@@ -387,7 +394,7 @@ export default function OptimizerPage(): React.ReactElement {
                                 {n.protocol}
                               </Badge>
                               {n.isBest && (
-                                <Badge className="text-[9px] px-1.5 py-0 bg-emerald-500 text-white font-bold">🏆 ЛУЧШИЙ</Badge>
+                                <Badge className="text-[9px] px-1.5 py-0 bg-emerald-500 text-white font-bold"><Trophy className="h-2.5 w-2.5 mr-0.5 inline" />ЛУЧШИЙ</Badge>
                               )}
                               {isCurrentActive && (
                                 <Badge className="text-[9px] px-1.5 py-0 bg-primary/20 text-primary border border-primary/40 font-mono">
@@ -459,6 +466,8 @@ export default function OptimizerPage(): React.ReactElement {
             )}
           </CardContent>
         </Card>
+
+        <ValveRegionsCard />
 
         <AutoSelectCard settings={settings} nodes={nodes} onPatch={handleUpdateSettings} />
       </div>

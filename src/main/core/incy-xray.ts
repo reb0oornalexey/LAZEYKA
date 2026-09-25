@@ -257,7 +257,8 @@ function buildStreamSettings(node: IncyNode, hasFragment: boolean): Record<strin
     stream.tlsSettings = {
       serverName: node.sni || node.server,
       fingerprint: node.fingerprint || 'chrome',
-      allowInsecure: false
+      allowInsecure: node.insecure === true,
+      ...(node.alpn && node.alpn.length > 0 ? { alpn: node.alpn } : {})
     }
   }
 
@@ -361,7 +362,7 @@ function buildProxyOutbound(
           {
             address: node.server,
             port: node.port,
-            users: [{ id: node.uuid || '', security: 'auto', alterId: 0 }]
+            users: [{ id: node.uuid || '', security: node.vmessCipher || 'auto', alterId: node.alterId || 0 }]
           }
         ]
       },
@@ -378,7 +379,12 @@ function buildProxyOutbound(
       settings: {
         servers: [{ address: node.server, port: node.port, password: node.password || '' }]
       },
-      streamSettings: { ...streamSettings, security: streamSettings.security ?? 'tls' }
+      // У старых сохранённых trojan-узлов нет поля security: считаем TLS, но
+      // строим блок целиком (с serverName), а не одну пометку «tls».
+      streamSettings:
+        node.security === undefined
+          ? buildStreamSettings({ ...node, security: 'tls' }, hasFragment)
+          : streamSettings
     }
     applyXrayMux(outbound, settings)
     return outbound
@@ -581,7 +587,9 @@ export function buildXrayConfig(
     inbounds,
     outbounds,
     routing: {
-      domainStrategy: settings.preferredIp === 'IPV6' ? 'IPv6Prefer' : 'IPIfNonMatch',
+      // 'IPv6Prefer' для routing в Xray не существует — ядро молча
+      // откатывалось на AsIs. Предпочтение IPv6 задаётся на стороне DNS.
+      domainStrategy: 'IPIfNonMatch',
       rules: [...rules, { type: 'field', network: 'tcp,udp', outboundTag: finalTag }]
     }
   }

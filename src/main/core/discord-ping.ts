@@ -1,5 +1,4 @@
-import net from 'node:net'
-import { performance } from 'node:perf_hooks'
+import { physicalSourceIp, tcpRtt } from './core-probe'
 
 export interface DiscordRegionPing {
   id: string
@@ -32,37 +31,17 @@ export const DISCORD_REGIONS: DiscordRegionPing[] = [
   { id: 'status', name: 'Status page', location: 'Cloudflare, ближайший узел', endpoint: 'https://status.discord.com', host: 'status.discord.com', port: 443, latencyMs: null, status: 'optimal' }
 ]
 
-function probeRegionTcp(host: string, port = 443, timeoutMs = 2500): Promise<number | null> {
-  return new Promise((resolve) => {
-    const start = performance.now()
-    const sock = new net.Socket()
-    let settled = false
-
-    sock.setTimeout(timeoutMs)
-    sock.once('connect', () => {
-      if (!settled) {
-        settled = true
-        const elapsed = Math.max(5, Math.round(performance.now() - start))
-        sock.destroy()
-        resolve(elapsed)
-      }
-    })
-    sock.once('error', () => {
-      if (!settled) {
-        settled = true
-        sock.destroy()
-        resolve(null)
-      }
-    })
-    sock.once('timeout', () => {
-      if (!settled) {
-        settled = true
-        sock.destroy()
-        resolve(null)
-      }
-    })
-    sock.connect(port, host)
-  })
+/**
+ * Задержка TCP-рукопожатия до точки Discord.
+ *
+ * Имя резолвится до старта замера (раньше время DNS входило в пинг), а при
+ * поднятом TUN сокет привязывается к физическому адаптеру: иначе рукопожатие
+ * завершал локальный TUN-стек, и все точки показывали «5 мс».
+ */
+async function probeRegionTcp(host: string, port = 443, timeoutMs = 2500): Promise<number | null> {
+  const src = await physicalSourceIp().catch(() => null)
+  const rtt = await tcpRtt(host, port, timeoutMs, src ?? undefined).catch(() => null)
+  return rtt == null ? null : Math.max(1, Math.round(rtt))
 }
 
 export async function pingDiscordVoiceRegions(): Promise<DiscordRegionPing[]> {

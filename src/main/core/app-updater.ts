@@ -3,13 +3,15 @@ import { once } from 'node:events'
 import { Readable } from 'node:stream'
 import { spawn } from 'child_process'
 import path from 'path'
-import { app, BrowserWindow } from 'electron'
-import { dataDir } from '../utils/dirs'
+import { app, BrowserWindow, shell } from 'electron'
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'fs'
+import { dataDir, exeDir } from '../utils/dirs'
 import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 import { appLog } from '../utils/app-logger'
 
-import { fetchLatestGithubRelease, type GhRelease } from '../utils/github-release'
+import { fetchLatestGithubRelease, fetchGithubReleases, type GhRelease } from '../utils/github-release'
 
 const REPO = 'reb0oornalexey/LAZEYKA'
 const REQUEST_HEADERS: Record<string, string> = {
@@ -72,6 +74,19 @@ function parseVersion(s?: string): string | null {
 }
 
 function compareVersion(a: string, b: string): number {
+  // 1.3.0 > 1.3.0-beta.1: у финальной версии нет суффикса. Раньше сравнение
+  // «0» с «beta» строками давало обратный результат, и бета-сборка никогда
+  // не получала финальный релиз.
+  const [aMain, aPre] = a.replace(/^v/i, '').split(/-(.+)/)
+  const [bMain, bPre] = b.replace(/^v/i, '').split(/-(.+)/)
+  const mainCmp = compareVersionParts(aMain, bMain)
+  if (mainCmp !== 0) return mainCmp
+  if (!aPre && bPre) return 1
+  if (aPre && !bPre) return -1
+  return compareVersionParts(aPre ?? '', bPre ?? '')
+}
+
+function compareVersionParts(a: string, b: string): number {
   const norm = (v: string): (number | string)[] =>
     v
       .replace(/^v/i, '')
@@ -97,6 +112,14 @@ function compareVersion(a: string, b: string): number {
 }
 
 let cache: { at: number; data: AppUpdateInfo } | null = null
+/** Ожидаемые размер и SHA-256 установщика по ссылке — для проверки после загрузки. */
+const knownDigests = new Map<string, { sha256?: string; size?: number }>()
+
+/** Установлена ли программа установщиком (рядом лежит деинсталлятор NSIS). */
+function isInstalledBuild(): boolean {
+  if (!app.isPackaged) return true
+  return existsSync(path.join(exeDir(), 'Uninstall LAZEYKA.exe'))
+}
 let cacheHydrated = false
 const CACHE_TTL_MS = 30 * 60 * 1000
 const CACHE_NAME = 'app'
@@ -160,6 +183,13 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
   const assetDownloadUrl =
     installerAsset?.browser_download_url ??
     (tag ? `https://github.com/${REPO}/releases/download/${tag}/LAZEYKA_x64.exe` : undefined)
+  // Контрольная сумма из API GitHub («sha256:…»), если релиз её отдаёт.
+  const digest = (installerAsset as { digest?: string } | undefined)?.digest
+  if (assetDownloadUrl && typeof digest === 'string' && /^sha256:[0-9a-f]{64}$/i.test(digest)) {
+    knownDigests.set(assetDownloadUrl, { sha256: digest.slice(7).toLowerCase(), size: installerAsset?.size })
+  } else if (assetDownloadUrl && installerAsset?.size) {
+    knownDigests.set(assetDownloadUrl, { size: installerAsset.size })
+  }
 
   const hasUpdate = !!latest && compareVersion(latest, installed) > 0
 
@@ -315,6 +345,16 @@ async function downloadToFile(
     }
 
     try {
+      // Докачиваем с реального размера файла, а не со счётчика в памяти:
+      // при обрыве часть буфера могла не попасть на диск, и файл выходил
+      // «с дыркой», которую NSIS потом отвергал по CRC.
+      if (received > 0) {
+        try {
+          received = existsSync(dest) ? statSync(dest).size : 0
+        } catch {
+          received = 0
+        }
+      }
       const headers: Record<string, string> = { 'User-Agent': REQUEST_HEADERS['User-Agent'] }
       if (received > 0) headers.Range = `bytes=${received}-`
 
@@ -342,7 +382,10 @@ async function downloadToFile(
         ws.end()
         await once(ws, 'finish')
       } finally {
-        if (!ws.closed) ws.destroy()
+        if (!ws.closed) {
+          ws.destroy()
+          await once(ws, 'close').catch(() => void 0)
+        }
       }
 
       if (total !== null && received < total) {
@@ -392,6 +435,18 @@ export async function installAppUpdate(
   if (!assetUrl) throw new Error('Пустая ссылка на установщик')
   if (process.platform !== 'win32') {
     throw new Error('Авто-обновление поддерживается только на Windows')
+  }
+  // Установщик запускается с правами администратора — только официальные релизы.
+  if (!assetUrl.toLowerCase().startsWith(`https://github.com/${REPO.toLowerCase()}/releases/download/`)) {
+    throw new Error('Ссылка на установщик не из официальных релизов LAZEYKA')
+  }
+  // Портативная версия: установщик поставил бы вторую копию в Program Files,
+  // а эта папка осталась бы старой. Открываем страницу релиза с архивом.
+  if (!isInstalledBuild()) {
+    const tagMatch = /\/releases\/download\/([^/]+)\//.exec(assetUrl)
+    const page = `https://github.com/${REPO}/releases${tagMatch ? `/tag/${tagMatch[1]}` : '/latest'}`
+    void shell.openExternal(page)
+    throw new Error('Это портативная версия: скачайте архив новой версии со страницы релиза (она открыта в браузере) и распакуйте поверх.')
   }
 
   // Write the installer to %TEMP% so it's auto-cleaned by Windows. Using
@@ -452,6 +507,36 @@ export async function installAppUpdate(
       unlinkSync(installerPath)
     } catch { /* noop */ }
     throw new Error(`Загруженный файл слишком маленький (${size} байт)`)
+  }
+
+  // Проверка целостности: размер и (если GitHub его дал) SHA-256.
+  {
+    const expected = knownDigests.get(assetUrl)
+    let actualSize = 0
+    try {
+      actualSize = statSync(installerPath).size
+    } catch { /* ниже — ошибка */ }
+    const badSize = expected?.size ? actualSize !== expected.size : actualSize !== size
+    let badHash = false
+    if (!badSize && expected?.sha256) {
+      const hash = createHash('sha256').update(readFileSync(installerPath)).digest('hex')
+      badHash = hash !== expected.sha256
+    }
+    if (badSize || badHash) {
+      try {
+        unlinkSync(installerPath)
+      } catch { /* noop */ }
+      broadcastProgress({
+        state: 'error',
+        receivedBytes: 0,
+        totalBytes: null,
+        percent: null,
+        bytesPerSecond: 0,
+        etaSeconds: null,
+        message: 'Файл обновления скачался повреждённым'
+      })
+      throw new Error('Файл обновления скачался повреждённым. Попробуйте ещё раз.')
+    }
   }
 
   broadcastProgress({
@@ -640,7 +725,8 @@ export async function installAppUpdate(
     } catch {
       /* falling through to process.exit below */
     }
-    setTimeout(() => process.exit(0), 1000)
+    // Штатная остановка служб при выходе занимает до 3 с — не обрываем её.
+    setTimeout(() => process.exit(0), 5000)
   }, 800)
 
   return { scheduled: true }
@@ -659,3 +745,54 @@ export function invalidateAppUpdateCache(): void {
 }
 
 void dataDir // keep import slot, used implicitly via update-cache
+
+// ---- История версий для окна обновления -------------------------------------
+
+export interface AppReleaseNote {
+  tag: string
+  version: string
+  title: string
+  /** Заметки к релизу в markdown. */
+  body: string
+  publishedAt?: string
+  url?: string
+  /** Эта версия сейчас установлена. */
+  installed: boolean
+}
+
+const historyCache = new Map<string, { at: number; data: AppReleaseNote[] }>()
+
+/**
+ * Страница истории версий: `page` 1 — самые свежие. Окно обновления берёт
+ * первые 4 (новая + три предыдущие) и по кнопке догружает следующие.
+ */
+export async function getReleaseHistory(page = 1, perPage = 4): Promise<AppReleaseNote[]> {
+  const key = `${page}:${perPage}`
+  const hit = historyCache.get(key)
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.data
+  const installed = app.getVersion()
+  let list: GhRelease[]
+  try {
+    list = await fetchGithubReleases(REPO, page, perPage)
+  } catch (e) {
+    if (hit) return hit.data
+    throw new Error(`Не удалось загрузить историю версий: ${describeNetworkError(e)}`)
+  }
+  const data = list
+    .filter((r) => !r.draft && !r.prerelease && r.tag_name)
+    .map((r) => {
+      const tag = String(r.tag_name).trim()
+      const version = parseVersion(tag) || parseVersion(r.name) || tag.replace(/^v/i, '')
+      return {
+        tag,
+        version,
+        title: r.name?.trim() || `LAZEYKA ${version}`,
+        body: (r.body ?? '').replace(/\r\n/g, '\n').trim(),
+        publishedAt: r.published_at,
+        url: r.html_url,
+        installed: compareVersion(version, installed) === 0
+      }
+    })
+  historyCache.set(key, { at: Date.now(), data })
+  return data
+}

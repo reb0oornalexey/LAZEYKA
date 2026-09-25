@@ -14,7 +14,7 @@ import { startZapret, stopZapret } from './core/zapret'
 import { disconnectIncy, loadIncySettings, connectIncyNode } from './core/incy-engine'
 import { restoreAutopilotFromConfig } from './core/zapret-autopilot'
 import { restoreGameModeFromConfig } from './core/game-mode'
-import { clearWindowsSystemProxy } from './utils/system-proxy'
+import { clearWindowsSystemProxy, clearWindowsSystemProxySync } from './utils/system-proxy'
 import { appLog } from './utils/app-logger'
 import { killRegisteredChildrenSync } from './utils/child-registry'
 import { enableAutoRun, disableAutoRun } from './sys/autoRun'
@@ -55,18 +55,30 @@ process.on('unhandledRejection', (reason) => {
 
 // A `lazeyka://…` link launched while LAZEYKA is already running arrives here,
 // as an argv entry of the second (immediately-exiting) instance.
+// Пока идёт запуск (проверка прав, init, автозапуск), главного окна ещё нет.
+// Раньше клик по ярлыку в этот момент создавал второе главное окно, и первое
+// оставалось «сиротой», которым трей не управлял.
+let markStartupReady: () => void = () => void 0
+const startupReady = new Promise<void>((resolve) => {
+  markStartupReady = resolve
+})
+
 app.on('second-instance', (_e, argv) => {
-  showMainWindow()
-  const link = findDeepLinkInArgv(argv)
-  if (link) void handleDeepLink(link)
+  void startupReady.then(() => {
+    void showMainWindow()
+    const link = findDeepLinkInArgv(argv)
+    if (link) void handleDeepLink(link)
+  })
 })
 
 // macOS delivers the same thing through `open-url` instead of argv. Harmless
 // on Windows, and keeps the handler in one place if the app is ever ported.
 app.on('open-url', (event, url) => {
   event.preventDefault()
-  showMainWindow()
-  void handleDeepLink(url)
+  void startupReady.then(() => {
+    void showMainWindow()
+    void handleDeepLink(url)
+  })
 })
 
 const syncConfig = getAppConfigSync()
@@ -234,6 +246,7 @@ app.whenReady().then(async () => {
   }
 
   await createWindow(appConfig)
+  markStartupReady()
 
   const uiTasks: Promise<unknown>[] = [initShortcut()]
   if (!appConfig.disableTray) uiTasks.push(createTray())
@@ -305,6 +318,7 @@ function syncKillChildren(): void {
     //    здесь был `taskkill /IM sing-box.exe`, который заодно убивал ядра
     //    Hiddify / v2rayN / NekoBox и отдельно запущенный Flowseal.
     killRegisteredChildrenSync()
+    // Выход из LAZEYKA выключает Zapret целиком — так задумано.
     spawnSync('taskkill.exe', ['/F', '/IM', 'winws.exe', '/T'], opts)
 
     // 2) Stop the WinDivert kernel driver — unloads it from memory so the
@@ -314,23 +328,9 @@ function syncKillChildren(): void {
       spawnSync('sc.exe', ['stop', svc], opts)
     }
 
-    // 3) Always ensure Windows system proxy is disabled when cleaning up,
-    //    preventing "no internet" after PC reboot or crash.
-    spawnSync(
-      'reg.exe',
-      [
-        'add',
-        'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
-        '/v',
-        'ProxyEnable',
-        '/t',
-        'REG_DWORD',
-        '/d',
-        '0',
-        '/f'
-      ],
-      opts
-    )
+    // 3) Системный прокси, который включала LAZEYKA, возвращаем как было
+    //    (чужой прокси пользователя больше не выключается).
+    clearWindowsSystemProxySync()
   } catch { /* noop */ }
 }
 
@@ -510,7 +510,8 @@ export function closeMainWindow(): void {
 }
 
 export async function triggerMainWindow(): Promise<void> {
-  if (mainWindow && mainWindow.isVisible()) {
+  // Свёрнутое окно тоже «видимо» для Electron — его надо развернуть, а не спрятать.
+  if (mainWindow && mainWindow.isVisible() && !mainWindow.isMinimized()) {
     mainWindow.hide()
   } else {
     await showMainWindow()

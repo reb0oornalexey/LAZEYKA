@@ -33,11 +33,15 @@ import {
   Gamepad2,
   Monitor,
   FolderOpen,
-  Target,
-  X
+  X,
+  MapPinned,
+  Globe,
+  ArrowRight,
+  ShieldAlert
 } from 'lucide-react'
 import BasePage from '@renderer/components/base/base-page'
 import AutoSelectCard from '@renderer/components/auto-select-card'
+import SpeedTestCard from '@renderer/components/speed-test-card'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -46,7 +50,7 @@ import { Switch } from '@renderer/components/ui/switch'
 import { Label } from '@renderer/components/ui/label'
 import {
   incyGetNodes,
-  incySaveNodes,
+  incySaveLatencies,
   incyRemoveNode,
   incyClearManualNodes,
   incyGetSubscription,
@@ -77,14 +81,9 @@ import {
   incyGeoCategories,
   incyCheckGeoUpdate,
   incyGenerateWarpNode,
-  incyPingGameServer,
-  systemGetRunningProcesses,
-  dialogPickExecutable,
   dialogPickImageFile,
   clipboardReadImage,
   systemCaptureScreens,
-  type GamePingResult,
-  type RunningProcessInfo,
   type GeoCategoryInfo,
   type GeoUpdateInfo,
   type IncyHwidHeaders,
@@ -99,23 +98,7 @@ import {
 import { decodeQrFromDataUrl } from '@renderer/utils/qr-scanner'
 import { useIncyStore } from '@renderer/store/incy-store'
 import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
-
-function getFlagEmoji(name: string): string {
-  const n = name.toLowerCase()
-  if (n.includes('⚡') || n.includes('warp') || n.includes('cloudflare')) return '⚡'
-  if (n.includes('🇳🇱') || n.includes('нидерланд') || n.includes('.nl') || n.includes('nl-')) return '🇳🇱'
-  if (n.includes('🇩🇪') || n.includes('германи') || n.includes('.de') || n.includes('de-') || n.includes('франкфурт')) return '🇩🇪'
-  if (n.includes('🇷🇺') || n.includes('росси') || n.includes('.ru') || n.includes('ru-') || n.includes('москв')) return '🇷🇺'
-  if (n.includes('🇸🇪') || n.includes('швеци') || n.includes('.se') || n.includes('se-') || n.includes('стокгольм')) return '🇸🇪'
-  if (n.includes('🇫🇷') || n.includes('франци') || n.includes('.fr') || n.includes('fr-')) return '🇫🇷'
-  if (n.includes('🇬🇧') || n.includes('англи') || n.includes('.gb') || n.includes('.uk')) return '🇬🇧'
-  if (n.includes('🇺🇸') || n.includes('сша') || n.includes('.us')) return '🇺🇸'
-  if (n.includes('🇸🇬') || n.includes('сингапур') || n.includes('.sg')) return '🇸🇬'
-  if (n.includes('🇯🇵') || n.includes('япони') || n.includes('.jp')) return '🇯🇵'
-  if (n.includes('🇰🇿') || n.includes('казахстан') || n.includes('.kz')) return '🇰🇿'
-  if (n.includes('🇪🇺') || n.includes('авто') || n.includes('smart')) return '🇪🇺'
-  return '🌐'
-}
+import { getFlagEmoji } from '@renderer/lib/country-flag'
 
 /**
  * Strips a leading emoji / flag prefix from provider-supplied labels.
@@ -155,7 +138,7 @@ function formatLatency(node: { latencyMs: number | null; latencyAt?: number }): 
     return { text: `${node.latencyMs} мс`, measured: true, unreachable: false }
   }
   if (node.latencyAt) {
-    return { text: 'n/a', measured: true, unreachable: true }
+    return { text: 'нет ответа', measured: true, unreachable: true }
   }
   return { text: '—', measured: false, unreachable: false }
 }
@@ -202,7 +185,7 @@ const LatencyBadge: React.FC<{
   strong?: boolean
 }> = ({ node, display = 'numbers', strong = false }) => {
   const info = formatLatency(node)
-  const tier = info.measured ? latencyTier(node.latencyMs) : 'none'
+  const tier = info.unreachable ? 'bad' : info.measured ? latencyTier(node.latencyMs) : 'none'
 
   const textClass =
     tier === 'good'
@@ -1097,7 +1080,7 @@ const RoutingProfiles: React.FC<{
               className={cn(
                 'flex items-center gap-3 p-3 rounded-xl border transition-all',
                 active
-                  ? 'border-primary/60 bg-primary/10 shadow-[0_0_16px_-4px_rgba(99,102,241,0.3)]'
+                  ? 'border-primary/60 bg-primary/10 '
                   : 'border-border/60 bg-card/40 hover:bg-foreground/[0.04]'
               )}
             >
@@ -1226,129 +1209,6 @@ const RoutingProfiles: React.FC<{
   )
 }
 
-/**
- * URL-схемы tab.
- *
- * Every command here is handled by `src/main/core/deeplink.ts` against the
- * `lazeyka://` scheme the app registers at startup. The page used to advertise
- * `incy://…` links, which belong to a different application and did nothing.
- *
- * The "Проверить" button opens the link through the OS, which is the same path
- * a shortcut or a browser takes — so the button proves the registration works
- * rather than calling the IPC directly and only pretending to.
- */
-const UrlSchemesTab: React.FC = () => {
-  const groups: {
-    title: string
-    items: { cmd: string; desc: string; runnable?: boolean }[]
-  }[] = [
-    {
-      title: 'Подключение',
-      items: [
-        { cmd: 'lazeyka://connect', desc: 'Начать VPN-соединение', runnable: true },
-        { cmd: 'lazeyka://open', desc: 'То же самое (алиас)', runnable: true }
-      ]
-    },
-    {
-      title: 'Отключение',
-      items: [
-        { cmd: 'lazeyka://disconnect', desc: 'Остановить VPN-соединение', runnable: true },
-        { cmd: 'lazeyka://close', desc: 'То же самое (алиас)', runnable: true }
-      ]
-    },
-    {
-      title: 'Переключение',
-      items: [{ cmd: 'lazeyka://toggle', desc: 'Вкл/Выкл VPN', runnable: true }]
-    },
-    {
-      title: 'Добавление конфигурации',
-      items: [
-        {
-          cmd: 'lazeyka://import/{base64}',
-          desc: 'Подписка, ссылка vless:// или целый конфиг — определяется автоматически'
-        },
-        { cmd: 'lazeyka://add/{url}', desc: 'Добавить конфиг по прямому URL' }
-      ]
-    },
-    {
-      title: 'Маршрутизация',
-      items: [
-        {
-          cmd: 'lazeyka://routing/add/{base64}',
-          desc: 'Добавить правила к текущим. Внутри — JSON-массив или строки вида «youtube.com proxy»'
-        },
-        {
-          cmd: 'lazeyka://routing/oneadd/{base64}',
-          desc: 'Заменить все правила на переданные'
-        }
-      ]
-    }
-  ]
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-start gap-2 p-3 rounded-xl border border-border bg-card/40 text-[11px] text-muted-foreground">
-        <HelpCircle className="h-3.5 w-3.5 mt-px shrink-0 text-primary" />
-        <span>
-          Схема <span className="font-mono text-primary">lazeyka://</span> регистрируется при
-          запуске приложения. Команды можно открывать из браузера, ярлыка на рабочем столе или
-          любого скрипта — приложение поднимется и выполнит их.
-        </span>
-      </div>
-
-      {groups.map((group) => (
-        <Card key={group.title} className="cyber-card">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <LinkIcon className="h-4 w-4 text-primary" />
-              {group.title}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {group.items.map((item) => (
-              <div
-                key={item.cmd}
-                className="flex items-center justify-between gap-2 p-2.5 rounded-lg border border-border bg-card/40 text-xs"
-              >
-                <div className="min-w-0">
-                  <div className="font-mono text-primary font-bold break-all">{item.cmd}</div>
-                  <div className="text-[11px] text-muted-foreground mt-0.5">{item.desc}</div>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  {item.runnable && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="text-[11px] h-7"
-                      onClick={() => {
-                        // Goes out through the OS, exactly like a shortcut
-                        // would — if this works, the scheme is registered.
-                        window.open(item.cmd, '_self')
-                        toast.info(`Команда отправлена: ${item.cmd}`)
-                      }}
-                    >
-                      Проверить
-                    </Button>
-                  )}
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    onClick={() => {
-                      navigator.clipboard.writeText(item.cmd)
-                      toast.success('Скопировано в буфер обмена')
-                    }}
-                  >
-                    <Copy className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      ))}
-    </div>
-  )
-}
 
 /**
  * Guards the launch ping sweep so it runs once per app session rather than on
@@ -1360,7 +1220,7 @@ let launchPingDone = false
 export default function IncyPage(): React.ReactElement {
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<
-    'main' | 'servers' | 'routing' | 'settings' | 'stats' | 'backup' | 'urls'
+    'main' | 'servers' | 'routing' | 'settings' | 'stats'
   >('main')
   const [nodes, setNodes] = useState<IncyNode[]>([])
   /** «Текущая» подписка — та, которой принадлежит выбранный сервер. */
@@ -1389,18 +1249,12 @@ export default function IncyPage(): React.ReactElement {
   const [coreMemory, setCoreMemory] = useState<CoreMemoryUsage | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [protocolFilter, setProtocolFilter] = useState<'all' | 'vless' | 'hysteria2' | 'wireguard'>('all')
+  // «Только рабочие»: серверы, ответившие на последний замер пинга.
+  const [onlyWorking, setOnlyWorking] = useState(false)
   const [showServerSelectModal, setShowServerSelectModal] = useState(false)
   const [loadingWarp, setLoadingWarp] = useState(false)
   const [showQrModal, setShowQrModal] = useState(false)
   const [scanningQr, setScanningQr] = useState(false)
-  const [showProcessPickerModal, setShowProcessPickerModal] = useState(false)
-  const [runningProcesses, setRunningProcesses] = useState<RunningProcessInfo[]>([])
-  const [loadingProcesses, setLoadingProcesses] = useState(false)
-  const [processFilterText, setProcessFilterText] = useState('')
-  const [newAppInput, setNewAppInput] = useState('')
-  const [gameServerTarget, setGameServerTarget] = useState('')
-  const [measuringGamePing, setMeasuringGamePing] = useState(false)
-  const [gamePingResult, setGamePingResult] = useState<GamePingResult | null>(null)
 
   const loadData = async (): Promise<void> => {
     try {
@@ -1424,6 +1278,15 @@ export default function IncyPage(): React.ReactElement {
     } catch { /* ignore */ }
   }
 
+  // Подписки обновились в фоне (при запуске / по расписанию) — перечитать.
+  useEffect(() => {
+    const onChanged = (): void => void loadData()
+    window.electron.ipcRenderer.on('incy:nodesChanged', onChanged)
+    return () => {
+      window.electron.ipcRenderer.removeAllListeners('incy:nodesChanged')
+    }
+  }, [])
+
   useEffect(() => {
     void loadData()
     const timer = setInterval(() => {
@@ -1431,7 +1294,8 @@ export default function IncyPage(): React.ReactElement {
       // Also refresh while stopped when the Statistics tab is open: the totals
       // and the weekly chart are persisted, so they are worth showing (and
       // updating after a reset) even with the tunnel down.
-      if (status.state === 'running' || activeTab === 'stats') {
+      // Цифры видны только на вкладке «Статистика» — только тогда и спрашиваем.
+      if (activeTab === 'stats') {
         void incyGetStats().then(setStats).catch(() => {})
       }
     }, 3000)
@@ -1613,120 +1477,6 @@ export default function IncyPage(): React.ReactElement {
     }
   }
 
-  // ---- Per-App Routing (ExitLag-style) --------------------------------------
-  // Туннель переподключается сам (patchIncySettings в main), если он поднят.
-  const handleTogglePerAppProxy = async (enabled: boolean): Promise<void> => {
-    await handleUpdateSettings({ perAppProxy: enabled })
-  }
-
-  const handleSetPerAppMode = async (mode: 'proxy_only' | 'bypass_only'): Promise<void> => {
-    await handleUpdateSettings({ perAppMode: mode })
-  }
-
-  const handleAddPerAppProcess = async (processName: string): Promise<void> => {
-    // Исходный регистр сохраняется — сравнение без учёта регистра делает ядро.
-    const base = processName.trim().split(/[\\/]/).pop()?.trim() ?? ''
-    if (!base || !settings) return
-    const cleaned = /\.exe$/i.test(base) ? base : `${base}.exe`
-    const current = settings.perAppProcesses ?? []
-    if (current.some((p) => p.toLowerCase() === cleaned)) {
-      toast.info('Это приложение уже в списке')
-      return
-    }
-    await handleUpdateSettings({ perAppProcesses: [...current, cleaned] })
-    setNewAppInput('')
-  }
-
-  const handleRemovePerAppProcess = async (proc: string): Promise<void> => {
-    if (!settings) return
-    const current = settings.perAppProcesses ?? []
-    await handleUpdateSettings({
-      perAppProcesses: current.filter((p) => p.toLowerCase() !== proc.toLowerCase())
-    })
-  }
-
-  const handleClearPerAppProcesses = async (): Promise<void> => {
-    await handleUpdateSettings({ perAppProcesses: [] })
-    toast.success('Список приложений очищен')
-  }
-
-  const handleOpenProcessPicker = async (): Promise<void> => {
-    setLoadingProcesses(true)
-    setShowProcessPickerModal(true)
-    try {
-      const list = await systemGetRunningProcesses()
-      setRunningProcesses(list)
-    } catch (err: any) {
-      toast.error('Не удалось получить список процессов', { description: err?.message || String(err) })
-    } finally {
-      setLoadingProcesses(false)
-    }
-  }
-
-  const handlePickExeFile = async (): Promise<void> => {
-    try {
-      const fileName = await dialogPickExecutable()
-      if (fileName) {
-        await handleAddPerAppProcess(fileName)
-        toast.success(`Добавлено: ${fileName}`)
-      }
-    } catch (err: any) {
-      toast.error('Ошибка выбора файла', { description: err?.message || String(err) })
-    }
-  }
-
-  const handleApplyPreset = async (presetApps: string[]): Promise<void> => {
-    if (!settings) return
-    const list = [...(settings.perAppProcesses ?? [])]
-    const seen = new Set(list.map((p) => p.toLowerCase()))
-    for (const app of presetApps) {
-      if (seen.has(app.toLowerCase())) continue
-      seen.add(app.toLowerCase())
-      list.push(app)
-    }
-    await handleUpdateSettings({ perAppProcesses: list })
-    toast.success('Пресет применён')
-  }
-
-  const handleMeasureGamePing = async (targetOverride?: string): Promise<void> => {
-    const targetToMeasure = (targetOverride || gameServerTarget).trim()
-    if (!targetToMeasure) {
-      toast.error('Введите IP-адрес или строку подключения сервера Faceit / CS2')
-      return
-    }
-    setMeasuringGamePing(true)
-    try {
-      const res = await incyPingGameServer(targetToMeasure)
-      setGamePingResult(res)
-      toast.success(
-        `Замер выполнен: ${res.geo.city ? `${res.geo.city}, ` : ''}${res.geo.country || ''} (${res.nodes.length} серверов)`,
-        { style: POWER_ON_BANNER_STYLE }
-      )
-    } catch (err: any) {
-      toast.error('Ошибка замера пинга до сервера', {
-        description: err?.message || String(err)
-      })
-    } finally {
-      setMeasuringGamePing(false)
-    }
-  }
-
-  const handlePasteGameServerFromClipboard = async (): Promise<void> => {
-    try {
-      const text = await navigator.clipboard.readText()
-      if (text && text.trim()) {
-        const val = text.trim()
-        setGameServerTarget(val)
-        toast.info('Адрес сервера вставлен из буфера')
-        void handleMeasureGamePing(val)
-      } else {
-        toast.info('Буфер обмена пуст')
-      }
-    } catch {
-      toast.error('Не удалось прочитать буфер обмена')
-    }
-  }
-
   /**
    * Обновить одну подписку. Без аргумента — текущую (кнопка на главной).
    *
@@ -1903,16 +1653,20 @@ export default function IncyPage(): React.ReactElement {
     setTestingPings(true)
     const allIds = new Set(targetNodes.map((n) => n.id))
     setPingingNodeIds(allIds)
-    const updated = [...targetNodes]
+    const queue = [...targetNodes]
+    const results: { id: string; latencyMs: number | null }[] = []
     try {
       let idx = 0
       const worker = async (): Promise<void> => {
-        while (idx < updated.length) {
-          const cur = idx++
-          const node = updated[cur]
+        while (idx < queue.length) {
+          const node = queue[idx++]
           const lat = await incyPingNode(node, (settings?.pingTimeoutSec || 3) * 1000)
-          updated[cur] = { ...node, latencyMs: lat }
-          setNodes([...updated])
+          results.push({ id: node.id, latencyMs: lat })
+          // Время ставим и для неудачного замера: «нет ответа» ≠ «не проверяли».
+          // Обновляем по id в ТЕКУЩЕМ списке: если за время замера обновилась
+          // подписка, её новые узлы не затираются старым снимком.
+          const at = Date.now()
+          setNodes((prev) => prev.map((n) => (n.id === node.id ? { ...n, latencyMs: lat, latencyAt: at } : n)))
           setPingingNodeIds((prev) => {
             const next = new Set(prev)
             next.delete(node.id)
@@ -1921,7 +1675,7 @@ export default function IncyPage(): React.ReactElement {
         }
       }
       await Promise.all(Array.from({ length: 5 }, worker))
-      await incySaveNodes(updated)
+      await incySaveLatencies(results)
       toast.success('Замер задержки серверов завершён')
     } catch { /* ignore */ } finally {
       setPingingNodeIds(new Set())
@@ -2055,6 +1809,7 @@ export default function IncyPage(): React.ReactElement {
   const filteredNodes = useMemo(() => {
     return sortedNodes.filter((n) => {
       if (protocolFilter !== 'all' && n.protocol !== protocolFilter) return false
+      if (onlyWorking && n.latencyMs === null) return false
       if (!searchQuery.trim()) return true
       const q = searchQuery.toLowerCase()
       return (
@@ -2064,7 +1819,9 @@ export default function IncyPage(): React.ReactElement {
         n.protocol.toLowerCase().includes(q)
       )
     })
-  }, [sortedNodes, protocolFilter, searchQuery])
+  }, [sortedNodes, protocolFilter, searchQuery, onlyWorking])
+  const workingCount = useMemo(() => nodes.filter((n) => n.latencyMs !== null).length, [nodes])
+  const anyMeasured = useMemo(() => nodes.some((n) => n.latencyAt || n.latencyMs !== null), [nodes])
 
   /**
    * Узлы, не принадлежащие ни одной существующей подписке.
@@ -2301,14 +2058,14 @@ export default function IncyPage(): React.ReactElement {
           )}
         {/* Navigation Tabs Bar */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/40 pb-3">
-          <div className="flex flex-wrap items-center gap-1 bg-card/60 backdrop-blur-xl p-1 rounded-xl border border-border/60">
+          <div className="flex flex-wrap items-center gap-1 bg-card/60 p-1 rounded-xl border border-border/60">
             <Button
               size="sm"
               variant={activeTab === 'main' ? 'default' : 'ghost'}
               onClick={() => setActiveTab('main')}
               className={cn(
                 'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'main' && 'bg-primary text-primary-foreground shadow-[0_0_12px_rgba(99,102,241,0.3)]'
+                activeTab === 'main' && 'bg-primary text-primary-foreground '
               )}
             >
               <Power className="size-3.5" />
@@ -2320,7 +2077,7 @@ export default function IncyPage(): React.ReactElement {
               onClick={() => setActiveTab('servers')}
               className={cn(
                 'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'servers' && 'bg-primary text-primary-foreground shadow-[0_0_12px_rgba(99,102,241,0.3)]'
+                activeTab === 'servers' && 'bg-primary text-primary-foreground '
               )}
             >
               <Server className="size-3.5" />
@@ -2337,7 +2094,7 @@ export default function IncyPage(): React.ReactElement {
               onClick={() => setActiveTab('routing')}
               className={cn(
                 'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'routing' && 'bg-primary text-primary-foreground shadow-[0_0_12px_rgba(99,102,241,0.3)]'
+                activeTab === 'routing' && 'bg-primary text-primary-foreground '
               )}
             >
               <Split className="size-3.5" />
@@ -2354,7 +2111,7 @@ export default function IncyPage(): React.ReactElement {
               onClick={() => setActiveTab('settings')}
               className={cn(
                 'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'settings' && 'bg-primary text-primary-foreground shadow-[0_0_12px_rgba(99,102,241,0.3)]'
+                activeTab === 'settings' && 'bg-primary text-primary-foreground '
               )}
             >
               <SettingsIcon className="size-3.5" />
@@ -2366,37 +2123,13 @@ export default function IncyPage(): React.ReactElement {
               onClick={() => setActiveTab('stats')}
               className={cn(
                 'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'stats' && 'bg-primary text-primary-foreground shadow-[0_0_12px_rgba(99,102,241,0.3)]'
+                activeTab === 'stats' && 'bg-primary text-primary-foreground '
               )}
             >
               <BarChart2 className="size-3.5" />
               Статистика
             </Button>
 
-            <Button
-              size="sm"
-              variant={activeTab === 'backup' ? 'default' : 'ghost'}
-              onClick={() => setActiveTab('backup')}
-              className={cn(
-                'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'backup' && 'bg-primary text-primary-foreground shadow-[0_0_12px_rgba(99,102,241,0.3)]'
-              )}
-            >
-              <Download className="size-3.5" />
-              Бэкап
-            </Button>
-            <Button
-              size="sm"
-              variant={activeTab === 'urls' ? 'default' : 'ghost'}
-              onClick={() => setActiveTab('urls')}
-              className={cn(
-                'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'urls' && 'bg-primary text-primary-foreground shadow-[0_0_12px_rgba(99,102,241,0.3)]'
-              )}
-            >
-              <LinkIcon className="size-3.5" />
-              URL-схемы
-            </Button>
           </div>
 
           <div className="flex items-center gap-2">
@@ -2411,7 +2144,7 @@ export default function IncyPage(): React.ReactElement {
               <span
                 className={cn(
                   'size-2 rounded-full',
-                  isConnected ? 'bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse' : 'bg-zinc-600'
+                  isConnected ? 'bg-primary' : 'bg-muted-foreground/50'
                 )}
               />
               <span className="truncate max-w-[180px]">
@@ -2424,6 +2157,24 @@ export default function IncyPage(): React.ReactElement {
         {/* TAB 1: MAIN (Complete INCY Home Replica) */}
         {activeTab === 'main' && (
           <div className="space-y-4 max-w-2xl mx-auto py-2">
+            {(status.killSwitchActive || status.recovering) && status.state !== 'running' && (
+              <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
+                <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <div className="min-w-0 flex-1 text-xs leading-relaxed">
+                  <div className="font-semibold text-foreground">
+                    {status.killSwitchActive ? 'VPN оборвался — Kill Switch держит трафик' : 'VPN оборвался'}
+                  </div>
+                  <div className="text-muted-foreground">
+                    {status.killSwitchActive
+                      ? 'Сайты, которые шли через VPN, не открываются, пока соединение не восстановится. Переподключаюсь автоматически.'
+                      : 'Переподключаюсь автоматически, как только сервер ответит.'}
+                  </div>
+                </div>
+                <Button size="sm" variant="outline" className="h-7 shrink-0 text-xs" onClick={handleDisconnect}>
+                  Отключить
+                </Button>
+              </div>
+            )}
             {settings?.memoryMonitor && coreMemory && coreMemory.totalBytes > 0 && (
               <div className="flex items-center justify-between px-3 py-1.5 rounded-lg border border-border bg-card/40 text-[11px]">
                 <span className="flex items-center gap-1.5 text-muted-foreground">
@@ -2464,7 +2215,7 @@ export default function IncyPage(): React.ReactElement {
                             : 'bg-primary hover:bg-primary/90 text-white shadow-primary/30 ring-4 ring-primary/20'
                         )}
                       >
-                        <Power className={cn('h-5 w-5', isConnected && 'animate-pulse')} />
+                        <Power className="h-5 w-5" />
                       </Button>
 
                       <div className="min-w-0">
@@ -2502,14 +2253,14 @@ export default function IncyPage(): React.ReactElement {
                 </Card>
 
                 {/* Quick Controls Row */}
-                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl border border-border/80 bg-card/40 backdrop-blur-md">
+                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl border border-border/80 bg-card/40 ">
                   {/* Connection Mode (TUN / Sys Proxy / Only Proxy) */}
                   <div className="flex items-center gap-1 bg-background/80 p-0.5 rounded-lg border border-border/50">
                     <button
                       onClick={() => void handleSetConnectionMode('tun')}
                       className={cn(
                         'px-3 py-1 rounded text-xs font-semibold transition-all',
-                        status.connectionMode === 'tun' ? 'bg-primary text-white font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                        status.connectionMode === 'tun' ? 'bg-primary text-primary-foreground font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
                       )}
                     >
                       TUN
@@ -2518,7 +2269,7 @@ export default function IncyPage(): React.ReactElement {
                       onClick={() => void handleSetConnectionMode('system_proxy')}
                       className={cn(
                         'px-3 py-1 rounded text-xs font-semibold transition-all',
-                        status.connectionMode === 'system_proxy' ? 'bg-primary text-white font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                        status.connectionMode === 'system_proxy' ? 'bg-primary text-primary-foreground font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
                       )}
                     >
                       Системный прокси
@@ -2527,7 +2278,7 @@ export default function IncyPage(): React.ReactElement {
                       onClick={() => void handleSetConnectionMode('only_proxy')}
                       className={cn(
                         'px-3 py-1 rounded text-xs font-semibold transition-all',
-                        status.connectionMode === 'only_proxy' ? 'bg-primary text-white font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                        status.connectionMode === 'only_proxy' ? 'bg-primary text-primary-foreground font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
                       )}
                     >
                       Только прокси
@@ -2543,7 +2294,7 @@ export default function IncyPage(): React.ReactElement {
                         status.routingMode === 'bypass-ru' ? 'bg-primary text-primary-foreground font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
                       )}
                     >
-                      🇷🇺 Обход РФ
+                      <span className="inline-flex items-center gap-1"><MapPinned className="h-3 w-3" />Обход РФ</span>
                     </button>
                     <button
                       onClick={() => incySetRoutingMode('global').then(setStatus)}
@@ -2552,7 +2303,7 @@ export default function IncyPage(): React.ReactElement {
                         status.routingMode === 'global' ? 'bg-primary text-primary-foreground font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
                       )}
                     >
-                      🌐 Global
+                      <span className="inline-flex items-center gap-1"><Globe className="h-3 w-3" />Весь трафик</span>
                     </button>
                   </div>
                 </div>
@@ -2562,14 +2313,14 @@ export default function IncyPage(): React.ReactElement {
               <>
                 {/* Mode Switcher Buttons (TUN / Системный прокси / Только прокси) */}
                 <div className="flex justify-center">
-                  <div className="inline-flex p-1 rounded-xl border border-primary/30 bg-primary/10 backdrop-blur-md gap-1">
+                  <div className="inline-flex p-1 rounded-xl border border-primary/30 bg-primary/10 gap-1">
                     <button
                       onClick={() => { void handleSetConnectionMode('tun') }}
                       className={cn(
                         'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200',
                         status.connectionMode === 'tun'
-                          ? 'bg-primary text-white shadow-md shadow-primary/30 font-bold'
-                          : 'text-primary hover:text-white hover:bg-primary/20'
+                          ? 'bg-primary text-primary-foreground  font-bold'
+                          : 'text-primary hover:bg-primary/15'
                       )}
                     >
                       TUN
@@ -2579,8 +2330,8 @@ export default function IncyPage(): React.ReactElement {
                       className={cn(
                         'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200',
                         status.connectionMode === 'system_proxy'
-                          ? 'bg-primary text-white shadow-md shadow-primary/30 font-bold'
-                          : 'text-primary hover:text-white hover:bg-primary/20'
+                          ? 'bg-primary text-primary-foreground  font-bold'
+                          : 'text-primary hover:bg-primary/15'
                       )}
                     >
                       Системный прокси
@@ -2590,8 +2341,8 @@ export default function IncyPage(): React.ReactElement {
                       className={cn(
                         'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200',
                         status.connectionMode === 'only_proxy'
-                          ? 'bg-primary text-white shadow-md shadow-primary/30 font-bold'
-                          : 'text-primary hover:text-white hover:bg-primary/20'
+                          ? 'bg-primary text-primary-foreground  font-bold'
+                          : 'text-primary hover:bg-primary/15'
                       )}
                     >
                       Только прокси
@@ -2642,8 +2393,7 @@ export default function IncyPage(): React.ReactElement {
                       <Power
                         className={cn(
                           'h-12 w-12 transition-transform',
-                          isBusy && 'animate-pulse',
-                          isConnected && !isBusy && 'animate-pulse'
+                          isBusy && 'animate-pulse'
                         )}
                       />
                       <span className="text-[11px] font-bold uppercase tracking-wider">
@@ -2678,7 +2428,9 @@ export default function IncyPage(): React.ReactElement {
                         : isConnected
                           ? 'Подключено к VPN'
                           : hasError
-                            ? 'Не удалось подключиться'
+                            ? status.recovering
+                              ? 'Переподключение…'
+                              : 'Не удалось подключиться'
                             : 'Нажмите для подключения'}
                     </div>
                     {!isBusy && hasError && status.lastError && (
@@ -2696,7 +2448,7 @@ export default function IncyPage(): React.ReactElement {
                       onClick={() => incySetRoutingMode('bypass-ru').then(setStatus)}
                       className="text-xs h-7 gap-1"
                     >
-                      🇷🇺 Обход РФ сайтов (Split)
+                      <MapPinned className="h-3.5 w-3.5 shrink-0" /> Обход РФ-сайтов
                     </Button>
                     <Button
                       size="sm"
@@ -2704,7 +2456,7 @@ export default function IncyPage(): React.ReactElement {
                       onClick={() => incySetRoutingMode('global').then(setStatus)}
                       className="text-xs h-7 gap-1"
                     >
-                      🌐 Весь трафик (Global)
+                      <Globe className="h-3.5 w-3.5 shrink-0" /> Весь трафик
                     </Button>
                   </div>
                 </div>
@@ -2718,6 +2470,11 @@ export default function IncyPage(): React.ReactElement {
               settings={settings}
               nodes={nodes}
               onPatch={(patch) => handleUpdateSettings(patch, true)}
+            />
+
+            <SpeedTestCard
+              node={activeOrSelectedNode}
+              label={activeOrSelectedNode ? cleanServerName(activeOrSelectedNode.name) : ''}
             />
 
             {/* ТЕКУЩАЯ ПОДПИСКА (Subscription Card) */}
@@ -3013,11 +2770,11 @@ export default function IncyPage(): React.ReactElement {
             {/* Quick Switch Server Modal */}
             {showServerSelectModal && (
               <div
-                className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4"
+                className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"
                 onClick={() => setShowServerSelectModal(false)}
               >
                 <div
-                  className="bg-card/95 border border-primary/30 w-full max-w-lg rounded-2xl p-4.5 space-y-3 max-h-[85vh] flex flex-col shadow-[0_0_50px_rgba(0,0,0,0.8)] backdrop-blur-2xl"
+                  className="bg-card/95 border border-primary/30 w-full max-w-lg rounded-2xl p-4.5 space-y-3 max-h-[85vh] flex flex-col shadow-[0_0_50px_rgba(0,0,0,0.8)] "
                   onClick={(e) => e.stopPropagation()}
                 >
                   <div className="flex items-center justify-between border-b border-border/40 pb-2.5">
@@ -3177,6 +2934,17 @@ export default function IncyPage(): React.ReactElement {
                   className="text-xs h-7"
                 >
                   🛡 WARP ({nodes.filter((n) => n.protocol === 'wireguard').length})
+                </Button>
+                <Button
+                  size="sm"
+                  variant={onlyWorking ? 'default' : 'outline'}
+                  onClick={() => setOnlyWorking((v) => !v)}
+                  disabled={!anyMeasured && !onlyWorking}
+                  title={anyMeasured ? 'Скрыть серверы, которые не ответили на замер' : 'Сначала замерьте пинг'}
+                  className="text-xs h-7 gap-1"
+                >
+                  <CheckCircle2 className="size-3.5" />
+                  Только рабочие{anyMeasured ? ` (${workingCount})` : ''}
                 </Button>
               </div>
 
@@ -3417,396 +3185,30 @@ export default function IncyPage(): React.ReactElement {
 
             <GeoCategoriesCard settings={settings} onUpdate={handleUpdateSettings} />
 
-            {/* PER-APP ROUTING CARD (EXITLAG STYLE) */}
-            <Card className="cyber-card border-primary/40 bg-gradient-to-br from-card/90 via-card/70 to-primary/5 shadow-md">
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="h-8 w-8 rounded-lg bg-primary/20 border border-primary/40 flex items-center justify-center">
-                    <Gamepad2 className="h-4 w-4 text-primary" />
-                  </div>
-                  <div>
-                    <CardTitle className="text-sm font-bold flex items-center gap-2">
-                      Режим приложений (ExitLag-style)
-                      <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-primary/50 text-primary font-mono uppercase">
-                        Киллер-фича
-                      </Badge>
-                    </CardTitle>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">
-                      Туннелируйте только выбранные игры и программы или исключайте их из VPN
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    type="button"
-                    onClick={() => navigate('/exitlag')}
-                    className="text-xs h-7 px-2 text-primary hover:bg-primary/10 gap-1 hidden sm:flex"
-                  >
-                    В отдельную вкладку ExitLag →
-                  </Button>
-                  <Switch
-                    checked={Boolean(settings.perAppProxy)}
-                    onCheckedChange={handleTogglePerAppProxy}
-                  />
-                </div>
-              </CardHeader>
-
-              {settings.perAppProxy && (
-                <CardContent className="space-y-4 pt-1">
-                  {/* Mode Selector */}
-                  <div className="space-y-1.5">
-                    <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-                      Режим работы:
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void handleSetPerAppMode('proxy_only')}
-                        className={cn(
-                          'p-3 rounded-xl border text-left transition-all cursor-pointer',
-                          settings.perAppMode !== 'bypass_only'
-                            ? 'border-primary bg-primary/15 shadow-sm'
-                            : 'border-border/60 bg-card/40 hover:bg-card/80'
-                        )}
-                      >
-                        <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                          🎯 Только выбранные (ExitLag)
-                        </div>
-                        <div className="text-[10px] text-muted-foreground mt-1 leading-relaxed">
-                          Через VPN идут <b>только</b> указанные игры/программы. Весь остальной трафик Windows идёт напрямую без задержек.
-                        </div>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => void handleSetPerAppMode('bypass_only')}
-                        className={cn(
-                          'p-3 rounded-xl border text-left transition-all cursor-pointer',
-                          settings.perAppMode === 'bypass_only'
-                            ? 'border-primary bg-primary/15 shadow-sm'
-                            : 'border-border/60 bg-card/40 hover:bg-card/80'
-                        )}
-                      >
-                        <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                          🛡️ Все, кроме выбранных (Исключения)
-                        </div>
-                        <div className="text-[10px] text-muted-foreground mt-1 leading-relaxed">
-                          Весь ПК работает через VPN, а указанные приложения соединяются напрямую в обход туннеля.
-                        </div>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Quick Presets */}
-                  <div className="space-y-1.5 pt-1 border-t border-border/40">
-                    <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-                      Быстрые пресеты:
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        type="button"
-                        onClick={() => void handleApplyPreset(['cs2.exe', 'dota2.exe', 'steam.exe', 'epicgameslauncher.exe', 'riotclientservices.exe', 'valorant-win64-shipping.exe'])}
-                        className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/10"
-                      >
-                        🎮 Игры (CS2, Dota 2, Steam, Riot)
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        type="button"
-                        onClick={() => void handleApplyPreset(['discord.exe', 'telegram.exe'])}
-                        className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/10"
-                      >
-                        💬 Связь (Discord, Telegram)
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        type="button"
-                        onClick={() => void handleApplyPreset(['chrome.exe', 'msedge.exe', 'firefox.exe', 'browser.exe'])}
-                        className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/10"
-                      >
-                        🌐 Браузеры (Chrome, Edge, Firefox, Yandex)
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* Add App & Selection Controls */}
-                  <div className="space-y-2 pt-1 border-t border-border/40">
-                    <div className="flex items-center justify-between">
-                      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-                        Список приложений ({settings.perAppProcesses?.length ?? 0}):
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          type="button"
-                          onClick={() => { void handleOpenProcessPicker() }}
-                          className="text-xs h-7 gap-1.5 border-primary/40 hover:bg-primary/10 text-primary"
-                        >
-                          <Monitor className="h-3.5 w-3.5" /> Из запущенных...
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          type="button"
-                          onClick={() => { void handlePickExeFile() }}
-                          className="text-xs h-7 gap-1.5 border-primary/40 hover:bg-primary/10"
-                        >
-                          <FolderOpen className="h-3.5 w-3.5" /> Обзор .exe
-                        </Button>
-                        {(settings.perAppProcesses?.length ?? 0) > 0 && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            type="button"
-                            onClick={() => { void handleClearPerAppProcesses() }}
-                            className="text-xs h-7 text-destructive hover:text-destructive hover:bg-destructive/10"
-                          >
-                            Очистить
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Manual Input */}
-                    <div className="flex gap-2">
-                      <Input
-                        value={newAppInput}
-                        onChange={(e) => setNewAppInput(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') void handleAddPerAppProcess(newAppInput) }}
-                        placeholder="Название процесса, например: cs2.exe или discord.exe"
-                        className="text-xs font-mono"
-                      />
-                      <Button
-                        size="sm"
-                        type="button"
-                        onClick={() => void handleAddPerAppProcess(newAppInput)}
-                        disabled={!newAppInput.trim()}
-                        className="text-xs h-9 shrink-0 gap-1"
-                      >
-                        <Plus className="h-3.5 w-3.5" /> Добавить
-                      </Button>
-                    </div>
-
-                    {/* Active Apps Badges */}
-                    {(settings.perAppProcesses?.length ?? 0) > 0 ? (
-                      <div className="flex flex-wrap gap-1.5 p-2 rounded-xl border border-border/50 bg-background/50 max-h-48 overflow-y-auto">
-                        {settings.perAppProcesses!.map((proc) => (
-                          <div
-                            key={proc}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-card/80 border border-primary/30 text-xs font-mono text-foreground shadow-sm"
-                          >
-                            <span>{proc}</span>
-                            <button
-                              type="button"
-                              onClick={() => void handleRemovePerAppProcess(proc)}
-                              className="text-muted-foreground hover:text-destructive transition-colors ml-0.5"
-                              title="Удалить"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="p-4 rounded-xl border border-dashed border-border/60 text-center text-xs text-muted-foreground">
-                        Приложения не выбраны. Добавьте процесс выше или воспользуйтесь быстрыми пресетами.
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Game Server / Faceit CS2 Ping & Route Optimizer */}
-                  {settings.perAppMode !== 'bypass_only' && (
-                    <div className="space-y-3 pt-3 border-t border-border/50">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <Target className="h-4 w-4 text-primary" />
-                          <div className="text-xs font-bold text-foreground">
-                            🎯 Пинг до сервера Faceit / CS2
-                          </div>
-                        </div>
-                        <Badge variant="outline" className="text-[10px] text-primary border-primary/40 bg-primary/10">
-                          Route Optimizer
-                        </Badge>
-                      </div>
-
-                      <p className="text-[11px] text-muted-foreground leading-relaxed">
-                        Вставьте IP-адрес или строку подключения матча (например: <span className="font-mono text-foreground">connect 162.19.141.22:27015</span>). LAZEYKA рассчитает задержку через каждый ваш сервер подписки до датацентра игры и выберет наилучший узел для матча.
-                      </p>
-
-                      {/* Input and Buttons */}
-                      <div className="space-y-2">
-                        <div className="flex gap-2">
-                          <div className="relative flex-1">
-                            <Input
-                              value={gameServerTarget}
-                              onChange={(e) => setGameServerTarget(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') void handleMeasureGamePing()
-                              }}
-                              placeholder="connect 162.19.141.22:27015 или 162.19.141.22..."
-                              className="text-xs font-mono pr-20"
-                            />
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              type="button"
-                              onClick={() => { void handlePasteGameServerFromClipboard() }}
-                              className="absolute right-1 top-1 h-7 px-2 text-[11px] text-primary hover:bg-primary/10 gap-1"
-                            >
-                              <Copy className="h-3 w-3" /> Вставить
-                            </Button>
-                          </div>
-                          <Button
-                            size="sm"
-                            type="button"
-                            onClick={() => void handleMeasureGamePing()}
-                            disabled={measuringGamePing || !gameServerTarget.trim()}
-                            className="text-xs h-9 shrink-0 gap-1.5"
-                          >
-                            <Zap className="h-3.5 w-3.5" />
-                            {measuringGamePing ? 'Замер...' : 'Замерить пинг'}
-                          </Button>
-                        </div>
-
-                        {/* Regional Presets */}
-                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                          <span className="text-[10px] text-muted-foreground mr-1">Быстрый выбор региона:</span>
-                          {[
-                            { label: '🇩🇪 Франкфурт', ip: '162.19.141.22:27015' },
-                            { label: '🇫🇮 Хельсинки', ip: '65.109.112.50:27015' },
-                            { label: '🇸🇪 Стокгольм', ip: '185.242.115.14:27015' },
-                            { label: '🇵🇱 Варшава', ip: '51.83.136.20:27015' },
-                            { label: '🇬🇧 Лондон', ip: '51.89.234.12:27015' },
-                            { label: '🇰🇿 Казахстан', ip: '185.100.233.10:27015' },
-                            { label: '🇷🇺 Москва', ip: '185.178.208.50:27015' }
-                          ].map((preset) => (
-                            <button
-                              key={preset.ip}
-                              type="button"
-                              onClick={() => {
-                                setGameServerTarget(preset.ip)
-                                void handleMeasureGamePing(preset.ip)
-                              }}
-                              className="text-[10px] px-2 py-0.5 rounded-md border border-border/60 bg-card/60 hover:bg-primary/15 hover:border-primary/50 text-foreground transition-colors cursor-pointer"
-                            >
-                              {preset.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Result Box */}
-                      {gamePingResult && (
-                        <div className="space-y-2.5 p-3 rounded-xl border border-primary/30 bg-primary/5 backdrop-blur-sm animate-in fade-in duration-200">
-                          {/* Geo and Direct Ping Header */}
-                          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-border/40 text-xs">
-                            <div className="flex items-center gap-2">
-                              <span className="font-semibold text-foreground">
-                                📍 {gamePingResult.geo.city ? `${gamePingResult.geo.city}, ` : ''}{gamePingResult.geo.country || 'Европа'}
-                              </span>
-                              {gamePingResult.geo.isp && (
-                                <Badge variant="secondary" className="text-[10px] font-mono px-1.5 py-0">
-                                  {gamePingResult.geo.isp}
-                                </Badge>
-                              )}
-                            </div>
-                            <div className="text-[11px] text-muted-foreground flex items-center gap-1.5 font-mono">
-                              <span>Прямой пинг ПК:</span>
-                              <span className="font-bold text-foreground">
-                                {gamePingResult.directPing ? `${gamePingResult.directPing} мс` : '—'}
-                              </span>
-                              {gamePingResult.directPingEstimated && (
-                                <span className="text-[9px] text-muted-foreground">(оценка BGP)</span>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Node List */}
-                          <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
-                            {gamePingResult.nodes.length === 0 ? (
-                              <div className="text-center py-4 text-xs text-muted-foreground">
-                                В вашей подписке нет доступных серверов
-                              </div>
-                            ) : (
-                              gamePingResult.nodes.map((n) => {
-                                const isConnectedNode = status.state === 'running' && status.selectedNodeId === n.nodeId
-                                return (
-                                  <div
-                                    key={n.nodeId}
-                                    className={cn(
-                                      'flex items-center justify-between p-2.5 rounded-xl border transition-all text-xs',
-                                      n.isBest
-                                        ? 'border-emerald-500/50 bg-emerald-500/10 shadow-[0_0_15px_rgba(16,185,129,0.15)]'
-                                        : 'border-border/50 bg-card/60 hover:bg-card/90'
-                                    )}
-                                  >
-                                    <div className="min-w-0 flex-1">
-                                      <div className="flex items-center gap-1.5">
-                                        <span className="font-semibold text-foreground truncate">
-                                          {cleanServerName(n.nodeName)}
-                                        </span>
-                                        <Badge variant="outline" className="text-[9px] uppercase px-1 py-0">
-                                          {n.protocol}
-                                        </Badge>
-                                        {n.isBest && (
-                                          <Badge className="text-[9px] px-1.5 py-0 bg-emerald-500 text-white font-bold animate-pulse">
-                                            🏆 ТОП ПИНГ
-                                          </Badge>
-                                        )}
-                                      </div>
-                                      <div className="flex items-center gap-3 text-[10px] text-muted-foreground mt-1 font-mono">
-                                        <span>ПК → VPN: <b className="text-foreground">{n.userToNodePing ?? '—'} мс</b></span>
-                                        <span>VPN → Игра: <b className="text-foreground">{n.nodeToGamePing} мс</b></span>
-                                        {typeof n.savingMs === 'number' && n.savingMs > 0 && (
-                                          <span className="text-emerald-500 font-bold">
-                                            ⚡ -{n.savingMs} мс быстрее!
-                                          </span>
-                                        )}
-                                      </div>
-                                    </div>
-
-                                    <div className="flex items-center gap-3 shrink-0 ml-2">
-                                      <div className="text-right">
-                                        <div className={cn(
-                                          'font-mono text-sm font-bold',
-                                          n.isBest ? 'text-emerald-500' : 'text-foreground'
-                                        )}>
-                                          {n.totalPing ? `${n.totalPing} мс` : '—'}
-                                        </div>
-                                      </div>
-
-                                      <Button
-                                        size="sm"
-                                        variant={isConnectedNode ? 'secondary' : n.isBest ? 'default' : 'outline'}
-                                        disabled={isConnectedNode}
-                                        onClick={() => void handleConnect(n.nodeId)}
-                                        className={cn(
-                                          'h-7 text-xs font-semibold px-2.5',
-                                          n.isBest && !isConnectedNode && 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                                        )}
-                                      >
-                                        {isConnectedNode ? 'Активен' : 'Подключить'}
-                                      </Button>
-                                    </div>
-                                  </div>
-                                )
-                              })
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </CardContent>
-              )}
-            </Card>
+            {/* Режим приложений настраивается на вкладке ExitLag — здесь раньше
+                была её полная копия. */}
+            <button
+              type="button"
+              onClick={() => navigate('/exitlag')}
+              className="group flex w-full cursor-pointer items-center justify-between gap-3 rounded-2xl border border-border bg-card px-5 py-4 text-left transition-colors hover:border-primary/35"
+            >
+              <span className="flex items-center gap-3">
+                <span className="flex size-9 items-center justify-center rounded-xl bg-secondary text-primary">
+                  <Gamepad2 className="size-4.5" />
+                </span>
+                <span>
+                  <span className="block text-sm font-semibold text-foreground">Режим приложений (ExitLag)</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {settings.perAppProxy
+                      ? settings.perAppMode === 'bypass_only'
+                        ? `Мимо VPN: ${(settings.perAppProcesses ?? []).length} прил.`
+                        : `Через VPN только: ${(settings.perAppProcesses ?? []).length} прил.`
+                      : 'Выключен — через VPN идёт весь трафик'}
+                  </span>
+                </span>
+              </span>
+              <ArrowRight className="size-4 shrink-0 text-primary transition-transform group-hover:translate-x-0.5" />
+            </button>
 
             <Card className="cyber-card">
               <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -3997,14 +3399,31 @@ export default function IncyPage(): React.ReactElement {
 
                 <div className="flex items-center justify-between">
                   <div className="flex flex-col">
-                    <Label className="text-sm">Kill Switch<NotWired reason="Требует правил системного брандмауэра Windows — в приложении пока не реализовано. Сейчас при обрыве туннеля трафик пойдёт напрямую." /></Label>
+                    <Label className="text-sm">Kill Switch</Label>
                     <span className="text-xs text-muted-foreground">
-                      Блокировать трафик при отключении VPN для защиты IP
+                      Если VPN оборвётся, трафик, который шёл через VPN, блокируется до переподключения. Российские
+                      сайты и локальная сеть продолжают работать. Режимы TUN и «Системный прокси».
                     </span>
                   </div>
                   <Switch
                     checked={settings.killSwitch}
                     onCheckedChange={(v) => handleUpdateSettings({ killSwitch: v })}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-col">
+                    <Label className="text-sm">Переподключаться при обрыве</Label>
+                    <span className="text-xs text-muted-foreground">
+                      {settings.killSwitch
+                        ? 'С Kill Switch включено всегда, иначе интернет остался бы закрытым.'
+                        : 'Если ядро VPN внезапно завершилось, проверить сервер и подключиться снова: через 5 с, 15 с, 30 с, потом раз в 1–2 мин.'}
+                    </span>
+                  </div>
+                  <Switch
+                    checked={settings.killSwitch || settings.reconnectOnDrop !== false}
+                    disabled={settings.killSwitch}
+                    onCheckedChange={(v) => handleUpdateSettings({ reconnectOnDrop: v })}
                   />
                 </div>
 
@@ -4125,9 +3544,10 @@ export default function IncyPage(): React.ReactElement {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="flex flex-col">
-                      <Label className="text-sm">Фрагментация TLS Hello<NotWired label="только Xray" reason="Работает только на ядре Xray. Узлы из JSON-подписки обслуживает sing-box, где фрагментации нет — для них переключатель не действует." /></Label>
+                      <Label className="text-sm">Фрагментация TLS Hello</Label>
                       <span className="text-xs text-muted-foreground">
-                        Разбиение пакетов ClientHello для эффективного обхода ТСПУ/DPI
+                        Дробит начало TLS-соединения, чтобы DPI провайдера не узнал сервер. Работает на обоих ядрах;
+                        параметры ниже действуют на ядре Xray, sing-box дробит рукопожатие сам.
                       </span>
                     </div>
                     <Switch
@@ -4332,6 +3752,7 @@ export default function IncyPage(): React.ReactElement {
                   <Label className="text-xs font-semibold">Интервал автообновления</Label>
                   <div className="grid grid-cols-3 sm:grid-cols-6 gap-1">
                     {[
+                      { l: 'Выкл', h: 0 },
                       { l: '30 мин', h: 0.5 },
                       { l: '1 час', h: 1 },
                       { l: '2 часа', h: 2 },
@@ -4464,7 +3885,7 @@ export default function IncyPage(): React.ReactElement {
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="space-y-1.5">
-                  <Label className="text-xs font-semibold">Протокол пинга</Label>
+                  <Label className="text-xs font-semibold">Способ замера</Label>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                     {(['incy', 'tcp', 'http_get', 'http_head'] as const).map((proto) => (
                       <Button
@@ -4472,18 +3893,24 @@ export default function IncyPage(): React.ReactElement {
                         size="sm"
                         variant={settings.pingProtocol === proto ? 'default' : 'outline'}
                         onClick={() => handleUpdateSettings({ pingProtocol: proto })}
-                        className="text-xs h-7 uppercase font-mono"
+                        className="text-xs h-7"
                       >
-                        {proto === 'incy' ? 'LAZEYKA' : proto}
+                        {proto === 'incy'
+                          ? 'Умный'
+                          : proto === 'tcp'
+                            ? 'Быстрый'
+                            : proto === 'http_head'
+                              ? 'HTTP HEAD'
+                              : 'HTTP GET'}
                       </Button>
                     ))}
                   </div>
                   <p className="text-[11px] text-muted-foreground">
                     {settings.pingProtocol === 'incy'
-                      ? 'Сетевая задержка до сервера: TCP-рукопожатие с его портом (медиана из 3). Для Hysteria2 и WireGuard (UDP) — ICMP, а если он закрыт — реальный запрос через узел. Замер идёт мимо VPN, даже когда включён TUN.'
+                      ? 'Рекомендуется. Показывает задержку до сервера, но только если через него реально проходит трафик: сервер с открытым портом и упавшим VPN будет «нет ответа», а не «1 мс». Замер всех серверов — 20–30 с.'
                       : settings.pingProtocol === 'tcp'
-                      ? 'Только сетевая задержка: TCP-рукопожатие, для UDP-узлов — ICMP. Самый быстрый способ; если ICMP закрыт, Hysteria2/WireGuard покажут n/a.'
-                      : 'Настоящий запрос по тестовому URL через сам узел. Показывает время до первого байта ответа (без времени запуска ядра) — проверяет, что трафик реально идёт.'}
+                      ? 'Только задержка до сервера (TCP-рукопожатие, для UDP-узлов — ICMP), 1–2 с на весь список. Не проверяет, работает ли VPN: упавший сервер может показать хороший пинг.'
+                      : 'Время до первого байта ответа на тестовый URL через сам сервер. Число больше обычного пинга (в нём рукопожатие с сервером), зато проверяет, что трафик идёт.'}
                   </p>
                 </div>
 
@@ -4587,76 +4014,88 @@ export default function IncyPage(): React.ReactElement {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex flex-col">
-                    <Label className="text-sm">Тайм-аут простоя<NotWired reason="Не применяется: подстановка этого значения в ядро рвала длинные UDP-сессии (звонки, игры). Используется штатный таймаут sing-box — 5 минут." /></Label>
-                    <span className="text-xs text-muted-foreground">Закрывать неактивные соединения через</span>
+                <div className="space-y-1.5">
+                  <Label className="text-sm">Тайм-аут простоя UDP</Label>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                    {[
+                      { v: 0, l: 'Стандарт (5 мин)' },
+                      { v: 120, l: '2 мин' },
+                      { v: 600, l: '10 мин' },
+                      { v: 1800, l: '30 мин' }
+                    ].map((o) => {
+                      const eff = settings.idleTimeoutSec >= 120 ? settings.idleTimeoutSec : 0
+                      return (
+                        <Button
+                          key={o.v}
+                          size="sm"
+                          variant={eff === o.v ? 'default' : 'outline'}
+                          onClick={() => handleUpdateSettings({ idleTimeoutSec: o.v })}
+                          className="text-xs h-7"
+                        >
+                          {o.l}
+                        </Button>
+                      )
+                    })}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      onClick={() => handleUpdateSettings({ idleTimeoutSec: Math.max(10, settings.idleTimeoutSec - 10) })}
-                    >
-                      -
-                    </Button>
-                    <span className="text-xs font-mono font-bold w-10 text-center">{settings.idleTimeoutSec}s</span>
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      onClick={() => handleUpdateSettings({ idleTimeoutSec: Math.min(300, settings.idleTimeoutSec + 10) })}
-                    >
-                      +
-                    </Button>
-                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Через сколько закрывать UDP-сессию без трафика (игры, звонки, QUIC). Если в игре или звонке рвётся
+                    связь после паузы, поставьте 10–30 мин.
+                  </p>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <div className="flex flex-col">
-                    <Label className="text-sm">Макс. TCP соединений<NotWired reason="Ни sing-box, ни Xray не позволяют ограничить число соединений — эквивалента этой настройке в ядрах нет." /></Label>
-                    <span className="text-xs text-muted-foreground">Лимит параллельных TCP потоков</span>
+                <div className="space-y-1.5 pt-2 border-t border-border/50">
+                  <Label className="text-sm">Сетевой стек TUN</Label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {([
+                      { v: 'mixed', l: 'Смешанный' },
+                      { v: 'system', l: 'Системный' },
+                      { v: 'gvisor', l: 'gVisor' }
+                    ] as const).map((o) => (
+                      <Button
+                        key={o.v}
+                        size="sm"
+                        variant={(settings.tunStack ?? 'mixed') === o.v ? 'default' : 'outline'}
+                        onClick={() => handleUpdateSettings({ tunStack: o.v })}
+                        className="text-xs h-7"
+                      >
+                        {o.l}
+                      </Button>
+                    ))}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      onClick={() => handleUpdateSettings({ maxTcpConnections: Math.max(32, settings.maxTcpConnections - 32) })}
-                    >
-                      -
-                    </Button>
-                    <span className="text-xs font-mono font-bold w-10 text-center">{settings.maxTcpConnections}</span>
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      onClick={() => handleUpdateSettings({ maxTcpConnections: Math.min(1024, settings.maxTcpConnections + 32) })}
-                    >
-                      +
-                    </Button>
-                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    {(settings.tunStack ?? 'mixed') === 'mixed'
+                      ? 'Рекомендуется. TCP через стек Windows (быстрее), UDP через gVisor (стабильнее).'
+                      : settings.tunStack === 'system'
+                        ? 'Всё через стек Windows: быстрее всего, но сторонний брандмауэр или антивирус может мешать.'
+                        : 'Всё внутри приложения: больше нагрузка на процессор, зато работает там, где другие варианты не заработали.'}{' '}
+                    Только для режима TUN.
+                  </p>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <div className="flex flex-col">
-                    <Label className="text-sm">Макс. UDP соединений<NotWired reason="Ни sing-box, ни Xray не позволяют ограничить число соединений — эквивалента этой настройке в ядрах нет." /></Label>
-                    <span className="text-xs text-muted-foreground">Лимит параллельных UDP потоков</span>
+                <div className="space-y-1.5 pt-2 border-t border-border/50">
+                  <Label className="text-sm">MTU адаптера TUN</Label>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {[
+                      { v: 0, l: 'Авто' },
+                      { v: 1500, l: '1500' },
+                      { v: 1400, l: '1400' },
+                      { v: 1280, l: '1280' }
+                    ].map((o) => (
+                      <Button
+                        key={o.v}
+                        size="sm"
+                        variant={(settings.tunMtu ?? 0) === o.v ? 'default' : 'outline'}
+                        onClick={() => handleUpdateSettings({ tunMtu: o.v })}
+                        className="text-xs h-7"
+                      >
+                        {o.l}
+                      </Button>
+                    ))}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      onClick={() => handleUpdateSettings({ maxUdpConnections: Math.max(16, settings.maxUdpConnections - 16) })}
-                    >
-                      -
-                    </Button>
-                    <span className="text-xs font-mono font-bold w-10 text-center">{settings.maxUdpConnections}</span>
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      onClick={() => handleUpdateSettings({ maxUdpConnections: Math.min(512, settings.maxUdpConnections + 16) })}
-                    >
-                      +
-                    </Button>
-                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Оставьте «Авто». Уменьшайте, если часть сайтов не открывается или загрузки обрываются, особенно на
+                    мобильном интернете. Только для режима TUN.
+                  </p>
                 </div>
 
                 <div className="flex items-center justify-between pt-2 border-t border-border/50">
@@ -4684,6 +4123,9 @@ export default function IncyPage(): React.ReactElement {
                 </div>
               </CardContent>
             </Card>
+
+            {/* Бэкап — раньше отдельной вкладкой, теперь последний блок настроек. */}
+            <BackupTab onRestored={loadData} />
           </div>
         )}
 
@@ -4692,114 +4134,15 @@ export default function IncyPage(): React.ReactElement {
 
 
 
-        {/* TAB 6: BACKUP */}
-        {activeTab === 'backup' && <BackupTab onRestored={loadData} />}
-
-        {/* TAB 7: URL SCHEMES */}
-        {activeTab === 'urls' && <UrlSchemesTab />}
-
-        {/* MODAL: Pick Running Process */}
-        {showProcessPickerModal && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in duration-200"
-            onClick={() => setShowProcessPickerModal(false)}
-          >
-            <div
-              className="w-full max-w-lg border border-primary/40 bg-card/95 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col max-h-[85vh] backdrop-blur-2xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="p-4 border-b border-border/60 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Monitor className="h-4 w-4 text-primary" />
-                  <div className="text-sm font-bold text-foreground">Выберите запущенное приложение</div>
-                </div>
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  onClick={() => setShowProcessPickerModal(false)}
-                  className="h-7 w-7"
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-
-              <div className="p-3 border-b border-border/40 bg-background/40">
-                <Input
-                  value={processFilterText}
-                  onChange={(e) => setProcessFilterText(e.target.value)}
-                  placeholder="Поиск процесса или названия окна (например: Discord, CS2, Chrome)..."
-                  className="text-xs"
-                  autoFocus
-                />
-              </div>
-
-              <div className="p-3 flex-1 overflow-y-auto space-y-1.5 min-h-[250px]">
-                {loadingProcesses ? (
-                  <div className="py-16 text-center text-xs text-muted-foreground animate-pulse">
-                    Получение списка процессов Windows...
-                  </div>
-                ) : runningProcesses.length === 0 ? (
-                  <div className="py-16 text-center text-xs text-muted-foreground">
-                    Запущенные процессы не найдены
-                  </div>
-                ) : (
-                  runningProcesses
-                    .filter((p) => {
-                      if (!processFilterText.trim()) return true
-                      const q = processFilterText.toLowerCase()
-                      return p.name.toLowerCase().includes(q) || (p.title && p.title.toLowerCase().includes(q))
-                    })
-                    .map((p) => {
-                      const isAlreadyAdded = settings?.perAppProcesses?.some((proc) => proc.toLowerCase() === p.name.toLowerCase())
-                      return (
-                        <div
-                          key={p.name}
-                          onClick={() => {
-                            void handleAddPerAppProcess(p.name)
-                            setShowProcessPickerModal(false)
-                          }}
-                          className={cn(
-                            'flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer',
-                            isAlreadyAdded
-                              ? 'border-emerald-500/40 bg-emerald-500/10'
-                              : 'border-border/50 bg-card/40 hover:bg-primary/10 hover:border-primary/50'
-                          )}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="text-xs font-mono font-semibold text-foreground flex items-center gap-1.5">
-                              {p.name}
-                              {isAlreadyAdded && (
-                                <Badge variant="secondary" className="text-[9px] px-1 py-0 bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
-                                  в списке
-                                </Badge>
-                              )}
-                            </div>
-                            {p.title && (
-                              <div className="text-[10px] text-muted-foreground truncate mt-0.5">
-                                {p.title}
-                              </div>
-                            )}
-                          </div>
-                          <Button size="sm" variant="ghost" className="h-6 text-xs text-primary px-2">
-                            {isAlreadyAdded ? 'Добавлено' : 'Выбрать'}
-                          </Button>
-                        </div>
-                      )
-                    })
-                )}
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* MODAL: QR Code Import */}
         {showQrModal && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in duration-200"
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 animate-in fade-in duration-200"
             onClick={() => setShowQrModal(false)}
           >
             <div
-              className="w-full max-w-md border border-primary/40 bg-card/95 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden p-5 space-y-4 backdrop-blur-2xl"
+              className="w-full max-w-md border border-primary/40 bg-card/95 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden p-5 space-y-4 "
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between">
@@ -4876,11 +4219,11 @@ export default function IncyPage(): React.ReactElement {
             импортом ссылки — которой у пользователя может уже не быть. */}
         {removingSub && (
           <div
-            className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4"
+            className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"
             onClick={() => setRemovingSub(null)}
           >
             <div
-              className="bg-card/95 border border-destructive/40 w-full max-w-md rounded-2xl p-5 space-y-4 shadow-[0_0_50px_rgba(0,0,0,0.8)] backdrop-blur-2xl"
+              className="bg-card/95 border border-destructive/40 w-full max-w-md rounded-2xl p-5 space-y-4 shadow-[0_0_50px_rgba(0,0,0,0.8)] "
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center gap-2 text-sm font-bold text-foreground">

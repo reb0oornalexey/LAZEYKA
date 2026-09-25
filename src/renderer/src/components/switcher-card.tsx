@@ -122,7 +122,7 @@ const SwitcherCard: React.FC<SwitcherCardProps> = ({
           {transitioning && <Loader2 className="size-3 animate-spin text-primary" />}
           <div className={cn(
             'size-2 rounded-full',
-            on ? 'bg-emerald-500 dark:bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse' : errored ? 'bg-rose-500 dark:bg-rose-400' : 'bg-muted-foreground/40'
+            on ? 'bg-primary' : errored ? 'bg-rose-500 dark:bg-rose-400' : 'bg-muted-foreground/40'
           )} />
           <span className={on ? 'text-emerald-600 dark:text-emerald-400' : errored ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground'}>
             {stateText[status.state]}

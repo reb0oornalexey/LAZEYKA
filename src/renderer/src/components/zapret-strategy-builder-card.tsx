@@ -82,7 +82,7 @@ const ZapretStrategyBuilderCard: React.FC<Props> = ({ onStrategyCreated }) => {
         <div className="min-w-0 flex-1">
           <CardTitle className="flex items-center gap-2">
             <Sliders className="h-4 w-4 text-primary" />
-            Визуальный конструктор стратегий Zapret (Strategy Builder)
+            Визуальный конструктор стратегий Zapret
           </CardTitle>
         </div>
         <Button

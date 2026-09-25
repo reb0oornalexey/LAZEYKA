@@ -1,244 +1,149 @@
-import { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import NumberFlow from '@number-flow/react'
 import BasePage from '@renderer/components/base/base-page'
-import { Spinner } from '@renderer/components/ui/spinner'
-import { CharacterMorph } from '@renderer/components/ui/character-morph'
+import { Switch } from '@renderer/components/ui/switch'
+import { Button } from '@renderer/components/ui/button'
+import ZapretIcon from '@renderer/components/zapret-icon'
+import TelegramIcon from '@renderer/components/telegram-icon'
+import LiveTrafficMonitor from '@renderer/components/live-traffic-monitor'
 import { useTgwsStore } from '@renderer/store/tgws-store'
 import { useZapretStore } from '@renderer/store/zapret-store'
 import { useZapretTestStore } from '@renderer/store/zapret-test-store'
 import { useIncyStore } from '@renderer/store/incy-store'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
 import {
-  tgwsStart, tgwsStop, tgwsRestart,
-  zapretStart, zapretStop, zapretRestart,
-  zapretCheckUpdate, tgwsCheckUpdate,
+  tgwsStart,
+  tgwsStop,
+  tgwsRestart,
+  zapretStart,
+  zapretStop,
+  zapretRestart,
+  zapretCheckUpdate,
+  tgwsCheckUpdate,
   incyConnect,
+  incyDisconnect,
+  incyGetNodes,
   getAppVersion,
   appCheckUpdateNow,
   openExternalUrl,
-  type ZapretUpdateInfo, type TgwsUpdateInfo
+  type IncyNode,
+  type ZapretUpdateInfo,
+  type TgwsUpdateInfo
 } from '@renderer/utils/ipc'
-import { Button } from '@renderer/components/ui/button'
+import { POWER_ON_BANNER_STYLE, SUPPORT_TELEGRAM_URL, formatInstalledVersion, cn } from '@renderer/lib/utils'
 import {
-  POWER_ON_BANNER_STYLE,
-  SUPPORT_TELEGRAM_URL,
-  formatInstalledVersion
-} from '@renderer/lib/utils'
-import LiveTrafficMonitor from '@renderer/components/live-traffic-monitor'
-import { RotateCw, Sparkles, X, LifeBuoy, RefreshCw } from 'lucide-react'
-import Power from '@renderer/assets/on_icon.svg'
-import Pause from '@renderer/assets/pause_icon.svg'
+  ChevronRight,
+  Globe,
+  LifeBuoy,
+  Loader2,
+  Power,
+  RefreshCw,
+  RotateCw,
+  ScrollText,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldOff,
+  Sparkles,
+  Target,
+  X,
+  Zap
+} from 'lucide-react'
 
-interface PowerToggleProps {
-  label: string
-  status: CoreStatus
-  onToggle: (next: boolean) => Promise<void> | void
-  version?: string
-  /**
-   * Что писать, когда версия неизвестна.
-   *
-   * Версия ядра появляется в конфиге только после того, как его обновили
-   * через LAZEYKA: у бинарника из установщика отметки нет. Пустое место на
-   * этом месте читалось как «что-то отвалилось», хотя ядро работает.
-   */
-  versionFallback?: string
-  disabled?: boolean
-  disabledReason?: string
-  subtitle?: React.ReactNode
-  onSubtitleClick?: () => void
+/** «1 ч 24 мин», «12 мин», «меньше минуты». */
+function formatUptime(ms: number): string {
+  const min = Math.floor(ms / 60000)
+  if (min < 1) return 'меньше минуты'
+  const h = Math.floor(min / 60)
+  const m = min % 60
+  return h > 0 ? `${h} ч ${m} мин` : `${m} мин`
 }
 
-const PowerToggle: React.FC<PowerToggleProps> = ({
-  label, status, onToggle, version, versionFallback, disabled = false, disabledReason, subtitle,
-  onSubtitleClick
-}) => {
-  const { t } = useTranslation()
-  const [pending, setPending] = useState<null | boolean>(null)
-  const isSelected = pending ?? status.state === 'running'
-  const ipcLoading = status.state === 'starting' || status.state === 'stopping'
-  const loading = ipcLoading || pending !== null
-  const loadingDirection: 'connecting' | 'disconnecting' =
-    status.state === 'stopping' || pending === false ? 'disconnecting' : 'connecting'
+type Tone = 'on' | 'busy' | 'off' | 'error'
 
-  const handleClick = async (): Promise<void> => {
-    if (loading || disabled) return
-    const next = !isSelected
-    setPending(next)
-    try {
-      await onToggle(next)
-    } finally {
-      setPending(null)
-    }
-  }
+interface ServiceCardProps {
+  icon: React.ReactNode
+  title: string
+  tone: Tone
+  statusText: string
+  checked: boolean
+  onToggle: (next: boolean) => void
+  disabled?: boolean
+  rows: { label: string; value: string; title?: string }[]
+  note?: string
+  onOpen: () => void
+}
 
-  const [elapsed, setElapsed] = useState(0)
-  useEffect(() => {
-    if (!isSelected || !status.startedAt) {
-      setElapsed(0)
-      return
-    }
-    const tick = (): void => setElapsed(Math.floor((Date.now() - status.startedAt!) / 1000))
-    tick()
-    const id = setInterval(tick, 1000)
-    return () => clearInterval(id)
-  }, [isSelected, status.startedAt])
-
-  const statusText = loading
-    ? loadingDirection === 'connecting'
-      ? t('pages.home.connecting', { defaultValue: 'ПОДКЛЮЧЕНИЕ…' })
-      : t('pages.home.disconnecting', { defaultValue: 'ОТКЛЮЧЕНИЕ…' })
-    : isSelected
-      ? t('pages.home.connected', { defaultValue: 'АКТИВЕН' })
-      : t('pages.home.disconnected', { defaultValue: 'ОТКЛЮЧЕН' })
-  const reserveTexts = [
-    t('pages.home.connecting', { defaultValue: 'ПОДКЛЮЧЕНИЕ…' }),
-    t('pages.home.disconnecting', { defaultValue: 'ОТКЛЮЧЕНИЕ…' }),
-    t('pages.home.connected', { defaultValue: 'АКТИВЕН' }),
-    t('pages.home.disconnected', { defaultValue: 'ОТКЛЮЧЕН' })
-  ]
-
-  const showTimer = !loading && isSelected
-  const h = Math.floor(elapsed / 3600)
-  const m = Math.floor((elapsed % 3600) / 60)
-  const s = elapsed % 60
-
+/** Карточка службы на главной: иконка, статус, переключатель и детали. */
+function ServiceCard({
+  icon,
+  title,
+  tone,
+  statusText,
+  checked,
+  onToggle,
+  disabled,
+  rows,
+  note,
+  onOpen
+}: ServiceCardProps): React.ReactElement {
   return (
-    <div className="relative flex flex-col items-center justify-center p-6 rounded-2xl cyber-card cyber-card-hover min-w-0 transition-all duration-300">
-      {/* Top Header info */}
-      <div className="w-full flex items-center justify-between mb-4 px-2">
-        <div className="flex items-center gap-2">
-          <div className={`size-2 rounded-full ${isSelected ? 'bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse' : 'bg-zinc-600'}`} />
-          <span className="text-xs font-bold uppercase tracking-wider text-foreground/90 font-mono">
-            {label}
-          </span>
-        </div>
-        {(version || versionFallback) && (
-          <span
-            className="text-[11px] font-mono text-muted-foreground bg-foreground/[0.05] px-2 py-0.5 rounded-full border border-border/40"
-            title={
-              version
-                ? undefined
-                : 'Ядро из установщика — номер версии появится после первого обновления через LAZEYKA'
-            }
-          >
-            {version ? `v${version}` : versionFallback}
-          </span>
-        )}
-      </div>
-
-      {/* Cybernetic Power Core Button */}
-      <div className="relative my-2 flex items-center justify-center">
-        {/* Background glow Halo */}
-        <div
-          className={`absolute inset-0 rounded-full transition-all duration-500 pointer-events-none ${
-            isSelected
-              ? 'bg-emerald-500/20 blur-2xl scale-125'
-              : 'bg-indigo-500/5 blur-xl scale-95'
-          }`}
-        />
-
-        {/* Outer Orbit Ring */}
-        <div
-          className={`absolute size-38 rounded-full border border-dashed transition-all duration-700 pointer-events-none ${
-            isSelected
-              ? 'border-emerald-400/40 animate-[spin_18s_linear_infinite]'
-              : 'border-border/40 opacity-40'
-          }`}
-        />
-
+    <div className="flex min-w-0 flex-col rounded-2xl border border-border bg-card p-4 transition-colors hover:border-primary/35">
+      <div className="flex items-center gap-3">
         <button
-          disabled={loading || disabled}
-          onClick={handleClick}
-          title={disabled ? disabledReason : undefined}
-          className={`relative z-10 size-32 rounded-full flex items-center justify-center transition-all duration-300 active:scale-95 cursor-pointer disabled:cursor-not-allowed ${
-            disabled ? 'opacity-50' : ''
-          }`}
+          type="button"
+          onClick={onOpen}
+          title={`Открыть вкладку ${title}`}
+          className={cn(
+            'flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-secondary transition-colors',
+            tone === 'on' ? 'text-primary' : tone === 'error' ? 'text-destructive' : 'text-muted-foreground'
+          )}
         >
+          {icon}
+        </button>
+        <button type="button" onClick={onOpen} className="min-w-0 flex-1 cursor-pointer text-left">
+          <div className="truncate text-[15px] font-semibold text-foreground">{title}</div>
           <div
-            className={`size-full rounded-full flex items-center justify-center transition-all duration-300 border-2 backdrop-blur-xl ${
-              isSelected
-                ? 'bg-gradient-to-br from-emerald-500/20 via-emerald-600/30 to-emerald-950/80 border-emerald-400 cyber-glow-emerald shadow-[0_0_30px_rgba(16,185,129,0.3)]'
-                : 'bg-gradient-to-br from-zinc-800/40 via-zinc-900/60 to-black/90 border-border/80 hover:border-foreground/30 shadow-[0_4px_20px_rgba(0,0,0,0.5)]'
-            }`}
+            className={cn(
+              'flex items-center gap-1.5 text-xs font-medium',
+              tone === 'on'
+                ? 'text-primary'
+                : tone === 'busy'
+                  ? 'text-amber-600 dark:text-amber-400'
+                  : tone === 'error'
+                    ? 'text-destructive'
+                    : 'text-muted-foreground'
+            )}
           >
-            <div className="relative size-14 flex items-center justify-center">
-              <Spinner
-                className={`absolute inset-0 m-auto size-14 text-primary transition-all duration-300 ease-out ${
-                  loading ? 'opacity-100 scale-100' : 'opacity-0 scale-75'
-                }`}
+            {tone === 'busy' ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <span
+                className={cn(
+                  'size-1.5 rounded-full',
+                  tone === 'on' ? 'bg-primary' : tone === 'error' ? 'bg-destructive' : 'bg-muted-foreground/60'
+                )}
               />
-              <img
-                src={Pause}
-                alt=""
-                className={`absolute inset-0 size-14 transition-all duration-300 ease-out ${
-                  !loading && isSelected ? 'opacity-100 scale-100 drop-shadow-[0_0_12px_rgba(16,185,129,0.7)]' : 'opacity-0 scale-75'
-                }`}
-              />
-              <img
-                src={Power}
-                alt=""
-                className={`absolute inset-0 size-14 transition-all duration-300 ease-out ${
-                  !loading && !isSelected ? 'opacity-80 scale-100 drop-shadow-[0_0_6px_rgba(255,255,255,0.2)]' : 'opacity-0 scale-75'
-                }`}
-              />
-            </div>
+            )}
+            {statusText}
           </div>
         </button>
-      </div>
-
-      {/* Dynamic Status Character Morph */}
-      <div className="mt-4 flex h-6 items-center justify-center">
-        <CharacterMorph
-          texts={[statusText]}
-          reserveTexts={reserveTexts}
-          interval={3000}
-          className={`h-6 leading-none font-bold text-xs uppercase tracking-widest ${
-            isSelected ? 'text-emerald-700 dark:text-emerald-400 drop-shadow-[0_0_8px_rgba(52,211,153,0.5)]' : 'text-muted-foreground'
-          }`}
+        <Switch
+          checked={checked}
+          disabled={disabled || tone === 'busy'}
+          onCheckedChange={onToggle}
+          className="data-[size=default]:h-6 data-[size=default]:w-11 [&>span]:size-[18px]! [&>span[data-state=checked]]:translate-x-[22px]!"
         />
       </div>
-
-      {/* Animated Uptime / Active State pill */}
-      <div className="mt-2 h-7 flex items-center justify-center">
-        <div
-          aria-hidden={!showTimer}
-          className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-mono font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 tabular-nums transition-all duration-300 ${
-            showTimer ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-1'
-          }`}
-        >
-          <NumberFlow value={h} format={{ minimumIntegerDigits: 2, useGrouping: false }} />
-          <span>:</span>
-          <NumberFlow value={m} format={{ minimumIntegerDigits: 2, useGrouping: false }} />
-          <span>:</span>
-          <NumberFlow value={s} format={{ minimumIntegerDigits: 2, useGrouping: false }} />
-        </div>
+      <div className="mt-3.5 divide-y divide-border rounded-xl bg-secondary px-3">
+        {rows.map((r) => (
+          <div key={r.label} className="flex items-center justify-between gap-3 py-2" title={r.title ?? r.value}>
+            <span className="shrink-0 text-[12px] text-muted-foreground">{r.label}</span>
+            <span className="min-w-0 truncate text-[12.5px] font-semibold text-foreground">{r.value}</span>
+          </div>
+        ))}
       </div>
-
-      {subtitle && (
-        <div
-          onClick={onSubtitleClick}
-          className={`mt-2 text-xs text-muted-foreground text-center truncate max-w-[200px] ${
-            onSubtitleClick ? 'cursor-pointer hover:text-primary transition-colors underline underline-offset-4 decoration-border' : ''
-          }`}
-        >
-          {subtitle}
-        </div>
-      )}
-
-      {disabled && disabledReason && (
-        <div className="mt-2 text-[11px] text-amber-700 dark:text-amber-400 text-center leading-tight max-w-[200px]">
-          {disabledReason}
-        </div>
-      )}
-
-      {status.lastError && (
-        <div className="mt-2 text-[11px] text-rose-700 dark:text-rose-400 text-center max-w-[220px] truncate" title={status.lastError}>
-          {status.lastError}
-        </div>
-      )}
+      {note && <div className="mt-2.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground">{note}</div>}
     </div>
   )
 }
@@ -250,28 +155,20 @@ interface UpdateNoticeProps {
   onDismiss: () => void
 }
 const UpdateNotice: React.FC<UpdateNoticeProps> = ({ title, subtitle, onDetails, onDismiss }) => (
-  <div className="relative flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 backdrop-blur-xl px-4 py-2.5 shadow-[0_0_15px_rgba(99,102,241,0.15)]">
-    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/20 text-primary shadow-[0_0_10px_rgba(99,102,241,0.25)]">
+  <div className="flex items-center gap-3 rounded-xl border border-primary/30 bg-primary/10 px-4 py-2.5">
+    <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
       <Sparkles className="size-4" />
     </div>
     <div className="min-w-0 flex-1">
-      <div className="text-sm font-semibold truncate text-foreground">{title}</div>
-      <div className="text-xs text-muted-foreground truncate">{subtitle}</div>
+      <div className="truncate text-sm font-semibold text-foreground">{title}</div>
+      <div className="truncate text-xs text-muted-foreground">{subtitle}</div>
     </div>
-    <div className="flex shrink-0 items-center gap-1.5">
-      <Button size="sm" onClick={onDetails} className="h-7 text-xs rounded-lg">
-        Подробнее
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-7 rounded-lg"
-        onClick={onDismiss}
-        title="Скрыть"
-      >
-        <X className="size-3.5" />
-      </Button>
-    </div>
+    <Button size="sm" onClick={onDetails} className="h-7 rounded-lg text-xs">
+      Подробнее
+    </Button>
+    <Button variant="ghost" size="icon" className="size-7 rounded-lg" onClick={onDismiss} title="Скрыть">
+      <X className="size-3.5" />
+    </Button>
   </div>
 )
 
@@ -282,10 +179,21 @@ const Home: React.FC = () => {
   const incy = useIncyStore((s) => s.status)
   const isZapretTesting = useZapretTestStore((s) => s.isRunning)
   const { appConfig } = useAppConfig()
-
   const zapretStrategy = appConfig?.zapret?.activeStrategy
 
-  // ---- Update notices (Zapret + TgWsProxy)
+  // ---- Узлы INCY (имя и пинг активного узла) ----
+  const [nodes, setNodes] = useState<IncyNode[]>([])
+  useEffect(() => {
+    incyGetNodes()
+      .then(setNodes)
+      .catch(() => setNodes([]))
+  }, [incy.activeNodeId, incy.selectedNodeId])
+  const incyNode = useMemo(
+    () => nodes.find((n) => n.id === (incy.activeNodeId || incy.selectedNodeId)) ?? null,
+    [nodes, incy.activeNodeId, incy.selectedNodeId]
+  )
+
+  // ---- Обновления Zapret и TgWsProxy ----
   const [zapretUpdate, setZapretUpdate] = useState<ZapretUpdateInfo | null>(null)
   const [tgwsUpdate, setTgwsUpdate] = useState<TgwsUpdateInfo | null>(null)
   const [zapretSessionDismissed, setZapretSessionDismissed] = useState(false)
@@ -295,61 +203,113 @@ const Home: React.FC = () => {
     tgwsCheckUpdate(false).then(setTgwsUpdate).catch(() => setTgwsUpdate(null))
   }, [])
   const showZapretBanner =
-    !!zapretUpdate &&
-    zapretUpdate.hasUpdate &&
-    !zapretUpdate.dismissed &&
-    !!zapretUpdate.assetUrl &&
-    !zapretSessionDismissed
+    !!zapretUpdate && zapretUpdate.hasUpdate && !zapretUpdate.dismissed && !!zapretUpdate.assetUrl && !zapretSessionDismissed
   const showTgwsBanner =
-    !!tgwsUpdate &&
-    tgwsUpdate.hasUpdate &&
-    !tgwsUpdate.dismissed &&
-    !!tgwsUpdate.assetUrl &&
-    !tgwsSessionDismissed
+    !!tgwsUpdate && tgwsUpdate.hasUpdate && !tgwsUpdate.dismissed && !!tgwsUpdate.assetUrl && !tgwsSessionDismissed
 
-  const toggleTgws = async (next: boolean): Promise<void> => {
+  // ---- Переключатели служб ----
+  const [pending, setPending] = useState<Record<string, boolean | undefined>>({})
+  const withPending = async (key: string, next: boolean, fn: () => Promise<void>): Promise<void> => {
+    setPending((p) => ({ ...p, [key]: next }))
     try {
-      if (next) await tgwsStart()
-      else await tgwsStop()
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      toast.error(next ? 'Не удалось запустить Telegram' : 'Не удалось остановить Telegram', {
-        description: msg
-      })
-    }
-  }
-  const toggleZapret = async (next: boolean): Promise<void> => {
-    if (next && !zapretStrategy) {
-      navigate('/zapret', { state: { autoStart: true } })
-      return
-    }
-    try {
-      if (next) await zapretStart()
-      else await zapretStop()
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      toast.error(next ? 'Не удалось запустить Zapret' : 'Не удалось остановить Zapret', {
-        description: msg
-      })
+      await fn()
+    } finally {
+      setPending((p) => ({ ...p, [key]: undefined }))
     }
   }
 
-  // App version pulled from main via IPC (electron's app.getVersion()
+  const toggleTgws = (next: boolean): Promise<void> =>
+    withPending('tgws', next, async () => {
+      try {
+        if (next) await tgwsStart()
+        else await tgwsStop()
+      } catch (e) {
+        toast.error(next ? 'Не удалось запустить Telegram' : 'Не удалось остановить Telegram', {
+          description: e instanceof Error ? e.message : String(e)
+        })
+      }
+    })
+
+  const toggleZapret = (next: boolean): Promise<void> =>
+    withPending('zapret', next, async () => {
+      if (next && !zapretStrategy) {
+        navigate('/zapret', { state: { autoStart: true } })
+        return
+      }
+      try {
+        if (next) await zapretStart()
+        else await zapretStop()
+      } catch (e) {
+        toast.error(next ? 'Не удалось запустить Zapret' : 'Не удалось остановить Zapret', {
+          description: e instanceof Error ? e.message : String(e)
+        })
+      }
+    })
+
+  const toggleIncy = (next: boolean): Promise<void> =>
+    withPending('incy', next, async () => {
+      if (next && nodes.length === 0) {
+        navigate('/incy')
+        toast.info('Сначала добавьте подписку или сервер на вкладке INCY')
+        return
+      }
+      try {
+        if (next) await incyConnect()
+        else await incyDisconnect()
+      } catch (e) {
+        toast.error(next ? 'Не удалось подключить VPN' : 'Не удалось отключить VPN', {
+          description: e instanceof Error ? e.message : String(e)
+        })
+      }
+    })
+
+  // ---- Статусы ----
+  const tgwsOn = tgws.state === 'running'
+  const zapretOn = zapret.state === 'running'
+  const incyOn = incy.state === 'running'
+  const tgwsBusy = pending.tgws !== undefined || tgws.state === 'starting' || tgws.state === 'stopping'
+  const zapretBusy = pending.zapret !== undefined || zapret.state === 'starting' || zapret.state === 'stopping'
+  const incyBusy = pending.incy !== undefined || incy.state === 'connecting'
+  const toneOf = (on: boolean, busy: boolean, err: boolean): Tone => (busy ? 'busy' : on ? 'on' : err ? 'error' : 'off')
+
+  const runningCount = [tgwsOn, zapretOn, incyOn].filter(Boolean).length
+  const startedAts = [
+    tgwsOn ? tgws.startedAt : undefined,
+    zapretOn ? zapret.startedAt : undefined,
+    incyOn ? incy.connectedAt : undefined
+  ].filter((x): x is number => typeof x === 'number')
+  const since = startedAts.length ? Math.min(...startedAts) : null
+
+  // Время работы — раз в 30 с: минуты от этого не меняются, а лишних
+  // перерисовок главной нет.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!since) return
+    setNow(Date.now())
+    const id = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(id)
+  }, [since])
+
+  const incyMode = incy.exitLagActive
+    ? `ExitLag · ${incy.exitLagApps?.length ?? 0} прил.`
+    : incy.routingMode === 'global'
+      ? 'Весь трафик'
+      : 'Обход РФ'
+
+  // ---- Общие действия ----
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
+  useEffect(() => {
+    getAppVersion().then(setAppVersion).catch(() => setAppVersion(null))
+  }, [])
 
-  /**
-   * Проверка обновлений LAZEYKA прямо с главной — мимо кэша. Если версия
-   * вышла, окно установки откроется само (оно слушает тот же результат).
-   * Отвечаем в любом случае, чтобы было видно, что проверка прошла.
-   */
   const handleCheckUpdate = async (): Promise<void> => {
     if (checkingUpdate) return
     setCheckingUpdate(true)
     try {
       const info = await appCheckUpdateNow()
       if (info.hasUpdate && info.assetUrl) {
-        toast.success(`Доступна версия ${info.latest}`, { description: 'Окно с установкой сейчас откроется.' })
+        toast.success(`Доступна версия ${info.latest}`, { description: 'Окно обновления сейчас откроется.' })
       } else if (info.hasUpdate) {
         toast.warning(`Версия ${info.latest} вышла, но установщик к релизу не приложен`, {
           description: 'Скачайте её вручную со страницы релизов.'
@@ -358,16 +318,11 @@ const Home: React.FC = () => {
         toast.success(`Установлена последняя версия — ${info.installed}`)
       }
     } catch (e: unknown) {
-      toast.error('Не удалось проверить обновления', {
-        description: e instanceof Error ? e.message : String(e)
-      })
+      toast.error('Не удалось проверить обновления', { description: e instanceof Error ? e.message : String(e) })
     } finally {
       setCheckingUpdate(false)
     }
   }
-  useEffect(() => {
-    getAppVersion().then(setAppVersion).catch(() => setAppVersion(null))
-  }, [])
 
   const [reloading, setReloading] = useState(false)
   const handleReloadAll = async (): Promise<void> => {
@@ -379,62 +334,91 @@ const Home: React.FC = () => {
       if (zapret.state === 'running' || zapret.state === 'error') tasks.push(zapretRestart())
       if (incy.state === 'running' || incy.state === 'error') tasks.push(incyConnect())
       if (tasks.length === 0) {
-        // Style the toast with the same red radial gradient + power-off
-        // border that the big disabled power buttons use, so the visual
-        // language stays consistent: red = "nothing is running".
-        toast.info('Нет запущенных процессов для перезагрузки', {
-          style: {
-            background:
-              'radial-gradient(at 30% 45%, color-mix(in oklab, var(--gradient-start-power-off) 60%, transparent), color-mix(in oklab, var(--gradient-end-power-off) 60%, transparent))',
-            borderColor: 'var(--stroke-power-off)',
-            color: 'var(--foreground)'
-          }
-        })
+        toast.info('Нет запущенных служб для перезапуска')
         return
       }
-      await Promise.allSettled(tasks)
-      // Mirror the green radial-gradient look of the active power buttons so
-      // the success toast reads as "everything is on" at a glance.
-      toast.success('Процессы перезагружены', {
-        style: POWER_ON_BANNER_STYLE
-      })
+      const results = await Promise.allSettled(tasks)
+      const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[]
+      if (failed.length === 0) {
+        toast.success('Службы перезапущены', { style: POWER_ON_BANNER_STYLE })
+      } else {
+        const reason = failed[0].reason
+        toast.error(
+          failed.length === results.length ? 'Службы не перезапустились' : 'Перезапустились не все службы',
+          { description: reason instanceof Error ? reason.message : String(reason) }
+        )
+      }
     } catch (e) {
-      toast.error('Не удалось перезагрузить процессы', {
-        description: e instanceof Error ? e.message : String(e)
-      })
+      toast.error('Не удалось перезапустить службы', { description: e instanceof Error ? e.message : String(e) })
     } finally {
       setReloading(false)
     }
   }
 
+  const [startingAll, setStartingAll] = useState(false)
+  const handleStartAll = async (): Promise<void> => {
+    if (startingAll) return
+    setStartingAll(true)
+    try {
+      const tasks: Promise<void>[] = []
+      if (!zapretOn && zapretStrategy && !isZapretTesting) tasks.push(toggleZapret(true))
+      if (!tgwsOn) tasks.push(toggleTgws(true))
+      if (!incyOn && nodes.length > 0) tasks.push(toggleIncy(true))
+      await Promise.allSettled(tasks)
+    } finally {
+      setStartingAll(false)
+    }
+  }
+
+  // ---- Шапка статуса ----
+  const hero =
+    runningCount === 3
+      ? { tone: 'on' as const, title: 'Защита работает', icon: <ShieldCheck className="size-6" /> }
+      : runningCount > 0
+        ? { tone: 'part' as const, title: 'Работает частично', icon: <ShieldAlert className="size-6" /> }
+        : { tone: 'off' as const, title: 'Всё выключено', icon: <ShieldOff className="size-6" /> }
+  const onNames = [zapretOn && 'Zapret', tgwsOn && 'Telegram', incyOn && 'VPN'].filter(Boolean) as string[]
+  const offNames = [!zapretOn && 'Zapret', !tgwsOn && 'Telegram', !incyOn && 'VPN'].filter(Boolean) as string[]
+  const heroText =
+    runningCount === 3
+      ? `Zapret, Telegram и VPN включены${since ? ` · ${formatUptime(now - since)} без перерыва` : ''}`
+      : runningCount > 0
+        ? `Работает: ${onNames.join(', ')} · выключено: ${offNames.join(', ')}`
+        : 'Включите нужные службы переключателями ниже или всё сразу.'
+
   return (
     <BasePage
-      title={
-        // Home was the only page with an empty header bar. The wordmark keeps
-        // the mono / uppercase / wide-tracking treatment used by the service
-        // labels on the power cards, scaled up and lit with the same emerald
-        // the logo and every "running" state use — so it reads as brand, not
-        // as a stray heading.
-        //
-        // The colour is paired (600 in light / 300 in dark) on purpose: bare
-        // emerald-300 sits at ~1.6:1 against the light card and would be
-        // effectively invisible there. At 24px/black the pair clears the 3:1
-        // WCAG threshold for large text in both themes.
-        <span
-          className="
-            font-mono text-2xl font-black uppercase tracking-[0.28em] leading-none select-none
-            text-emerald-600 dark:text-emerald-300
-            drop-shadow-[0_0_10px_rgba(16,185,129,0.35)]
-            dark:drop-shadow-[0_0_16px_rgba(52,211,153,0.55)]
-          "
-        >
-          LAZEYKA
-        </span>
+      title="Главная"
+      header={
+        <>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleCheckUpdate()}
+            disabled={checkingUpdate}
+            title="Проверить, вышла ли новая версия LAZEYKA"
+            className="h-8 rounded-lg text-xs"
+          >
+            <RefreshCw className={cn('size-3.5', checkingUpdate && 'animate-spin')} />
+            {checkingUpdate ? 'Проверяем…' : 'Проверить обновления'}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleReloadAll()}
+            disabled={reloading}
+            title="Перезапустить все работающие службы: Zapret, Telegram, VPN"
+            className="mr-1 h-8 rounded-lg text-xs"
+          >
+            <RotateCw className={cn('size-3.5', reloading && 'animate-spin')} />
+            {reloading ? 'Перезапуск…' : 'Перезагрузить службы'}
+          </Button>
+        </>
       }
     >
-      <div className="relative flex flex-col h-full">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-6 pb-6">
         {(showZapretBanner || showTgwsBanner) && (
-          <div className="px-4 pt-2 space-y-2">
+          <div className="space-y-2">
             {showZapretBanner && zapretUpdate && (
               <UpdateNotice
                 title={`Доступно обновление Zapret — v${zapretUpdate.latest}`}
@@ -453,78 +437,185 @@ const Home: React.FC = () => {
             )}
           </div>
         )}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 px-4 flex-1 items-center max-w-4xl mx-auto w-full">
-          <PowerToggle
-            label="Telegram Proxy"
-            status={tgws}
-            onToggle={toggleTgws}
-            version={appConfig?.tgws?.installedVersion ?? tgwsUpdate?.installed}
-            versionFallback="встроенная"
-            subtitle={tgws.state === 'running' ? `MTProto • Порт ${appConfig?.tgws?.port || 1443}` : 'Нажмите для запуска'}
-            onSubtitleClick={() => navigate('/telegram')}
-          />
-          <PowerToggle
-            label="Zapret DPI Bypass"
-            status={zapret}
-            onToggle={toggleZapret}
-            version={appConfig?.zapret?.installedVersion ?? zapretUpdate?.installed}
-            versionFallback="встроенная"
-            subtitle={zapretStrategy ? `Стратегия: ${zapretStrategy}` : 'Стратегия не выбрана'}
-            onSubtitleClick={() => navigate('/zapret')}
+
+        {/* Общий статус */}
+        <div
+          className={cn(
+            'flex flex-wrap items-center gap-4 rounded-2xl border p-5',
+            hero.tone === 'on'
+              ? 'border-primary/30 bg-gradient-to-br from-primary/[0.13] via-card to-card'
+              : hero.tone === 'part'
+                ? 'border-amber-500/30 bg-gradient-to-br from-amber-500/[0.10] via-card to-card'
+                : 'border-border bg-card'
+          )}
+        >
+          <div
+            className={cn(
+              'flex size-12 shrink-0 items-center justify-center rounded-xl',
+              hero.tone === 'on'
+                ? 'bg-primary/15 text-primary'
+                : hero.tone === 'part'
+                  ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                  : 'bg-secondary text-muted-foreground'
+            )}
+          >
+            {hero.icon}
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-xl font-bold leading-tight text-foreground">{hero.title}</h2>
+            <p className="mt-1 text-[13px] text-muted-foreground">{heroText}</p>
+          </div>
+          {incyOn && incyNode ? (
+            <div className="flex shrink-0 gap-2">
+              <div className="max-w-52 rounded-xl border border-border bg-background/60 px-3 py-2">
+                <div className="text-[11px] text-muted-foreground">Узел VPN</div>
+                <div className="truncate text-sm font-bold text-foreground" title={incyNode.name}>
+                  {incyNode.name}
+                </div>
+              </div>
+              {typeof incyNode.latencyMs === 'number' && incyNode.latencyMs > 0 && (
+                <div className="rounded-xl border border-border bg-background/60 px-3 py-2">
+                  <div className="text-[11px] text-muted-foreground">Пинг</div>
+                  <div className="text-sm font-bold tabular-nums text-foreground">{incyNode.latencyMs} мс</div>
+                </div>
+              )}
+            </div>
+          ) : runningCount < 3 ? (
+            <Button onClick={() => void handleStartAll()} disabled={startingAll} className="shrink-0">
+              {startingAll ? <Loader2 className="size-4 animate-spin" /> : <Power className="size-4" />}
+              Включить всё
+            </Button>
+          ) : null}
+        </div>
+
+        {/* Службы */}
+        <div className="grid grid-cols-1 gap-3.5 md:grid-cols-3">
+          <ServiceCard
+            icon={<ZapretIcon className="size-5" />}
+            title="Zapret"
+            tone={toneOf(zapretOn, zapretBusy, zapret.state === 'error')}
+            statusText={
+              zapretBusy
+                ? (pending.zapret ?? zapret.state === 'starting') ? 'Запуск…' : 'Остановка…'
+                : zapretOn
+                  ? 'Работает'
+                  : zapret.state === 'error'
+                    ? 'Ошибка'
+                    : 'Выключен'
+            }
+            checked={pending.zapret ?? zapretOn}
+            onToggle={(v) => void toggleZapret(v)}
             disabled={isZapretTesting}
-            disabledReason={
+            rows={[
+              { label: 'Стратегия', value: zapretStrategy ? zapretStrategy.replace(/\.bat$/i, '') : 'не выбрана' },
+              { label: 'Версия', value: appConfig?.zapret?.installedVersion ?? zapretUpdate?.installed ?? 'встроенная' }
+            ]}
+            note={
               isZapretTesting
                 ? 'Идёт тестирование стратегий — переключатель заблокирован'
-                : undefined
+                : zapret.state === 'error'
+                  ? zapret.lastError
+                  : undefined
             }
+            onOpen={() => navigate('/zapret')}
+          />
+          <ServiceCard
+            icon={<TelegramIcon className="size-5" />}
+            title="Telegram"
+            tone={toneOf(tgwsOn, tgwsBusy, tgws.state === 'error')}
+            statusText={
+              tgwsBusy
+                ? (pending.tgws ?? tgws.state === 'starting') ? 'Запуск…' : 'Остановка…'
+                : tgwsOn
+                  ? 'Работает'
+                  : tgws.state === 'error'
+                    ? 'Ошибка'
+                    : 'Выключен'
+            }
+            checked={pending.tgws ?? tgwsOn}
+            onToggle={(v) => void toggleTgws(v)}
+            rows={[
+              { label: 'Прокси', value: `127.0.0.1:${appConfig?.tgws?.port || 1443}` },
+              { label: 'Версия', value: appConfig?.tgws?.installedVersion ?? tgwsUpdate?.installed ?? 'встроенная' }
+            ]}
+            note={tgws.state === 'error' ? tgws.lastError : undefined}
+            onOpen={() => navigate('/telegram')}
+          />
+          <ServiceCard
+            icon={<Globe className="size-5" />}
+            title="INCY VPN"
+            tone={toneOf(incyOn, incyBusy, incy.state === 'error')}
+            statusText={
+              incyBusy
+                ? (pending.incy ?? true) ? 'Подключение…' : 'Отключение…'
+                : incyOn
+                  ? 'Подключено'
+                  : incy.state === 'error'
+                    ? 'Ошибка'
+                    : 'Отключено'
+            }
+            checked={pending.incy ?? incyOn}
+            onToggle={(v) => void toggleIncy(v)}
+            rows={[
+              { label: 'Узел', value: incyNode?.name ?? (nodes.length ? 'не выбран' : 'нет серверов') },
+              { label: 'Режим', value: incyMode }
+            ]}
+            note={incy.state === 'error' ? incy.lastError : undefined}
+            onOpen={() => navigate('/incy')}
           />
         </div>
 
-        <div className="px-4 pt-3 max-w-4xl mx-auto w-full">
-          <LiveTrafficMonitor />
+        <LiveTrafficMonitor />
+
+        {/* Быстрые действия */}
+        <div className="grid grid-cols-1 gap-3.5 md:grid-cols-3">
+          {[
+            {
+              icon: <Target className="size-[18px]" />,
+              title: 'Пинг до Faceit',
+              sub: 'Лучший узел для матча',
+              onClick: () => navigate('/optimizer')
+            },
+            {
+              icon: <Zap className="size-[18px]" />,
+              title: 'Сменить узел',
+              sub: nodes.length ? `Серверов в подписке: ${nodes.length}` : 'Добавить подписку',
+              onClick: () => navigate('/incy')
+            },
+            {
+              icon: <ScrollText className="size-[18px]" />,
+              title: 'Логи и отчёт',
+              sub: 'Если что-то не работает',
+              onClick: () => navigate('/logs')
+            }
+          ].map((a) => (
+            <button
+              key={a.title}
+              type="button"
+              onClick={a.onClick}
+              className="group flex cursor-pointer items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left transition-colors hover:border-primary/35"
+            >
+              <span className="text-primary">{a.icon}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] font-semibold text-foreground">{a.title}</span>
+                <span className="block truncate text-[11px] text-muted-foreground">{a.sub}</span>
+              </span>
+              <ChevronRight className="size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+            </button>
+          ))}
         </div>
 
-        <div className="flex justify-center pt-4 pb-5">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleReloadAll}
-            disabled={reloading}
-            className="cursor-pointer border-border/80 bg-card/60 backdrop-blur-md hover:bg-card/90 hover:border-primary/50 hover:shadow-[0_0_20px_-3px_rgba(99,102,241,0.25)] transition-all duration-200 rounded-xl font-medium"
-            title="Перезагрузить процессы"
-          >
-            <RotateCw className={`size-3.5 mr-2 ${reloading ? 'animate-spin text-primary' : 'text-muted-foreground'}`} />
-            <span>Перезагрузить службы</span>
-          </Button>
-        </div>
-        {/* Версия и связь с поддержкой рядом: угол, куда человек смотрит,
-            когда что-то не работает и он хочет об этом сообщить. Название
-            приложения здесь не повторяется — оно уже есть в шапке. */}
-        <div className="absolute bottom-2 right-4 flex items-center gap-1.5 select-none">
+        {/* Версия, обновления, поддержка */}
+        <div className="flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
+          {appVersion && <span className="px-2 tabular-nums">LAZEYKA v{appVersion}</span>}
           <button
             type="button"
-            onClick={() => openExternalUrl(SUPPORT_TELEGRAM_URL)}
-            title="Открыть Telegram-канал поддержки LAZEYKA"
-            className="group cursor-pointer inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-md border border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-400 hover:border-sky-500/60 hover:bg-sky-500/20 transition-colors backdrop-blur-sm"
+            onClick={() => void openExternalUrl(SUPPORT_TELEGRAM_URL)}
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 transition-colors hover:bg-accent hover:text-foreground"
           >
-            <LifeBuoy className="size-3 group-hover:scale-110 transition-transform" />
-            <span>Поддержка</span>
+            <LifeBuoy className="size-3" />
+            Поддержка
           </button>
-          <button
-            type="button"
-            onClick={() => void handleCheckUpdate()}
-            disabled={checkingUpdate}
-            title="Проверить, вышла ли новая версия LAZEYKA"
-            className="group cursor-pointer inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-md border border-primary/30 bg-primary/10 text-primary hover:border-primary/60 hover:bg-primary/20 disabled:opacity-60 disabled:cursor-wait transition-colors backdrop-blur-sm"
-          >
-            <RefreshCw className={`size-3 ${checkingUpdate ? 'animate-spin' : 'group-hover:rotate-90 transition-transform'}`} />
-            <span>{checkingUpdate ? 'Проверяем…' : 'Проверить обновления'}</span>
-          </button>
-          {appVersion && (
-            <span className="pointer-events-none text-[11px] font-mono text-muted-foreground/60 bg-background/50 backdrop-blur-sm px-2 py-0.5 rounded-md border border-border/30">
-              <span className="text-primary/80">v{appVersion}</span>
-            </span>
-          )}
         </div>
       </div>
     </BasePage>

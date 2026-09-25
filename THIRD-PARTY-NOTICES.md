@@ -140,6 +140,8 @@ MIT, ISC and Apache-2.0). Notable bundled libraries:
 | axios | MIT | HTTP client |
 | react-router-dom | MIT | Routing |
 | @electron-toolkit/* | MIT | Electron integration helpers |
+| Onest font (@fontsource/onest) | SIL Open Font License 1.1 | UI typeface, `src/renderer/src/assets/fonts/onest-*.woff2` |
+| country-flag-emoji-polyfill (Twemoji Country Flags font) | MIT (code), CC-BY-4.0 (flag artwork © Twitter, Inc. and other contributors, https://github.com/twitter/twemoji) | Country flags on Windows, `src/renderer/src/assets/fonts/TwemojiCountryFlags.woff2` |
 
 Run `pnpm licenses list` (or `npm-license-checker`) on a checked-out
 copy of the repository to obtain a complete, per-package, machine-

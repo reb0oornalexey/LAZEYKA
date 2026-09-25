@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
-import { Activity, ShieldCheck, ArrowDown, ArrowUp } from 'lucide-react'
+import { ArrowDown, ArrowUp } from 'lucide-react'
+import { useTheme } from 'next-themes'
 import { useZapretStore } from '@renderer/store/zapret-store'
 import { useTgwsStore } from '@renderer/store/tgws-store'
 import { useIncyStore } from '@renderer/store/incy-store'
@@ -12,16 +13,29 @@ interface TrafficPoint {
   tx: number
 }
 
-const LiveTrafficMonitor: React.FC = () => {
+const POINTS = 24
+
+export function formatSpeed(kbps: number): string {
+  if (kbps >= 1024) return `${(kbps / 1024).toFixed(1).replace('.', ',')} МБ/с`
+  return `${kbps.toFixed(0)} КБ/с`
+}
+
+/**
+ * График трафика на главной. Опрос раз в 2,5 с и только пока окно видно и
+ * работает хотя бы одна служба; без анимаций перерисовки графика.
+ */
+const LiveTrafficMonitor: React.FC<{ className?: string }> = ({ className }) => {
   const zapret = useZapretStore((s) => s.status)
   const tgws = useTgwsStore((s) => s.status)
   const incy = useIncyStore((s) => s.status)
+  const { resolvedTheme } = useTheme()
+  const rxColor = resolvedTheme === 'light' ? '#0e9a5a' : '#4ce896'
+  const txColor = resolvedTheme === 'light' ? '#3b6fe0' : '#5b8cff'
 
   const isAnyRunning = zapret.state === 'running' || tgws.state === 'running' || incy.state === 'running'
   const [data, setData] = useState<TrafficPoint[]>(() =>
-    Array.from({ length: 15 }, (_, i) => ({ time: `${i}s`, rx: 0, tx: 0 }))
+    Array.from({ length: POINTS }, (_, i) => ({ time: `${i}`, rx: 0, tx: 0 }))
   )
-
   const [currentRx, setCurrentRx] = useState(0)
   const [currentTx, setCurrentTx] = useState(0)
 
@@ -32,121 +46,88 @@ const LiveTrafficMonitor: React.FC = () => {
       setCurrentTx(0)
       return
     }
-
     const poll = async (): Promise<void> => {
-      if (document.visibilityState === 'hidden' || !isAnyRunning) return
+      // Свёрнутое окно ничего не опрашивает — это запуск netstat в main.
+      if (document.visibilityState === 'hidden') return
       try {
         const speed = await systemGetNetworkSpeed()
         if (!mounted) return
         const rx = speed.rxKbps || 0
         const tx = speed.txKbps || 0
-
         setCurrentRx(rx)
         setCurrentTx(tx)
-
-        setData((prev) => {
-          const next = [...prev.slice(1), { time: '', rx, tx }]
-          return next
-        })
-      } catch { /* ignore */ }
+        setData((prev) => [...prev.slice(1), { time: '', rx, tx }])
+      } catch {
+        /* ignore */
+      }
     }
-
     void poll()
-    const interval = setInterval(() => { void poll() }, 2500)
-
+    const interval = setInterval(() => void poll(), 2500)
     return () => {
       mounted = false
       clearInterval(interval)
     }
   }, [isAnyRunning])
 
-  const formatSpeed = (kbps: number): string => {
-    if (kbps >= 1024) {
-      return `${(kbps / 1024).toFixed(1)} МБ/с`
-    }
-    return `${kbps.toFixed(0)} КБ/с`
-  }
-
   return (
-    <div className="rounded-2xl cyber-card p-4 transition-all duration-300 relative overflow-hidden">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <div className="p-1.5 rounded-lg bg-primary/10 border border-primary/20 text-primary">
-            <Activity className="size-4 animate-pulse" />
-          </div>
-          <div>
-            <div className="text-xs font-bold uppercase tracking-wider text-foreground font-mono">
-              Сетевая телеметрия
-            </div>
-            <div className="text-[10px] text-muted-foreground">
-              {isAnyRunning ? 'Прямой перехват активен' : 'Ожидание запуска служб'}
-            </div>
+    <div className={`rounded-2xl border border-border bg-card p-4 ${className ?? ''}`}>
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm font-semibold text-foreground">Трафик</div>
+          <div className="text-[11px] text-muted-foreground">
+            {isAnyRunning ? 'Скорость сети сейчас' : 'Службы выключены'}
           </div>
         </div>
-
-        <div className="flex items-center gap-3 text-xs">
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-400 font-mono text-[11px] font-semibold">
-            <ArrowDown className="size-3" />
-            <span>{formatSpeed(currentRx)}</span>
-          </div>
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-700 dark:text-sky-400 font-mono text-[11px] font-semibold">
-            <ArrowUp className="size-3" />
-            <span>{formatSpeed(currentTx)}</span>
-          </div>
-          {isAnyRunning && (
-            <div className="flex items-center gap-1.5 text-[11px] font-mono font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-500/15 px-2.5 py-1 rounded-xl border border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.25)]">
-              <ShieldCheck className="size-3.5 text-emerald-700 dark:text-emerald-400" />
-              <span>Защита</span>
-            </div>
-          )}
+        <div className="flex items-center gap-4 text-sm font-semibold tabular-nums">
+          <span className="flex items-center gap-1" style={{ color: rxColor }}>
+            <ArrowDown className="size-4" />
+            {formatSpeed(currentRx)}
+          </span>
+          <span className="flex items-center gap-1" style={{ color: txColor }}>
+            <ArrowUp className="size-4" />
+            {formatSpeed(currentTx)}
+          </span>
         </div>
       </div>
 
-      <div className="h-16 w-full mt-1">
+      <div className="mt-2 h-24 w-full">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={data} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+          <AreaChart data={data} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="rxGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#10b981" stopOpacity={0.45} />
-                <stop offset="100%" stopColor="#10b981" stopOpacity={0.0} />
-              </linearGradient>
-              <linearGradient id="txGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#38bdf8" stopOpacity={0.35} />
-                <stop offset="100%" stopColor="#38bdf8" stopOpacity={0.0} />
+                <stop offset="0%" stopColor={rxColor} stopOpacity={0.3} />
+                <stop offset="100%" stopColor={rxColor} stopOpacity={0} />
               </linearGradient>
             </defs>
             <Tooltip
-              content={({ active, payload }) => {
-                if (active && payload && payload.length) {
-                  return (
-                    <div className="rounded-xl border border-border/80 bg-popover/95 backdrop-blur-xl px-3 py-1.5 text-[11px] font-mono shadow-xl space-y-0.5">
-                      <div className="text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
-                        <ArrowDown className="size-3" /> Входящий: {formatSpeed(payload[0]?.value as number || 0)}
-                      </div>
-                      <div className="text-sky-700 dark:text-sky-400 flex items-center gap-1">
-                        <ArrowUp className="size-3" /> Исходящий: {formatSpeed(payload[1]?.value as number || 0)}
-                      </div>
+              cursor={{ stroke: 'var(--border)' }}
+              content={({ active, payload }) =>
+                active && payload && payload.length ? (
+                  <div className="space-y-0.5 rounded-lg border border-border bg-popover px-3 py-1.5 text-[11px] font-medium tabular-nums shadow-lg">
+                    <div className="flex items-center gap-1" style={{ color: rxColor }}>
+                      <ArrowDown className="size-3" /> Входящий: {formatSpeed((payload[0]?.value as number) || 0)}
                     </div>
-                  )
-                }
-                return null
-              }}
+                    <div className="flex items-center gap-1" style={{ color: txColor }}>
+                      <ArrowUp className="size-3" /> Исходящий: {formatSpeed((payload[1]?.value as number) || 0)}
+                    </div>
+                  </div>
+                ) : null
+              }
             />
             <Area
               type="monotone"
               dataKey="rx"
-              stroke="#10b981"
-              fillOpacity={1}
+              stroke={rxColor}
               fill="url(#rxGrad)"
+              fillOpacity={1}
               strokeWidth={2}
               isAnimationActive={false}
             />
             <Area
               type="monotone"
               dataKey="tx"
-              stroke="#38bdf8"
-              fillOpacity={1}
-              fill="url(#txGrad)"
+              stroke={txColor}
+              fill="transparent"
               strokeWidth={1.5}
               isAnimationActive={false}
             />

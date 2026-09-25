@@ -1,8 +1,19 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useTheme } from 'next-themes'
-import { Home as HomeIcon, ScrollText, Settings as SettingsIcon, Info as InfoIcon, Globe, LifeBuoy, PanelLeftClose, PanelLeft, Gamepad2, Target } from 'lucide-react'
+import {
+  Home as HomeIcon,
+  ScrollText,
+  Settings as SettingsIcon,
+  Info as InfoIcon,
+  Globe,
+  LifeBuoy,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Gamepad2,
+  Target
+} from 'lucide-react'
 import ZapretIcon from '@renderer/components/zapret-icon'
 import TelegramIcon from '@renderer/components/telegram-icon'
 import logoDark from '@renderer/assets/logo.png'
@@ -10,151 +21,190 @@ import logoLight from '@renderer/assets/logo_white.png'
 import { useZapretStore } from '@renderer/store/zapret-store'
 import { useTgwsStore } from '@renderer/store/tgws-store'
 import { useIncyStore } from '@renderer/store/incy-store'
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarHeader,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  useSidebar
-} from '@renderer/components/ui/sidebar'
+import { version } from '@renderer/utils/init'
+import { cn } from '@renderer/lib/utils'
 
-const nav = [
-  { key: 'home',     path: '/home',     icon: HomeIcon,     label: 'Главная',    service: null },
-  { key: 'telegram', path: '/telegram', icon: TelegramIcon, label: 'Telegram',   service: 'tgws' },
-  { key: 'zapret',   path: '/zapret',   icon: ZapretIcon,   label: 'Zapret',     service: 'zapret' },
-  { key: 'incy',     path: '/incy',     icon: Globe,        label: 'INCY Proxy', service: 'incy' },
-  { key: 'exitlag',  path: '/exitlag',  icon: Gamepad2,     label: 'ExitLag',    service: 'exitlag' },
-  { key: 'optimizer', path: '/optimizer', icon: Target,     label: 'Оптимизатор', service: null },
-  { key: 'logs',     path: '/logs',     icon: ScrollText,   label: 'Логи',       service: null },
-  { key: 'settings', path: '/settings', icon: SettingsIcon, label: 'Настройки',  service: null },
-  { key: 'about',    path: '/about',    icon: InfoIcon,     label: 'Информация', service: null },
-  { key: 'support',  path: '/support',  icon: LifeBuoy,     label: 'Поддержка',  service: null }
+type Service = 'zapret' | 'tgws' | 'incy' | 'exitlag' | null
+
+interface NavItem {
+  key: string
+  path: string
+  icon: React.ComponentType<{ className?: string }>
+  label: string
+  service: Service
+}
+
+/** Меню по группам — как в концепции «Графит». */
+const groups: { title: string | null; items: NavItem[] }[] = [
+  { title: null, items: [{ key: 'home', path: '/home', icon: HomeIcon, label: 'Главная', service: null }] },
+  {
+    title: 'Обход блокировок',
+    items: [
+      { key: 'zapret', path: '/zapret', icon: ZapretIcon, label: 'Zapret', service: 'zapret' },
+      { key: 'telegram', path: '/telegram', icon: TelegramIcon, label: 'Telegram', service: 'tgws' }
+    ]
+  },
+  {
+    title: 'VPN',
+    items: [
+      { key: 'incy', path: '/incy', icon: Globe, label: 'INCY Proxy', service: 'incy' },
+      { key: 'exitlag', path: '/exitlag', icon: Gamepad2, label: 'ExitLag', service: 'exitlag' },
+      { key: 'optimizer', path: '/optimizer', icon: Target, label: 'Оптимизатор', service: null }
+    ]
+  },
+  {
+    title: 'Система',
+    items: [
+      { key: 'logs', path: '/logs', icon: ScrollText, label: 'Логи', service: null },
+      { key: 'settings', path: '/settings', icon: SettingsIcon, label: 'Настройки', service: null },
+      { key: 'about', path: '/about', icon: InfoIcon, label: 'Информация', service: null },
+      { key: 'support', path: '/support', icon: LifeBuoy, label: 'Поддержка', service: null }
+    ]
+  }
 ]
 
+const STORAGE_KEY = 'lazeyka.sidebarCollapsed'
+
+function readCollapsed(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Боковое меню «Графит»: панель во всю высоту с подписями и группами,
+ * сворачивается в полоску иконок (состояние запоминается). Индикаторы
+ * работающих сервисов — статичные точки: бесконечные анимации заставляли
+ * окно перерисовываться 60 раз в секунду даже в покое.
+ */
 const AppSidebar: React.FC = () => {
   const { t } = useTranslation()
   const location = useLocation()
   const navigate = useNavigate()
-  const { toggleSidebar, state } = useSidebar()
   const { resolvedTheme } = useTheme()
-  const collapsed = state === 'collapsed'
   const logoSrc = resolvedTheme === 'light' ? logoLight : logoDark
+  const [collapsed, setCollapsed] = useState(readCollapsed)
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, collapsed ? '1' : '0')
+    } catch {
+      /* noop */
+    }
+  }, [collapsed])
 
   const zapretRunning = useZapretStore((s) => s.status.state === 'running')
   const tgwsRunning = useTgwsStore((s) => s.status.state === 'running')
   const incyRunning = useIncyStore((s) => s.status.state === 'running')
-  // ExitLag «работает», только когда ядро подтвердило сессию с белым списком
-  // приложений — а не просто когда включён флажок на его странице.
+  // ExitLag «работает», только когда ядро подтвердило сессию с белым списком.
   const exitLagRunning = useIncyStore((s) => s.status.state === 'running' && Boolean(s.status.exitLagActive))
 
-  const getServiceActive = (service: string | null): boolean => {
-    if (service === 'zapret') return zapretRunning
-    if (service === 'tgws') return tgwsRunning
-    if (service === 'incy') return incyRunning
-    if (service === 'exitlag') return exitLagRunning
-    return false
-  }
+  const isRunning = (service: Service): boolean =>
+    service === 'zapret'
+      ? zapretRunning
+      : service === 'tgws'
+        ? tgwsRunning
+        : service === 'incy'
+          ? incyRunning
+          : service === 'exitlag'
+            ? exitLagRunning
+            : false
 
   return (
-    <Sidebar collapsible="icon" side="left" variant="floating" className="border-border/60 bg-sidebar/95 backdrop-blur-xl">
-      <SidebarHeader className="h-14.25 p-0 flex items-center justify-center shrink-0 border-b border-border/40">
-        <div className="relative group flex items-center justify-center">
-          <img
-            src={logoSrc}
-            alt="LAZEYKA"
-            draggable={false}
-            className="h-8.5 w-8.5 object-contain select-none pointer-events-none transition-transform duration-300 group-hover:scale-105"
-          />
-        </div>
-      </SidebarHeader>
-      <SidebarContent className="py-2">
-        {/* В свёрнутом виде горизонтальные отступы убираются, а элементы
-            центрируются.
-            Причина: рельс шириной 3rem (48px) за вычетом p-2 группы и px-1
-            меню оставляет 24px контента, тогда как кнопка в icon-режиме имеет
-            жёсткий размер 36px. Она не влезала и прижималась влево, вылезая
-            за правый край — отсюда и «кривые» иконки, и индикатор, который
-            наезжал на них, потому что был приколот к уехавшему краю кнопки. */}
-        <SidebarGroup className="group-data-[collapsible=icon]:p-0">
-          <SidebarGroupContent>
-            <SidebarMenu className="gap-1 px-1 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:items-center">
-              {nav.map((item) => {
-                const Icon = item.icon
-                const isActive = location.pathname.startsWith(item.path)
-                const isServiceRunning = getServiceActive(item.service)
+    <aside
+      className={cn(
+        'relative z-20 flex h-full shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-out',
+        collapsed ? 'w-[60px]' : 'w-[212px]'
+      )}
+    >
+      {/* Логотип + версия; зона перетаскивания окна. */}
+      <div className={cn('app-drag flex h-[57px] shrink-0 items-center gap-2.5', collapsed ? 'justify-center' : 'px-4')}>
+        <img
+          src={logoSrc}
+          alt="LAZEYKA"
+          draggable={false}
+          className="size-8 shrink-0 select-none rounded-lg object-cover"
+        />
+        {!collapsed && (
+          <div className="min-w-0 leading-tight">
+            <div className="text-[13px] font-bold tracking-[0.16em] text-foreground">LAZEYKA</div>
+            {version && <div className="text-[10.5px] font-medium text-muted-foreground">v{version}</div>}
+          </div>
+        )}
+      </div>
 
+      <nav className={cn('flex-1 overflow-y-auto overflow-x-hidden pb-2 no-scrollbar', collapsed ? 'px-2' : 'px-2.5')}>
+        {groups.map((g, gi) => (
+          <div key={gi} className={gi === 0 ? 'pt-1' : 'pt-3'}>
+            {g.title &&
+              (collapsed ? (
+                <div className="mx-2 mb-2 h-px bg-sidebar-border" />
+              ) : (
+                <div className="mb-1 px-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+                  {g.title}
+                </div>
+              ))}
+            <div className="space-y-0.5">
+              {g.items.map((item) => {
+                const Icon = item.icon
+                const active = location.pathname.startsWith(item.path)
+                const running = isRunning(item.service)
+                const label = t(`sider.${item.key}`, { defaultValue: item.label })
                 return (
-                  <SidebarMenuItem key={item.key}>
-                    <SidebarMenuButton
-                      className={`relative cursor-pointer transition-all duration-200 rounded-xl font-medium overflow-visible ${
-                        isActive
-                          ? 'bg-primary/15 text-primary border border-primary/40 shadow-[0_0_14px_-2px_rgba(99,102,241,0.3)] font-semibold'
-                          : 'text-foreground/75 hover:text-foreground hover:bg-foreground/[0.06]'
-                      }`}
-                      tooltip={item.label}
-                      isActive={isActive}
-                      onClick={() => navigate(item.path)}
-                    >
-                      {isActive && !collapsed && (
-                        <span className="absolute left-0 top-2 bottom-2 w-1 rounded-r-md bg-primary shadow-[0_0_8px_currentColor]" />
-                      )}
-                      {/* Индикатор «сервис работает» в свёрнутом виде.
-                          Уменьшен и придвинут вплотную к углу: раньше точка
-                          2.5 с отступом 4px попадала прямо на верхний правый
-                          угол глифа. Кольцо цветом рельса отделяет её от
-                          иконки, а не закрашивает её. */}
-                      {isServiceRunning && (
-                        <div className={`absolute top-0.5 right-0.5 size-2 pointer-events-none z-30 ${collapsed ? 'flex' : 'hidden group-data-[collapsible=icon]:flex'}`}>
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-80" />
-                          <span className="relative inline-flex rounded-full size-2 bg-emerald-400 ring-2 ring-sidebar shadow-[0_0_6px_#34d399]" />
-                        </div>
-                      )}
-                      <div className="flex items-center justify-center size-5 shrink-0">
-                        <Icon className="size-4.5" />
-                      </div>
-                      {!collapsed && (
-                        <span className="text-xs tracking-wide truncate group-data-[collapsible=icon]:hidden">
-                          {t(`sider.${item.key}`, { defaultValue: item.label })}
-                        </span>
-                      )}
-                      {isServiceRunning && (
-                        <div className={`ml-auto items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-[9px] font-mono font-bold shrink-0 ${!collapsed ? 'flex group-data-[collapsible=icon]:hidden' : 'hidden'}`}>
-                          <span className="size-1.5 rounded-full bg-emerald-400 shadow-[0_0_4px_#34d399] animate-pulse" />
-                          ON
-                        </div>
-                      )}
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
+                  <button
+                    key={item.key}
+                    type="button"
+                    title={collapsed ? label : undefined}
+                    onClick={() => navigate(item.path)}
+                    className={cn(
+                      'group relative flex w-full cursor-pointer items-center rounded-lg text-[13px] font-medium transition-colors',
+                      collapsed ? 'h-10 justify-center' : 'h-9 gap-2.5 px-2.5',
+                      active
+                        ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                        : 'text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground'
+                    )}
+                  >
+                    {active && (
+                      <span
+                        className={cn(
+                          'absolute top-2 bottom-2 w-[3px] rounded-r-full bg-primary',
+                          collapsed ? '-left-2' : '-left-2.5'
+                        )}
+                      />
+                    )}
+                    <Icon className={cn('size-[18px] shrink-0', active && 'text-primary')} />
+                    {!collapsed && <span className="truncate">{label}</span>}
+                    {running &&
+                      (collapsed ? (
+                        <span className="absolute top-1.5 right-1.5 size-2 rounded-full bg-primary ring-2 ring-sidebar" />
+                      ) : (
+                        <span className="ml-auto size-2 shrink-0 rounded-full bg-primary shadow-[0_0_0_3px_color-mix(in_oklab,var(--primary)_18%,transparent)]" />
+                      ))}
+                  </button>
                 )
               })}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
-      <SidebarFooter className="border-t border-border/40 p-2 group-data-[collapsible=icon]:px-0">
-        <SidebarMenu className="group-data-[collapsible=icon]:items-center">
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip={collapsed ? 'Развернуть' : 'Свернуть'}
-              onClick={toggleSidebar}
-              className="cursor-pointer text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06] rounded-xl"
-            >
-              {collapsed ? <PanelLeft className="size-4" /> : <PanelLeftClose className="size-4" />}
-              {!collapsed && (
-                <span className="text-xs group-data-[collapsible=icon]:hidden">
-                  Свернуть
-                </span>
-              )}
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarFooter>
-    </Sidebar>
+            </div>
+          </div>
+        ))}
+      </nav>
+
+      <div className={cn('shrink-0 border-t border-sidebar-border p-2', collapsed && 'flex justify-center')}>
+        <button
+          type="button"
+          onClick={() => setCollapsed((v) => !v)}
+          title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
+          className={cn(
+            'flex cursor-pointer items-center rounded-lg text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-foreground',
+            collapsed ? 'size-9 justify-center' : 'h-8 w-full gap-2 px-2.5'
+          )}
+        >
+          {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+          {!collapsed && <span>Свернуть меню</span>}
+        </button>
+      </div>
+    </aside>
   )
 }
 

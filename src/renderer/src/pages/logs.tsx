@@ -184,7 +184,7 @@ const Logs: React.FC = () => {
 
   return (
     <BasePage
-      title="Консоль логов (Cyber Terminal)"
+      title="Консоль логов"
       contentClassName="flex flex-col"
       header={
         <div className="flex items-center gap-1.5">
@@ -240,7 +240,7 @@ const Logs: React.FC = () => {
               className={cn(
                 'h-8 text-xs font-mono rounded-xl cursor-pointer transition-all uppercase',
                 sourceFilter === s
-                  ? 'bg-primary text-primary-foreground shadow-[0_0_12px_rgba(99,102,241,0.3)] font-bold'
+                  ? 'bg-primary text-primary-foreground font-bold'
                   : 'border-border/70 hover:bg-foreground/[0.04]'
               )}
             >
@@ -252,7 +252,7 @@ const Logs: React.FC = () => {
             className={cn(
               'h-8 w-8 rounded-xl cursor-pointer transition-all',
               trace
-                ? 'bg-primary text-primary-foreground shadow-[0_0_12px_rgba(99,102,241,0.3)]'
+                ? 'bg-primary text-primary-foreground '
                 : 'border-border/70 hover:bg-foreground/[0.04]'
             )}
             variant={trace ? 'default' : 'outline'}
@@ -271,7 +271,7 @@ const Logs: React.FC = () => {
           </span>
         </div>
 
-        <div className="flex-1 min-h-0 font-mono text-xs rounded-2xl border border-border/60 bg-black/40 backdrop-blur-xl p-2 overflow-hidden shadow-inner">
+        <div className="flex-1 min-h-0 font-mono text-xs rounded-2xl border border-border/60 bg-black/40 p-2 overflow-hidden shadow-inner">
           <Virtuoso
             ref={virtuosoRef}
             data={filteredLogs}

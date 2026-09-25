@@ -195,13 +195,15 @@ export async function resolveGameServerGeo(host: string, port = 27015): Promise<
     // Ignore fetch error, fallback below
   }
 
-  // Fallback heuristic: check if host/IP matches common regions
+  // Fallback heuristic: check if host/IP matches common regions.
+  // Если по имени хоста ничего не понятно — честно «неизвестно», а не
+  // выдуманный Франкфурт (он искажал оценку маршрута для всех узлов).
   const lowerHost = host.toLowerCase()
-  let fallbackLat = 50.1109
-  let fallbackLon = 8.6821
-  let country = 'Germany'
-  let countryCode = 'DE'
-  let city = 'Frankfurt'
+  let fallbackLat: number | undefined
+  let fallbackLon: number | undefined
+  let country: string | undefined
+  let countryCode: string | undefined
+  let city: string | undefined
 
   if (lowerHost.includes('hel') || lowerHost.includes('fin')) {
     ;[fallbackLat, fallbackLon] = CITY_COORDINATES.helsinki

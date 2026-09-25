@@ -104,8 +104,20 @@ export async function importLazeykaProfile(): Promise<{ success: boolean; messag
   }
 
   // 1. Restore config
-  if (bundle.config) {
-    await patchAppConfig(bundle.config)
+  // Пути к исполняемым файлам из чужого профиля не принимаем: tgws.binaryPath
+  // запускается с правами администратора, и присланный «профиль» мог
+  // подсунуть любой exe (в том числе с сетевой папки).
+  if (bundle.config && typeof bundle.config === 'object') {
+    const strip = (o: any): any => {
+      if (!o || typeof o !== 'object' || Array.isArray(o)) return o
+      const out: any = {}
+      for (const [k, v] of Object.entries(o)) {
+        if (/(binary|bundle|exe)Path$/i.test(k)) continue
+        out[k] = strip(v)
+      }
+      return out
+    }
+    await patchAppConfig(strip(bundle.config))
   }
 
   // 2. Restore hostlists
@@ -116,7 +128,8 @@ export async function importLazeykaProfile(): Promise<{ success: boolean; messag
 
   if (bundle.lists && typeof bundle.lists === 'object') {
     for (const [filename, listData] of Object.entries(bundle.lists)) {
-      if (typeof listData === 'string' && filename.endsWith('.txt')) {
+      // Только простое имя файла: «..\\..\\x.txt» записал бы файл куда угодно.
+      if (typeof listData === 'string' && path.basename(filename) === filename && /^[\w .()-]+\.txt$/i.test(filename)) {
         try {
           writeFileSync(path.join(listsDir, filename), listData, 'utf-8')
         } catch (e) {
