@@ -2,7 +2,7 @@ import React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useTheme } from 'next-themes'
-import { Home as HomeIcon, ScrollText, Settings as SettingsIcon, Info as InfoIcon, Globe, LifeBuoy, PanelLeftClose, PanelLeft, Gamepad2 } from 'lucide-react'
+import { Home as HomeIcon, ScrollText, Settings as SettingsIcon, Info as InfoIcon, Globe, LifeBuoy, PanelLeftClose, PanelLeft, Gamepad2, Target } from 'lucide-react'
 import ZapretIcon from '@renderer/components/zapret-icon'
 import TelegramIcon from '@renderer/components/telegram-icon'
 import logoDark from '@renderer/assets/logo.png'
@@ -29,6 +29,7 @@ const nav = [
   { key: 'zapret',   path: '/zapret',   icon: ZapretIcon,   label: 'Zapret',     service: 'zapret' },
   { key: 'incy',     path: '/incy',     icon: Globe,        label: 'INCY Proxy', service: 'incy' },
   { key: 'exitlag',  path: '/exitlag',  icon: Gamepad2,     label: 'ExitLag',    service: 'exitlag' },
+  { key: 'optimizer', path: '/optimizer', icon: Target,     label: 'Оптимизатор', service: null },
   { key: 'logs',     path: '/logs',     icon: ScrollText,   label: 'Логи',       service: null },
   { key: 'settings', path: '/settings', icon: SettingsIcon, label: 'Настройки',  service: null },
   { key: 'about',    path: '/about',    icon: InfoIcon,     label: 'Информация', service: null },

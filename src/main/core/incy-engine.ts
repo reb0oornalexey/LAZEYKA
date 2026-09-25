@@ -308,6 +308,8 @@ export interface IncySettings {
   routeAutoConnectBest?: boolean
   /** Автопереключение: узел рвёт соединения / DNS молчит → переход на рабочий узел. */
   autoFailover?: boolean
+  /** Оптимизатор: добавлять IP игрового сервера в список Zapret (по умолчанию — да). */
+  optimizerAddToZapret?: boolean
   /** Узлы, запрещённые для автовыбора (ключ «имя|сервер:порт» — переживает обновление подписки). */
   autoSelectExcludedKeys?: string[]
   /** Слова в названии узла, которые исключают его из автовыбора (через запятую). */
@@ -777,21 +779,49 @@ const TUNNEL_SETTING_KEYS: ReadonlySet<string> = new Set([
 let reapplyTimer: ReturnType<typeof setTimeout> | null = null
 
 /**
+ * Снимок настроек туннеля, с которыми поднята текущая сессия.
+ *
+ * Раньше «нужно ли переподключиться» решалось сравнением файла с патчем. Если
+ * ExitLag включали, пока туннель ещё подключался, или файл уже совпадал с
+ * патчем (страница показывала устаревшее состояние), переподключения не было:
+ * ExitLag «включён», а туннель работает как обычный VPN, и индикатор не
+ * загорается. Теперь сравниваем с тем, что реально применено в сессии.
+ */
+let sessionTunnelSig: string | null = null
+function tunnelSig(s: IncySettings): string {
+  return JSON.stringify([...TUNNEL_SETTING_KEYS].map((k) => (s as any)[k] ?? null))
+}
+function tunnelOutdated(): boolean {
+  return (
+    (currentStatus.state === 'running' || isConnecting) &&
+    sessionTunnelSig !== null &&
+    tunnelSig(loadIncySettings()) !== sessionTunnelSig
+  )
+}
+
+/**
  * Переподключить живой туннель, чтобы он подхватил новые настройки.
  *
  * С задержкой и слиянием: добавление трёх игр подряд даёт одно
  * переподключение, а не три, и последнее изменение не теряется из-за
  * защиты «подключение уже выполняется».
  */
-function scheduleTunnelReapply(): void {
+let reapplyForced = false
+function scheduleTunnelReapply(force = false): void {
+  if (force) reapplyForced = true
   if (reapplyTimer) clearTimeout(reapplyTimer)
   reapplyTimer = setTimeout(() => {
     reapplyTimer = null
-    if (currentStatus.state !== 'running' || !currentStatus.activeNodeId) return
     if (isConnecting) {
       scheduleTunnelReapply()
       return
     }
+    const forced = reapplyForced
+    reapplyForced = false
+    if (currentStatus.state !== 'running' || !currentStatus.activeNodeId) return
+    // Настройки уже применены (например, их успело подхватить идущее
+    // подключение) — лишний разрыв туннеля не нужен.
+    if (!forced && !tunnelOutdated()) return
     appendLog('Настройки туннеля изменились — переподключение для применения.')
     connectIncyNode(currentStatus.activeNodeId).catch((e) => {
       appendLog(`Новые настройки не применились: ${e instanceof Error ? e.message : String(e)}`)
@@ -891,7 +921,7 @@ async function runFailover(reason: string): Promise<void> {
 /** Переподключить туннель, если он поднят (настройки вне INCY, например Telegram). */
 export function reapplyIncyTunnelIfRunning(): boolean {
   if (currentStatus.state !== 'running' || !currentStatus.activeNodeId) return false
-  scheduleTunnelReapply()
+  scheduleTunnelReapply(true)
   return true
 }
 
@@ -907,12 +937,10 @@ export function patchIncySettings(patch: Partial<IncySettings>): { settings: Inc
   const current = loadIncySettings()
   const next = { ...current, ...patch } as IncySettings
   saveIncySettings(next)
-  const touchesTunnel = Object.keys(patch).some(
-    (k) =>
-      TUNNEL_SETTING_KEYS.has(k) &&
-      JSON.stringify((current as any)[k]) !== JSON.stringify((patch as any)[k])
-  )
-  const reapplied = touchesTunnel && currentStatus.state === 'running' && Boolean(currentStatus.activeNodeId)
+  // Переподключаемся, если применённые в сессии настройки туннеля отличаются
+  // от новых — в том числе когда туннель сейчас ещё подключается.
+  const reapplied =
+    Object.keys(patch).some((k) => TUNNEL_SETTING_KEYS.has(k)) && (isConnecting || tunnelOutdated())
   if (reapplied) scheduleTunnelReapply()
   return { settings: loadIncySettings(), reapplied }
 }
@@ -3155,7 +3183,12 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       const tgwsPaths = [tgwsCliPaths()?.python, tgwsBinaryPath()].filter((p): p is string => Boolean(p))
       for (const p of tgwsPaths) perAppRegexes.push(exactPathRegex(p))
     }
-    const perAppMatcher = perAppRegexes.length > 0 ? { process_path_regex: perAppRegexes } : null
+    // Только при включённом режиме приложений. Раньше правило для списка
+    // добавлялось и при выключенном ExitLag: в логе писалось «Режим ExitLag…»,
+    // а в режиме «Все, кроме выбранных» приложения шли мимо VPN, хотя
+    // переключатель был выключен.
+    const perAppMatcher =
+      settings.perAppProxy && perAppRegexes.length > 0 ? { process_path_regex: perAppRegexes } : null
 
     // ExitLag DNS:
     // In proxy_only mode, whitelisted processes resolve via remote-dns (through
@@ -3535,12 +3568,16 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       // XRAY_ONLY: Xray has no Clash API, so bytes cannot be counted here —
       // the session still records duration and the connection itself.
       beginStatsSession(0)
+      sessionTunnelSig = tunnelSig(settings)
       const okStatus = broadcastStatus({
         state: 'running',
         activeNodeId: target.id,
         selectedNodeId: target.id,
-        connectedAt: Date.now()
+        connectedAt: Date.now(),
+        exitLagActive: false,
+        exitLagApps: []
       })
+      if (tunnelOutdated()) scheduleTunnelReapply()
       appendLog(`Успешно подключено к ${target.name} (ядро Xray)`)
       showSystemNotification(
         'INCY Proxy подключен',
@@ -3776,6 +3813,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     beginStatsSession(statsClashPort)
 
     exitLagLogTagging = isExitLagWhitelist
+    sessionTunnelSig = tunnelSig(settings)
     const status = broadcastStatus({
       state: 'running',
       activeNodeId: target.id,
@@ -3787,6 +3825,8 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
 
     appendLog(`Успешно подключено к ${target.name}`)
     showSystemNotification('INCY Proxy подключен', `Активен узел: ${target.name} (${target.protocol.toUpperCase()})`)
+    // Настройки поменяли, пока шло подключение, — применяем их сразу.
+    if (tunnelOutdated()) scheduleTunnelReapply()
     return status
   } finally {
     isConnecting = false
