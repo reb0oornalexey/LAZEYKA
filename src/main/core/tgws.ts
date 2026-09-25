@@ -346,6 +346,58 @@ function levelOf(line: string): ControllerLog['type'] {
   return 'info'
 }
 
+/**
+ * Фильтр вывода Flowseal. На уровне INFO он пишет строку на КАЖДОЕ соединение
+ * Telegram («pool hit», «WS session closed», «trying CF proxy»…) и раз в
+ * минуту — статистику. Telegram держит десятки соединений, поэтому лог
+ * забивался только TgWsProxy, а в отчёт не попадало ничего другого.
+ *
+ *  - строки отдельных соединений ([127.0.0.1:порт]) уровня INFO не выводим;
+ *  - статистику — раз в 15 минут;
+ *  - предупреждения и ошибки — с точностью до порта клиента не чаще раза в
+ *    минуту, с числом пропущенных повторов;
+ *  - служебные строки запуска и прочее INFO — как есть (с тем же ограничением
+ *    на повторы).
+ */
+const TGWS_STATS_EVERY_MS = 15 * 60_000
+const TGWS_DEDUPE_MS = 60_000
+let lastStatsAt = 0
+const tgwsRecent = new Map<string, { at: number; skipped: number }>()
+
+function tgwsKey(line: string): string {
+  return line
+    .replace(/\[127\.0\.0\.1:\d+\]\s*/g, '')
+    .replace(/\d+(?:\.\d+)?\s*(?:s|ms|KB|MB|B)\b/g, 'N')
+    .replace(/\d+/g, 'N')
+}
+
+function emitTgwsLine(raw: string): void {
+  // Flowseal ставит своё время («22:22:16  INFO   ») — у нас оно уже есть.
+  const line = raw.trimEnd().replace(/^\d{2}:\d{2}:\d{2}\s+/, '')
+  if (!line.trim()) return
+  const level = levelOf(line)
+  if (level === 'info') {
+    if (/\[127\.0\.0\.1:\d+\]/.test(line)) return
+    if (/\bstats:/.test(line)) {
+      const now = Date.now()
+      if (now - lastStatsAt < TGWS_STATS_EVERY_MS) return
+      lastStatsAt = now
+      log('info', line)
+      return
+    }
+  }
+  const key = tgwsKey(line)
+  const now = Date.now()
+  const prev = tgwsRecent.get(key)
+  if (prev && now - prev.at < TGWS_DEDUPE_MS) {
+    prev.skipped++
+    return
+  }
+  if (tgwsRecent.size > 500) tgwsRecent.clear()
+  tgwsRecent.set(key, { at: now, skipped: 0 })
+  log(level, prev && prev.skipped > 0 ? `${line} (ещё ${prev.skipped} таких за минуту)` : line)
+}
+
 function pipeLines(stream: NodeJS.ReadableStream | null | undefined): void {
   if (!stream) return
   let tail = ''
@@ -353,10 +405,10 @@ function pipeLines(stream: NodeJS.ReadableStream | null | undefined): void {
     const text = tail + buf.toString()
     const lines = text.split(/\r?\n/)
     tail = lines.pop() ?? ''
-    for (const line of lines) if (line.trim()) log(levelOf(line), line.trimEnd())
+    for (const line of lines) emitTgwsLine(line)
   })
   stream.on('end', () => {
-    if (tail.trim()) log(levelOf(tail), tail.trimEnd())
+    if (tail.trim()) emitTgwsLine(tail)
   })
 }
 

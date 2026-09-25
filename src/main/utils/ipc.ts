@@ -1,6 +1,7 @@
 import { ipcMain, app, shell, clipboard, BrowserWindow, dialog, desktopCapturer, screen } from 'electron'
 import { generateCloudflareWarpNode } from '../core/incy-warp'
 import { optimizeRoute } from '../core/route-optimizer'
+import { extractServerIp, extractServerHost } from './server-ip'
 import { listRunningProcesses } from './process-helper'
 import { getAppConfig, patchAppConfig } from '../config'
 import { applyTheme, setNativeTheme } from '../resolve/theme'
@@ -306,7 +307,7 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('zapret:getStrategyTestResults', h(() => getStrategyTestResults()))
   ipcMain.handle('zapret:isStrategyTestRunning', h(() => isStrategyTestRunning()))
 
-  // ---- Zapret IP list (ipset-all.txt) ------------------------------------
+  // ---- Zapret IP list (list-general.txt) -----------------------------------
   ipcMain.handle('zapret:getCuratedIpSets', h(() => getCuratedIpSets()))
   ipcMain.handle('zapret:getIpList', h(() => getIpListSnapshot()))
   ipcMain.handle('zapret:applyIpListPatch', h((patch) =>
@@ -490,6 +491,33 @@ export function registerIpcMainHandlers(): void {
   // Оптимизатор маршрута: реальный замер пинга/джиттера/потерь до игрового
   // сервера через каждый узел (см. route-optimizer.ts).
   ipcMain.handle('incy:pingGameServer', h((target) => optimizeRoute(String(target))))
+  // IP сервера из оптимизатора → наш список Zapret (тот же, что на вкладке
+  // Zapret, list-general.txt). Только IP: без connect, порта и пароля.
+  // Работающий Zapret перезапускается, чтобы winws перечитал список.
+  ipcMain.handle('zapret:addGameServerIp', h(async (target) => {
+    const text = String(target ?? '')
+    let ip = extractServerIp(text)
+    if (!ip) {
+      const host = extractServerHost(text)
+      if (host) {
+        try {
+          const { promises: dnsp } = await import('node:dns')
+          ip = extractServerIp((await dnsp.lookup(host, { family: 4 })).address)
+        } catch {
+          ip = null
+        }
+      }
+    }
+    const running = getZapretStatus().state === 'running'
+    if (!ip) return { ip: null, added: false, total: 0, restarted: false, running }
+    const res = applyIpListPatch({ customCidrs: [ip] })
+    let restarted = false
+    if (res.added > 0 && running) {
+      await restartZapret()
+      restarted = true
+    }
+    return { ip, added: res.added > 0, total: res.total, restarted, running }
+  }))
 
   // ---- Process & Dialog Helpers (Per-App Routing & QR Import) ------------
   ipcMain.handle('system:getRunningProcesses', h(() => listRunningProcesses()))

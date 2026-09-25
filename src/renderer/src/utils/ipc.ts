@@ -160,6 +160,18 @@ export interface IpListApplyResult extends IpListSnapshot {
 export const zapretGetCuratedIpSets = (): Promise<CuratedIpSet[]> =>
   invoke('zapret:getCuratedIpSets')
 export const zapretGetIpList = (): Promise<IpListSnapshot> => invoke('zapret:getIpList')
+export interface GameServerIpResult {
+  /** Только IP сервера (без connect и порта) или null, если его не нашлось. */
+  ip: string | null
+  /** true — IP дописан в список; false — он там уже был. */
+  added: boolean
+  /** Сколько всего записей в списке Zapret. */
+  total: number
+  restarted: boolean
+  running: boolean
+}
+export const zapretAddGameServerIp = (target: string): Promise<GameServerIpResult> =>
+  invoke('zapret:addGameServerIp', target)
 export const zapretApplyIpListPatch = (patch: IpListPatch): Promise<IpListApplyResult> =>
   invoke('zapret:applyIpListPatch', patch)
 export const zapretClearIpList = (): Promise<IpListSnapshot> => invoke('zapret:clearIpList')
@@ -579,6 +591,8 @@ export interface IncySettings {
   routeAutoConnectBest?: boolean
   /** Автопереключение при сбое узла. */
   autoFailover?: boolean
+  /** Оптимизатор: добавлять IP игрового сервера в список Zapret (по умолчанию — да). */
+  optimizerAddToZapret?: boolean
   /** Узлы, запрещённые для автовыбора (ключ «имя|сервер:порт»). */
   autoSelectExcludedKeys?: string[]
   /** Слова в названии, исключающие узел из автовыбора (через запятую). */
