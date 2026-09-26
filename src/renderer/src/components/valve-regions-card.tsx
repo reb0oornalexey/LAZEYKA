@@ -187,8 +187,9 @@ const ValveRegionsCard: React.FC = () => {
         ))}
 
         <p className="text-xs text-muted-foreground">
-          Обычный матчмейкинг Valve выбирает сервер по пингу до этих точек. «Напрямую» — настоящий пинг с этого
-          ПК мимо VPN. «Через VPN» — оценка: задержка до узла плюс расстояние от узла до точки Valve.
+          Обычный матчмейкинг Valve выбирает сервер по пингу до этих точек. «Напрямую» — пинг с этого ПК мимо
+          VPN. «Через VPN» — настоящий замер через каждый узел до серверов Steam в том же датацентре; «~» —
+          оценка для точек партнёров Valve, где своих серверов Steam нет.
         </p>
 
         {report && (
@@ -196,10 +197,10 @@ const ValveRegionsCard: React.FC = () => {
             <div className="grid grid-cols-[1fr_90px_1.4fr] gap-2 bg-muted/40 px-3 py-2 text-[11px] font-semibold text-muted-foreground">
               <span>Регион</span>
               <span>Напрямую</span>
-              <span>Через VPN (оценка)</span>
+              <span>Через VPN (лучший узел)</span>
             </div>
             {rows.map((r) => {
-              const better = r.best && (r.directMs == null || r.best.estimateMs < r.directMs)
+              const better = r.best && (r.directMs == null || r.best.ms < r.directMs)
               return (
                 <div key={r.code} className="grid grid-cols-[1fr_90px_1.4fr] items-center gap-2 border-t border-border/40 px-3 py-1.5 text-xs">
                   <span className="truncate font-medium">{r.name}</span>
@@ -210,7 +211,13 @@ const ValveRegionsCard: React.FC = () => {
                     {r.best ? (
                       <>
                         <span className="min-w-0 truncate">
-                          <span className={cn('font-mono font-semibold', tone(r.best.estimateMs))}>~{r.best.estimateMs} мс</span>
+                          <span
+                            className={cn('font-mono font-semibold', tone(r.best.ms))}
+                            title={r.best.measured ? 'Замер через узел' : 'Оценка: замер до ближайшего датацентра Valve плюс расстояние'}
+                          >
+                            {r.best.measured ? '' : '~'}
+                            {r.best.ms} мс
+                          </span>
                           <span className="text-muted-foreground"> · {cleanName(r.best.nodeName)}</span>
                         </span>
                         {better && (
@@ -239,9 +246,14 @@ const ValveRegionsCard: React.FC = () => {
             {showAll ? 'Показать только ближайшие' : `Показать все регионы (${report.regions.length})`}
           </button>
         )}
-        {report && report.nodesWithoutGeo > 0 && (
+        {report && (
           <p className="text-[11px] text-muted-foreground">
-            У {report.nodesWithoutGeo} узлов не удалось определить местоположение — для них оценки нет.
+            Проверено узлов: {report.nodesMeasured}
+            {report.nodesFailed > 0 && `, не ответили: ${report.nodesFailed}`}.
+            {report.nodesExcluded > 0 &&
+              ` Узлы, исключённые из автовыбора в INCY (${report.nodesExcluded}), не проверялись.`}
+            {' '}Через узлы замеряются регионы до 200 мс напрямую, дальше — только оценка «~», если рядом есть
+            замеренный датацентр.
           </p>
         )}
       </CardContent>

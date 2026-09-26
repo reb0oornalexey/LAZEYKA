@@ -6,30 +6,43 @@
  * (ISteamApps/GetSDRConfig), с запасной копией на диске.
  *
  * Напрямую — настоящий ICMP-пинг с физического адаптера (мимо VPN).
- * Через узел VPN — оценка: задержка до узла + расчёт по расстоянию от узла до
- * точки Valve. Ретрансляторы не отвечают ни на TCP, ни на простой UDP, так что
- * «честно» померить их через прокси нельзя; оценка честно подписана.
+ *
+ * Через узел VPN — настоящий замер: сами ретрансляторы не отвечают ни на TCP,
+ * ни на простой UDP, но в каждом датацентре Valve рядом с ними стоят серверы
+ * Steam (cmp1-sto1.steamserver.net и т. п.). Через временное ядро узла
+ * открываем к такому серверу TLS и шлём несколько запросов по одному
+ * соединению: время ответа — задержка ПК → узел → датацентр Valve. Для точек
+ * партнёров Valve (Китай, Datapacket), где серверов Steam нет, — оценка от
+ * ближайшего датацентра Valve, помеченная «~».
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import net from 'node:net'
+import tls from 'node:tls'
+import dns from 'node:dns/promises'
 import path from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { BrowserWindow } from 'electron'
 import { dataDir } from '../utils/dirs'
-import { icmpRtt, physicalSourceIp, tcpRtt } from './core-probe'
-import { calculateFiberRtt, resolveGameServerGeo } from './game-ping'
+import { icmpRtt, physicalSourceIp, socksConnect, startTempCore, withCoreSlot, type TempCore } from './core-probe'
+import { calculateFiberRtt } from './game-ping'
 import { isNodeAllowedForAuto, loadIncyNodes, loadIncySettings, type IncyNode } from './incy-engine'
 
 export interface ValveRegionResult {
   code: string
   name: string
   directMs: number | null
-  best?: { nodeId: string; nodeName: string; estimateMs: number }
+  /** Лучший узел: ms — задержка ПК → узел → регион; measured=false — оценка «~». */
+  best?: { nodeId: string; nodeName: string; ms: number; measured: boolean }
 }
 
 export interface ValveRegionsReport {
   regions: ValveRegionResult[]
+  /** Узлы, через которые замер прошёл. */
   nodesMeasured: number
-  /** Сколько узлов не удалось привязать к месту (нет геоданных). */
-  nodesWithoutGeo: number
+  /** Узлы, через которые не прошёл ни один запрос (не отвечают). */
+  nodesFailed: number
+  /** Узлы, исключённые из автовыбора в INCY: их не проверяем. */
+  nodesExcluded: number
   fetchedAt: number
 }
 
@@ -73,25 +86,6 @@ const RU_NAMES: Record<string, string> = {
   seo: 'Сеул',
   syd: 'Сидней',
   jnb: 'Йоханнесбург'
-}
-
-/** Примерные координаты (столица или главный узел связи) по коду страны. */
-const COUNTRY_COORDS: Record<string, [number, number]> = {
-  NL: [52.37, 4.9], DE: [50.11, 8.68], SE: [59.33, 18.06], FI: [60.17, 24.94], PL: [52.23, 21.01],
-  FR: [48.86, 2.35], GB: [51.51, -0.13], US: [39.0, -77.5], TR: [41.01, 28.98], KZ: [43.24, 76.89],
-  LV: [56.95, 24.1], LT: [54.69, 25.28], EE: [59.44, 24.75], AT: [48.21, 16.37], CH: [47.37, 8.54],
-  IT: [45.46, 9.19], ES: [40.42, -3.7], JP: [35.68, 139.69], SG: [1.35, 103.82], AE: [25.2, 55.27],
-  RU: [55.75, 37.62], UA: [50.45, 30.52], CZ: [50.08, 14.44], RO: [44.43, 26.1], BG: [42.7, 23.32],
-  HU: [47.5, 19.04], NO: [59.91, 10.75], DK: [55.68, 12.57], IE: [53.35, -6.26], AM: [40.18, 44.51],
-  GE: [41.72, 44.78], HK: [22.32, 114.17], CA: [43.65, -79.38], BR: [-23.55, -46.63], MD: [47.01, 28.86],
-  RS: [44.79, 20.45], BY: [53.9, 27.56], UZ: [41.3, 69.24], IL: [32.08, 34.78], PT: [38.72, -9.14]
-}
-
-/** Страна выхода из флага в названии узла (🇳🇱 → NL). */
-function nameCountry(name: string): string | null {
-  const m = name.match(/\p{Regional_Indicator}{2}/u)
-  if (!m) return null
-  return String.fromCharCode(...[...m[0]].map((c) => (c.codePointAt(0) ?? 0) - 0x1f1e6 + 65))
 }
 
 function sdrCacheFile(): string {
@@ -241,7 +235,21 @@ async function loadPops(): Promise<Pop[]> {
     }
   }
   if (byCode.size === 0) throw new Error('Не удалось получить список регионов Valve (нет связи со Steam).')
-  return [...byCode.values()]
+  const pops = [...byCode.values()]
+  // У части точек партнёров (Datapacket) Steam отдаёт координаты наоборот:
+  // [широта, долгота] вместо [долгота, широта]. Если перевёрнутая точка
+  // совпадает с другим датацентром (до ~300 км), а «как есть» — далеко от всех,
+  // переворачиваем. Для обычной точки перевёрнутые координаты случайно рядом с
+  // другим датацентром не окажутся.
+  const nearest = (p: Pop, lat: number, lon: number): number =>
+    Math.min(...pops.filter((q) => q !== p).map((q) => calculateFiberRtt(lat, lon, q.lat, q.lon)))
+  const swap = pops.filter((p) => Math.abs(p.lon) <= 90 && nearest(p, p.lon, p.lat) <= 4 && nearest(p, p.lat, p.lon) > 8)
+  for (const p of swap) {
+    const lat = p.lon
+    p.lon = p.lat
+    p.lat = lat
+  }
+  return pops
 }
 
 async function pool<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
@@ -258,6 +266,147 @@ async function pool<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): 
   return out
 }
 
+// ---- серверы Steam в датацентрах Valve --------------------------------------
+
+interface Endpoint {
+  host: string
+  ip: string
+}
+
+/** Кандидаты: sto → sto1/sto2, sto2 → sto2, dfw → dfw1/dfw2; сначала cmp, потом ext. */
+function endpointHosts(code: string): string[] {
+  const m = /^([a-z]+)(\d*)$/.exec(code)
+  if (!m) return []
+  const dcs = m[2] ? [code] : [`${m[1]}1`, `${m[1]}2`]
+  const out: string[] = []
+  for (const dc of dcs) for (const pre of ['cmp1', 'cmp2', 'ext1', 'ext2']) out.push(`${pre}-${dc}.steamserver.net`)
+  return out
+}
+
+async function resolveEndpoints(code: string): Promise<Endpoint[]> {
+  const hosts = endpointHosts(code)
+  const ips = await Promise.all(
+    hosts.map((h) =>
+      Promise.race([
+        dns.resolve4(h).then((a) => a[0] ?? null),
+        new Promise<null>((r) => setTimeout(() => r(null), 3000))
+      ]).catch(() => null)
+    )
+  )
+  return hosts.map((host, i) => ({ host, ip: ips[i] })).filter((e): e is Endpoint => !!e.ip)
+}
+
+/** TLS к серверу Steam: через готовый сокет (SOCKS узла) или напрямую с физического адаптера. */
+function openTls(raw: net.Socket | null, ep: Endpoint, timeoutMs: number, localAddress?: string): Promise<tls.TLSSocket> {
+  return new Promise((resolve, reject) => {
+    const t = raw
+      ? tls.connect({ socket: raw, servername: ep.host, ALPNProtocols: ['http/1.1'] })
+      : tls.connect({ host: ep.ip, port: 443, servername: ep.host, ALPNProtocols: ['http/1.1'], ...(localAddress ? { localAddress } : {}) })
+    const fail = (e: Error): void => {
+      t.destroy()
+      reject(e)
+    }
+    t.setTimeout(timeoutMs, () => fail(new Error('timeout')))
+    t.once('error', fail)
+    t.once('close', () => fail(new Error('closed')))
+    t.once('secureConnect', () => {
+      t.setTimeout(0)
+      resolve(t)
+    })
+  })
+}
+
+/** Один HTTP-запрос по открытому соединению: время до полного ответа. */
+function requestRtt(s: tls.TLSSocket, host: string, timeoutMs: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let buf = ''
+    const t0 = performance.now()
+    const done = (e: Error | null): void => {
+      clearTimeout(timer)
+      s.off('data', onData)
+      s.off('close', onClose)
+      if (e) reject(e)
+      else resolve(performance.now() - t0)
+    }
+    const onData = (d: Buffer): void => {
+      buf += d.toString('latin1')
+      const end = buf.indexOf('\r\n\r\n')
+      if (end < 0) return
+      // Ждём и тело ответа, иначе его хвост попадёт в следующий замер.
+      const head = buf.slice(0, end).toLowerCase()
+      const len = /content-length:\s*(\d+)/.exec(head)
+      if (len && buf.length < end + 4 + Number(len[1])) return
+      if (!len && head.includes('transfer-encoding: chunked') && !buf.endsWith('0\r\n\r\n')) return
+      done(null)
+    }
+    const onClose = (): void => done(new Error('closed'))
+    const timer = setTimeout(() => done(new Error('timeout')), timeoutMs)
+    s.on('data', onData)
+    s.once('close', onClose)
+    s.write(`GET / HTTP/1.1\r\nHost: ${host}\r\nUser-Agent: LAZEYKA\r\nConnection: keep-alive\r\n\r\n`)
+  })
+}
+
+/**
+ * Задержка до датацентра: TLS-рукопожатие, затем три запроса по тому же
+ * соединению. Берём минимум из запросов — в нём нет ни рукопожатий, ни
+ * установки соединения узлом, только путь туда и обратно.
+ */
+async function endpointRtt(raw: net.Socket | null, ep: Endpoint, timeoutMs: number, localAddress?: string): Promise<number> {
+  const s = await openTls(raw, ep, timeoutMs, localAddress)
+  const got: number[] = []
+  try {
+    for (let i = 0; i < 3; i++) got.push(await requestRtt(s, ep.host, timeoutMs))
+  } catch (e) {
+    if (got.length === 0) throw e
+  } finally {
+    s.destroy()
+  }
+  return Math.max(1, Math.round(Math.min(...got)))
+}
+
+interface PopTarget extends Pop {
+  eps: Endpoint[]
+}
+
+/** Через узлы замеряем регионы не дальше этого (напрямую): дальние в матчмейкинг всё равно не попадают. */
+const NODE_MEASURE_MAX_MS = 200
+
+/** Замер регионов через один узел. null — узел не пропустил ни одного запроса. */
+async function measureViaNode(n: IncyNode, targets: PopTarget[], anchor: PopTarget): Promise<Map<string, number> | null> {
+  return withCoreSlot(async () => {
+    let tc: TempCore | null = null
+    try {
+      tc = await startTempCore(n)
+      const port = tc.port
+      const via = async (p: PopTarget, tries = 2): Promise<number | null> => {
+        for (const ep of p.eps.slice(0, tries)) {
+          try {
+            const raw = await socksConnect(port, ep.ip, 443, 3000)
+            return await endpointRtt(raw, ep, 3000)
+          } catch { /* следующий сервер этого датацентра */ }
+        }
+        return null
+      }
+      // Сначала ближайший регион: не прошёл — узел не отвечает, остальное не тратим.
+      const first = await via(anchor, 1)
+      if (first == null) return null
+      const out = new Map<string, number>([[anchor.code, first]])
+      const rest = targets.filter((p) => p !== anchor)
+      const vals = await pool(rest, 6, (p) => via(p))
+      rest.forEach((p, i) => {
+        const v = vals[i]
+        if (v != null) out.set(p.code, v)
+      })
+      return out
+    } catch {
+      return null
+    } finally {
+      tc?.stop()
+    }
+  })
+}
+
 export async function measureValveRegions(): Promise<ValveRegionsReport> {
   if (running) throw new Error('Замер регионов уже идёт')
   running = true
@@ -269,49 +418,90 @@ export async function measureValveRegions(): Promise<ValveRegionsReport> {
     // 1) Прямой пинг до каждого региона.
     let done = 0
     progress(0, pops.length, 'Пинг до регионов')
-    const direct = await pool(pops, 8, async (p) => {
+    const icmp = await pool(pops, 8, async (p) => {
       const ms = await icmpRtt(p.ip, 1500, src).catch(() => null)
       progress(++done, pops.length, 'Пинг до регионов')
       return ms
     })
 
-    // 2) Узлы: задержка до узла и где он находится.
-    const settings = loadIncySettings()
-    const nodes = loadIncyNodes().filter((n) => n.server && n.port && isNodeAllowedForAuto(n, settings))
-    progress(0, nodes.length, 'Задержка до узлов')
-    const rtts = await pool(nodes, 12, async (n: IncyNode) => {
-      const udp = n.protocol === 'hysteria2' || n.protocol === 'wireguard'
-      return udp ? icmpRtt(n.server, 1500, src).catch(() => null) : tcpRtt(n.server, n.port, 1500, src ?? undefined).catch(() => null)
-    })
-    const ranked = nodes
-      .map((n, i) => ({ n, rtt: rtts[i] }))
-      .filter((x): x is { n: IncyNode; rtt: number } => typeof x.rtt === 'number')
-      .sort((a, b) => a.rtt - b.rtt)
-      .slice(0, 15)
-    progress(0, ranked.length, 'Где находятся узлы')
-    let geoDone = 0
-    const geos = await pool(ranked, 3, async (x) => {
-      const g = await resolveGameServerGeo(x.n.server, x.n.port).catch(() => null)
-      progress(++geoDone, ranked.length, 'Где находятся узлы')
-      if (!g || typeof g.lat !== 'number' || typeof g.lon !== 'number') return null
-      // Узел-мост: адрес в одной стране (часто в России), а выход — в другой,
-      // указанной флагом в названии. Тогда трафик идёт ПК → мост → выход →
-      // Valve, и оценка считается от страны выхода плюс плечо мост → выход.
-      const exit = nameCountry(x.n.name)
-      const exitCoords = exit ? COUNTRY_COORDS[exit] : undefined
-      if (exit && exitCoords && g.countryCode && exit !== g.countryCode) {
-        const hop = calculateFiberRtt(g.lat, g.lon, exitCoords[0], exitCoords[1])
-        return { lat: exitCoords[0], lon: exitCoords[1], extra: hop }
+    // 2) Серверы Steam в тех же датацентрах. Проверяем их напрямую (мимо VPN):
+    //    ответившие идут первыми. Заодно это запасной прямой замер, если ICMP
+    //    до ретранслятора закрыт.
+    done = 0
+    progress(0, pops.length, 'Серверы Steam в регионах')
+    const checked = await pool(pops, 12, async (p) => {
+      const eps = await resolveEndpoints(p.code)
+      let tcpMs: number | null = null
+      const ok: Endpoint[] = []
+      for (const ep of eps.slice(0, 3)) {
+        try {
+          const ms = await endpointRtt(null, ep, 2000, src ?? undefined)
+          tcpMs = ms
+          ok.push(ep)
+          break
+        } catch { /* пробуем следующий */ }
       }
-      return { lat: g.lat, lon: g.lon, extra: 0 }
+      progress(++done, pops.length, 'Серверы Steam в регионах')
+      return { eps: [...ok, ...eps.filter((e) => !ok.includes(e))], tcpMs }
     })
-    const located = ranked.map((x, i) => ({ ...x, geo: geos[i] })).filter((x) => x.geo)
+    const direct = pops.map((_, i) => icmp[i] ?? checked[i].tcpMs)
+    const directOf = (code: string): number => direct[pops.findIndex((p) => p.code === code)] ?? 1e9
+    // Через узлы — ближние регионы (напрямую до 200 мс), но не меньше шести.
+    const withEps = pops
+      .map((p, i) => ({ ...p, eps: checked[i].eps }))
+      .filter((p) => p.eps.length > 0)
+      .sort((a, b) => directOf(a.code) - directOf(b.code))
+    const near = withEps.filter((p) => directOf(p.code) <= NODE_MEASURE_MAX_MS)
+    const targets: PopTarget[] = (near.length >= 6 ? near : withEps.slice(0, 6)).slice(0, 16)
 
+    // 3) Замер через каждый узел, разрешённый для автовыбора.
+    const settings = loadIncySettings()
+    const all = loadIncyNodes().filter((n) => n.server && n.port)
+    const nodes = all.filter((n) => isNodeAllowedForAuto(n, settings)).slice(0, 40)
+    const byNode: { n: IncyNode; res: Map<string, number> }[] = []
+    let failed = 0
+    if (targets.length > 0 && nodes.length > 0) {
+      const anchor = targets[0]
+      done = 0
+      progress(0, nodes.length, 'Замер через узлы')
+      const results = await pool(nodes, 3, async (n) => {
+        const r = await measureViaNode(n, targets, anchor)
+        progress(++done, nodes.length, 'Замер через узлы')
+        return r
+      })
+      results.forEach((res, i) => {
+        if (res && res.size > 0) byNode.push({ n: nodes[i], res })
+        else failed++
+      })
+    } else {
+      failed = nodes.length
+    }
+
+    // 4) Лучший узел для каждого региона. Где замера нет (точки партнёров без
+    //    серверов Steam, дальние регионы), — оценка от ближайшего замеренного
+    //    датацентра Valve, если он рядом (до 40 мс по оптике).
     const regions: ValveRegionResult[] = pops.map((p, i) => {
       let best: ValveRegionResult['best']
-      for (const x of located) {
-        const est = Math.round(x.rtt + x.geo!.extra + calculateFiberRtt(x.geo!.lat, x.geo!.lon, p.lat, p.lon))
-        if (!best || est < best.estimateMs) best = { nodeId: x.n.id, nodeName: x.n.name, estimateMs: est }
+      for (const { n, res } of byNode) {
+        const ms = res.get(p.code)
+        if (ms != null && (!best || ms < best.ms)) best = { nodeId: n.id, nodeName: n.name, ms, measured: true }
+      }
+      if (!best) {
+        // Ближайший регион, до которого через узлы что-то замерилось.
+        let near: { code: string; hop: number } | null = null
+        for (const t of targets) {
+          if (t.code === p.code || !byNode.some(({ res }) => res.has(t.code))) continue
+          const hop = calculateFiberRtt(t.lat, t.lon, p.lat, p.lon)
+          if (!near || hop < near.hop) near = { code: t.code, hop }
+        }
+        if (near && near.hop <= 40) {
+          for (const { n, res } of byNode) {
+            const ms = res.get(near.code)
+            if (ms == null) continue
+            const est = Math.round(ms + near.hop)
+            if (!best || est < best.ms) best = { nodeId: n.id, nodeName: n.name, ms: est, measured: false }
+          }
+        }
       }
       return {
         code: p.code,
@@ -323,8 +513,9 @@ export async function measureValveRegions(): Promise<ValveRegionsReport> {
     regions.sort((a, b) => (a.directMs ?? 1e9) - (b.directMs ?? 1e9))
     return {
       regions,
-      nodesMeasured: located.length,
-      nodesWithoutGeo: ranked.length - located.length,
+      nodesMeasured: byNode.length,
+      nodesFailed: failed,
+      nodesExcluded: all.length - nodes.length,
       fetchedAt: Date.now()
     }
   } finally {

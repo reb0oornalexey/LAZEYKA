@@ -919,10 +919,12 @@ export interface ValveRegionsReport {
     code: string
     name: string
     directMs: number | null
-    best?: { nodeId: string; nodeName: string; estimateMs: number }
+    /** ms — задержка ПК → узел → регион; measured=false — оценка «~» (точка партнёра Valve). */
+    best?: { nodeId: string; nodeName: string; ms: number; measured: boolean }
   }[]
   nodesMeasured: number
-  nodesWithoutGeo: number
+  nodesFailed: number
+  nodesExcluded: number
   fetchedAt: number
 }
 export const optimizerValveRegions = (): Promise<ValveRegionsReport> => invoke('optimizer:valveRegions')
