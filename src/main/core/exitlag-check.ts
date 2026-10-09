@@ -34,13 +34,38 @@ export interface ExitLagCheckResult {
   message: string
 }
 
-const IP_API = { host: 'ip-api.com', path: '/json/?fields=status,query,country,countryCode,isp&lang=ru' }
+/**
+ * Сервисы «мой IP». ip-api.com и ipify блокируются DNS с фильтром трекеров
+ * (DNS-AI, AdGuard) — поэтому ipinfo.io, а запасной — ifconfig.co.
+ */
+const IP_SERVICES = [
+  { host: 'ipinfo.io', path: '/json' },
+  { host: 'ifconfig.co', path: '/json' }
+]
 
 function parseIpApi(text: string): ExitIp {
   try {
-    const body = text.slice(text.indexOf('{'))
-    const j = JSON.parse(body) as { status?: string; query?: string; country?: string; countryCode?: string; isp?: string }
-    if (j.query) return { ip: j.query, country: j.country, countryCode: j.countryCode, isp: j.isp }
+    const body = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)
+    const j = JSON.parse(body) as {
+      ip?: string
+      query?: string
+      country?: string
+      country_iso?: string
+      countryCode?: string
+      org?: string
+      asn_org?: string
+      isp?: string
+    }
+    const ip = j.ip ?? j.query
+    if (ip) {
+      const code = j.countryCode ?? j.country_iso ?? (j.country && j.country.length === 2 ? j.country : undefined)
+      return {
+        ip,
+        country: j.country && j.country.length > 2 ? j.country : code,
+        countryCode: code,
+        isp: j.isp ?? j.asn_org ?? j.org?.replace(/^AS\d+\s+/, '')
+      }
+    }
   } catch {
     /* ниже */
   }
@@ -48,15 +73,24 @@ function parseIpApi(text: string): ExitIp {
 }
 
 async function directExit(): Promise<ExitIp> {
-  try {
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 8000)
-    const res = await fetch(`http://${IP_API.host}${IP_API.path}`, { signal: ctrl.signal })
-    clearTimeout(t)
-    return parseIpApi(await res.text())
-  } catch (e) {
-    return { ip: null, error: e instanceof Error ? e.message : String(e) }
+  let last: ExitIp = { ip: null, error: 'нет ответа' }
+  for (const svc of IP_SERVICES) {
+    try {
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), 8000)
+      const res = await fetch(`https://${svc.host}${svc.path}`, {
+        signal: ctrl.signal,
+        headers: { Accept: 'application/json', 'User-Agent': 'curl/8' }
+      })
+      clearTimeout(t)
+      const r = parseIpApi(await res.text())
+      if (r.ip) return r
+      last = r
+    } catch (e) {
+      last = { ip: null, error: e instanceof Error ? e.message : String(e) }
+    }
   }
+  return last
 }
 
 async function exitViaNode(nodeId: string): Promise<ExitIp> {
@@ -66,7 +100,9 @@ async function exitViaNode(nodeId: string): Promise<ExitIp> {
     let tc: Awaited<ReturnType<typeof startTempCore>> | null = null
     try {
       tc = await startTempCore(node)
-      const sock = await socksConnect(tc.port, IP_API.host, 80, 8000)
+      // Имя резолвит сам узел (SOCKS с доменом) — локальный DNS не участвует.
+      const svc = IP_SERVICES[0]
+      const sock = await socksConnect(tc.port, svc.host, 80, 8000)
       const text = await new Promise<string>((resolve) => {
         let buf = ''
         const timer = setTimeout(() => resolve(buf), 8000)
@@ -79,7 +115,7 @@ async function exitViaNode(nodeId: string): Promise<ExitIp> {
           clearTimeout(timer)
           resolve(buf)
         })
-        sock.write(`GET ${IP_API.path} HTTP/1.1\r\nHost: ${IP_API.host}\r\nUser-Agent: LAZEYKA\r\nConnection: close\r\n\r\n`)
+        sock.write(`GET ${svc.path} HTTP/1.1\r\nHost: ${svc.host}\r\nUser-Agent: curl/8\r\nAccept: application/json\r\nConnection: close\r\n\r\n`)
       })
       sock.destroy()
       return parseIpApi(text)

@@ -8,7 +8,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Badge } from '@renderer/components/ui/badge'
 import { Input } from '@renderer/components/ui/input'
 import { Switch } from '@renderer/components/ui/switch'
-import { Target, Copy, Zap, RefreshCw, Trophy, MapPin, ShieldPlus } from 'lucide-react'
+import { Target, Copy, Zap, RefreshCw, Trophy, MapPin, ShieldPlus, Route, Gauge } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
 import { useIncyStore } from '@renderer/store/incy-store'
 import {
@@ -20,6 +20,10 @@ import {
   incySelectNode,
   incyPingGameServer,
   zapretAddGameServerIp,
+  optimizerTrace,
+  optimizerBufferbloat,
+  type TraceResult,
+  type BufferbloatResult,
   type IncySettings,
   type IncyNode,
   type GamePingResult,
@@ -97,6 +101,37 @@ export default function OptimizerPage(): React.ReactElement {
     }
   }, [])
   const [selectingNodeId, setSelectingNodeId] = useState<string | null>(null)
+
+  // ---- Диагностика пути: трассировка и пинг под нагрузкой ----
+  const [trace, setTrace] = useState<TraceResult | null>(null)
+  const [tracing, setTracing] = useState(false)
+  const [bloat, setBloat] = useState<BufferbloatResult | null>(null)
+  const [bloating, setBloating] = useState(false)
+  const runTrace = async (): Promise<void> => {
+    const target = gameServerTarget.trim()
+    if (!target) {
+      toast.error('Вставьте адрес сервера (connect IP:порт) — трассировка идёт до него')
+      return
+    }
+    setTracing(true)
+    try {
+      setTrace(await optimizerTrace(target))
+    } catch (e: any) {
+      toast.error('Трассировка не удалась', { description: e?.message || String(e) })
+    } finally {
+      setTracing(false)
+    }
+  }
+  const runBloat = async (): Promise<void> => {
+    setBloating(true)
+    try {
+      setBloat(await optimizerBufferbloat(trace?.reached ? trace.targetIp : undefined))
+    } catch (e: any) {
+      toast.error('Проверка не удалась', { description: e?.message || String(e) })
+    } finally {
+      setBloating(false)
+    }
+  }
 
   useEffect(() => {
     void Promise.all([incyGetSettings(), incyGetNodes()])
@@ -424,6 +459,23 @@ export default function OptimizerPage(): React.ReactElement {
                               {n.isBest && (
                                 <Badge className="text-[9px] px-1.5 py-0 bg-emerald-500 text-white font-bold"><Trophy className="h-2.5 w-2.5 mr-0.5 inline" />ЛУЧШИЙ</Badge>
                               )}
+                              {n.udpTransport === 'udp' ? (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[9px] px-1 py-0 text-emerald-600 dark:text-emerald-400 border-emerald-500/40"
+                                  title="Пакеты игры идут по UDP напрямую — без задержек на повторную отправку"
+                                >
+                                  нативный UDP
+                                </Badge>
+                              ) : n.udpTransport === 'tcp' ? (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[9px] px-1 py-0 text-muted-foreground"
+                                  title="UDP игры едет внутри TCP: при потерях на линии пакеты ждут повторной отправки — скачки пинга"
+                                >
+                                  UDP в TCP
+                                </Badge>
+                              ) : null}
                               {isCurrentActive && (
                                 <Badge className="text-[9px] px-1.5 py-0 bg-primary/20 text-primary border border-primary/40 font-mono">
                                   ТЕКУЩИЙ
@@ -492,6 +544,104 @@ export default function OptimizerPage(): React.ReactElement {
                 </div>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Диагностика пути */}
+        <Card className="cyber-card">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-bold flex items-center gap-2">
+              <Route className="h-4 w-4 text-primary" />
+              Откуда берётся пинг
+            </CardTitle>
+            <p className="text-[11px] text-muted-foreground">
+              Если на «близком» сервере пинг выше, чем должен быть (например, 63 мс вместо 25 на московском Faceit), —
+              трассировка покажет, на каком участке пути он набирается, а проверка под нагрузкой — не виноваты ли
+              роутер и скачивания в домашней сети. Всё меряется мимо VPN.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" className="text-xs h-8 gap-1.5" onClick={() => void runTrace()} disabled={tracing}>
+                {tracing ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Route className="h-3.5 w-3.5" />}
+                Трассировка до сервера
+              </Button>
+              <Button size="sm" variant="outline" className="text-xs h-8 gap-1.5" onClick={() => void runBloat()} disabled={bloating}>
+                {bloating ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Gauge className="h-3.5 w-3.5" />}
+                {bloating ? 'Нагружаю канал ~15 с…' : 'Пинг под нагрузкой'}
+              </Button>
+            </div>
+
+            {trace && (
+              <div className="space-y-2 rounded-xl border border-border/50 bg-background/40 p-3">
+                <div className="text-[11px] text-muted-foreground">
+                  До {trace.targetIp}
+                  {trace.reached ? '' : ' (сервер на пинг не отвечает)'} · {trace.hops.length} узлов
+                  {trace.viaPhysical ? ' · в обход VPN' : ''}
+                </div>
+                <div className="space-y-0.5 font-mono text-[11px]">
+                  {trace.hops.map((h) => {
+                    const jump = trace.biggestJump?.hop === h.hop && (trace.biggestJump?.deltaMs ?? 0) >= 10
+                    return (
+                      <div
+                        key={h.hop}
+                        className={cn('grid grid-cols-[2rem_1fr_4rem_4rem_4rem] gap-2', jump && 'text-amber-600 dark:text-amber-400 font-bold')}
+                      >
+                        <span className="text-muted-foreground">{h.hop}</span>
+                        <span className="truncate">{h.ip ?? '* * *'}{h.isPrivate ? ' (дом)' : ''}</span>
+                        <span className="text-right">{h.avgMs != null ? `${h.avgMs} мс` : '—'}</span>
+                        <span className="text-right">{h.deltaMs != null && h.deltaMs > 0 ? `+${h.deltaMs}` : ''}</span>
+                        <span className={cn('text-right', (h.lossPct ?? 0) > 0 && 'text-muted-foreground')}>
+                          {h.lossPct != null ? `${h.lossPct}%` : ''}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+                <ul className="space-y-1 text-[11px] leading-relaxed">
+                  {trace.verdict.map((v) => (
+                    <li key={v}>• {v}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {bloat && (
+              <div className="space-y-1.5 rounded-xl border border-border/50 bg-background/40 p-3 text-[11px]">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono">
+                  <span>
+                    Оценка:{' '}
+                    <b
+                      className={cn(
+                        bloat.grade === 'A' || bloat.grade === 'B' ? 'text-emerald-500' : bloat.grade === 'unknown' ? '' : 'text-amber-500'
+                      )}
+                    >
+                      {bloat.grade === 'unknown' ? '—' : bloat.grade}
+                    </b>
+                  </span>
+                  <span>покой: {bloat.idle.avgMs ?? '—'} мс</span>
+                  <span>
+                    под нагрузкой: {bloat.loaded.avgMs ?? '—'} мс (макс {bloat.loaded.maxMs ?? '—'}, потери {bloat.loaded.lossPct}%)
+                  </span>
+                  {bloat.downloadMbps != null && <span>скачивание: {bloat.downloadMbps} Мбит/с</span>}
+                </div>
+                <p className="leading-relaxed">{bloat.verdict}</p>
+              </div>
+            )}
+
+            <div className="rounded-xl border border-border/50 bg-card/50 p-3 text-[11px] leading-relaxed text-muted-foreground space-y-1">
+              <div className="font-semibold text-foreground">Что реально снижает пинг и убирает потери</div>
+              <div>• Кабель вместо Wi-Fi и никаких скачиваний в сети во время матча (проверка выше).</div>
+              <div>
+                • VPN помогает, только если путь провайдера до сервера хуже, чем через узел. Для московских серверов берите
+                узел в России, для европейских — в ближайшей к серверу стране. Узел далеко от сервера пинг только добавит.
+              </div>
+              <div>
+                • Для игр выбирайте узлы с пометкой «нативный UDP» (Hysteria2, WireGuard). У VLESS/Trojan пакеты игры едут
+                внутри TCP, и любая потеря на линии превращается в скачок пинга.
+              </div>
+              <div>• Включайте VPN только для игры — режим ExitLag, чтобы остальной трафик не делил с ней канал.</div>
+            </div>
           </CardContent>
         </Card>
 

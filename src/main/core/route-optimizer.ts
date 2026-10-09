@@ -72,6 +72,12 @@ export interface NodeRouteResult {
   isBest: boolean
   /** Узел разрешён правилами автовыбора. */
   autoAllowed?: boolean
+  /**
+   * Как узел везёт UDP игры: 'udp' — нативно (Hysteria2/QUIC, WireGuard),
+   * 'tcp' — внутри TCP-соединения (VLESS/VMess/Trojan/SS): при любой потере на
+   * этом TCP пакеты игры ждут повторной отправки — скачки пинга и «потери».
+   */
+  udpTransport?: 'udp' | 'tcp'
   error?: string
   // Поля старого формата — чтобы не ломать страницу INCY.
   nodeToGamePing: number
@@ -110,6 +116,12 @@ const SAMPLE_GAP_MS = 50
 const SAMPLE_TIMEOUT_MS = 900
 /** Сколько узлов меряем глубоко (остальные отсекаются по задержке до узла). */
 const DEEP_NODES = 12
+/** Узлы с нативным UDP меряем всегда (до этого числа сверх DEEP_NODES) — для игр они лучшие. */
+const EXTRA_UDP_NODES = 10
+
+function udpTransportOf(n: IncyNode): 'udp' | 'tcp' {
+  return n.protocol === 'hysteria2' || n.protocol === 'wireguard' ? 'udp' : 'tcp'
+}
 const CONCURRENCY = 4
 
 // ---- progress --------------------------------------------------------------
@@ -410,6 +422,11 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
       .map((n, i) => ({ n, rtt: u2n[i] }))
       .sort((a, b) => (a.rtt ?? 1e9) - (b.rtt ?? 1e9))
     const deep = ranked.filter((r) => r.rtt !== null || r.n.protocol === 'hysteria2' || r.n.protocol === 'wireguard').slice(0, DEEP_NODES)
+    // Узлы с нативным UDP (Hysteria2, WireGuard) — всегда в глубоком замере:
+    // для игрового UDP они почти всегда стабильнее VLESS поверх TCP, даже
+    // если задержка до самого узла чуть больше.
+    const udpExtra = ranked.filter((r) => udpTransportOf(r.n) === 'udp' && !deep.some((d) => d.n.id === r.n.id))
+    deep.push(...udpExtra.slice(0, EXTRA_UDP_NODES))
     if (incy.activeNodeId && !deep.some((d) => d.n.id === incy.activeNodeId)) {
       const active = ranked.find((r) => r.n.id === incy.activeNodeId)
       if (active) deep.push(active)
@@ -426,7 +443,8 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
         server: n.server,
         core: null,
         userToNodePing: rtt,
-        isBest: false
+        isBest: false,
+        udpTransport: udpTransportOf(n)
       }
       let pathStats: PathStats = { method: 'failed', pingMs: null, jitterMs: null, lossPct: null, sent: 0, received: 0 }
       let error: string | undefined
@@ -499,7 +517,12 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
         m.path.pingMs != null && m.userToNodePing != null ? Math.max(0, m.path.pingMs - m.userToNodePing) : 0
       m.savingMs = direct.pingMs != null && m.path.pingMs != null ? direct.pingMs - m.path.pingMs : null
     }
-    measured.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9))
+    // При почти равной оценке (до 3 мс) выше узел с нативным UDP.
+    measured.sort((a, b) => {
+      const d = (a.score ?? 1e9) - (b.score ?? 1e9)
+      if (Math.abs(d) <= 3 && a.udpTransport !== b.udpTransport) return a.udpTransport === 'udp' ? -1 : 1
+      return d
+    })
     const best = measured.find((m) => m.score != null)
     if (best && (directScore == null || best.score! < directScore)) best.isBest = true
     olog(
@@ -507,6 +530,13 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
         ? `лучший маршрут: ${best.nodeName} — ${fmtStats(best.path)} (напрямую ${direct.pingMs ?? '—'} мс)`
         : `ни один узел не быстрее прямого пути (${fmtStats(direct)}); проверено узлов: ${measured.length} из ${all.length}`
     )
+    if (best?.isBest && best.udpTransport === 'tcp') {
+      const udpAlt = measured.find((m) => m.udpTransport === 'udp' && m.score != null)
+      warnings.push(
+        `Лучший узел везёт UDP игры внутри TCP (${best.protocol.toUpperCase()}): при потерях на линии будут скачки пинга.` +
+          (udpAlt ? ` Узел с нативным UDP: «${udpAlt.nodeName}» — ${udpAlt.path.pingMs ?? '—'} мс.` : ' Для игр лучше узлы Hysteria2 / WireGuard.')
+      )
+    }
     for (const w of warnings) olog(`внимание: ${w}`)
 
     // Автоподключение — только если пользователь сам включил его и лучший узел

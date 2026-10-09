@@ -26,6 +26,9 @@ import {
   dnsGetProviders,
   dnsApplySystem,
   dnsGetSystemState,
+  dnsAddCustom,
+  dnsRemoveCustom,
+  openExternalUrl,
   splitTunnelingGetConfig,
   splitTunnelingSaveConfig,
   incyReapplyTunnel,
@@ -47,6 +50,9 @@ const Settings: React.FC = () => {
   const [dohProviders, setDohProviders] = useState<DohProvider[]>([])
   const [activeDnsIp, setActiveDnsIp] = useState<string>('dhcp')
   const [loadingDns, setLoadingDns] = useState(false)
+  const [showDnsForm, setShowDnsForm] = useState(false)
+  const [dnsForm, setDnsForm] = useState({ name: '', v4a: '', v4b: '', v6a: '', v6b: '', doh: '', fallback: false })
+  const [savingDns, setSavingDns] = useState(false)
 
   const [splitConfig, setSplitConfig] = useState<SplitTunnelingConfig | null>(null)
   const [newDomain, setNewDomain] = useState('')
@@ -119,6 +125,51 @@ const Settings: React.FC = () => {
       }
     } catch (e: any) {
       toast.error('Ошибка импорта', { description: e?.message || String(e) })
+    }
+  }
+
+  const reloadDnsProviders = async (): Promise<void> => {
+    try {
+      const [providers, state] = await Promise.all([dnsGetProviders(), dnsGetSystemState().catch(() => null)])
+      setDohProviders(providers)
+      const match = state ? providers.find((p) => state.servers.includes(p.ip)) : undefined
+      setActiveDnsIp(match ? match.id : 'dhcp')
+    } catch {
+      /* noop */
+    }
+  }
+
+  const handleAddCustomDns = async (): Promise<void> => {
+    setSavingDns(true)
+    try {
+      await dnsAddCustom({
+        name: dnsForm.name,
+        ipv4: [dnsForm.v4a, dnsForm.v4b].filter((v) => v.trim()),
+        ipv6: [dnsForm.v6a, dnsForm.v6b].filter((v) => v.trim()),
+        doh: dnsForm.doh,
+        allowFallback: dnsForm.fallback
+      })
+      setDnsForm({ name: '', v4a: '', v4b: '', v6a: '', v6b: '', doh: '', fallback: false })
+      setShowDnsForm(false)
+      toast.success('DNS-сервер добавлен', { description: 'Нажмите «Включить» на его карточке, чтобы применить.' })
+      await reloadDnsProviders()
+    } catch (e: any) {
+      toast.error('Сервер не добавлен', { description: e?.message || String(e) })
+    } finally {
+      setSavingDns(false)
+    }
+  }
+
+  const handleRemoveCustomDns = async (p: DohProvider): Promise<void> => {
+    if (activeDnsIp === p.id || activeDnsIp === p.ip) {
+      toast.error('Этот DNS сейчас включён', { description: 'Сначала выберите другой или сбросьте DNS.' })
+      return
+    }
+    try {
+      await dnsRemoveCustom(p.id)
+      await reloadDnsProviders()
+    } catch (e: any) {
+      toast.error('Не удалось удалить', { description: e?.message || String(e) })
     }
   }
 
@@ -274,6 +325,7 @@ const Settings: React.FC = () => {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {dohProviders.map((p) => {
                 const isActive = activeDnsIp === p.id || activeDnsIp === p.ip
+                const addrs = [p.ip, p.secondaryIp].filter(Boolean).join(', ')
                 return (
                   <div
                     key={p.id}
@@ -282,33 +334,165 @@ const Settings: React.FC = () => {
                       isActive ? 'border-primary bg-primary/10' : 'border-border bg-card/40'
                     )}
                   >
-                    <div>
-                      <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between gap-2">
                         <span className="text-xs font-semibold text-foreground">{p.name}</span>
-                        {p.latencyMs !== null && (
-                          <span className="text-[10px] font-mono text-emerald-700 dark:text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                            {p.latencyMs} мс
-                          </span>
+                        <span className="flex items-center gap-1">
+                          {p.custom && (
+                            <span className="text-[9px] uppercase tracking-wider text-muted-foreground border border-border rounded px-1">
+                              свой
+                            </span>
+                          )}
+                          {p.latencyMs !== null ? (
+                            <span className="text-[10px] font-mono text-emerald-700 dark:text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                              {p.latencyMs} мс
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-mono text-muted-foreground">нет ответа</span>
+                          )}
+                        </span>
+                      </div>
+                      {!p.custom && <div className="text-[11px] text-muted-foreground">{p.description}</div>}
+                      <div className="text-[10px] font-mono text-muted-foreground leading-relaxed break-all">
+                        IPv4: {addrs}
+                        {p.ipv6 && p.ipv6.length > 0 && (
+                          <>
+                            <br />
+                            IPv6: {p.ipv6.join(', ')}
+                          </>
+                        )}
+                        {p.url && (
+                          <>
+                            <br />
+                            DoH: {p.url}
+                          </>
                         )}
                       </div>
-                      <div className="text-[11px] text-muted-foreground mt-0.5">{p.description}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {p.url ? (p.strict ? 'Только шифрованно, без возврата к обычному DNS' : 'Шифрованно, с запасным обычным DNS') : 'Без шифрования'}
+                        {p.site && (
+                          <>
+                            {' · '}
+                            <button
+                              type="button"
+                              className="text-primary underline underline-offset-2"
+                              onClick={() => void openExternalUrl(p.site!)}
+                            >
+                              сайт
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
 
-                    <Button
-                      size="sm"
-                      variant={isActive ? 'secondary' : 'outline'}
-                      onClick={() => { void handleApplyDns(p.id) }}
-                      disabled={loadingDns}
-                      className="h-7 text-xs self-end mt-1"
-                    >
-                      {isActive ? 'Активен' : 'Включить'}
-                    </Button>
+                    <div className="flex items-center justify-end gap-1.5 mt-1">
+                      {p.custom && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => void handleRemoveCustomDns(p)}
+                          disabled={loadingDns}
+                          className="h-7 px-2 text-xs text-muted-foreground"
+                          title="Удалить"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant={isActive ? 'secondary' : 'outline'}
+                        onClick={() => { void handleApplyDns(p.id) }}
+                        disabled={loadingDns}
+                        className="h-7 text-xs"
+                      >
+                        {isActive ? 'Активен' : 'Включить'}
+                      </Button>
+                    </div>
                   </div>
                 )
               })}
             </div>
 
-            <div className="pt-2 flex justify-end">
+            {showDnsForm ? (
+              <div className="rounded-lg border border-border bg-card/40 p-3 space-y-2.5">
+                <div className="text-xs font-semibold text-foreground">Свой DNS-сервер</div>
+                <Input
+                  value={dnsForm.name}
+                  onChange={(e) => setDnsForm({ ...dnsForm, name: e.target.value })}
+                  placeholder="Название, например «Мой DNS»"
+                  className="h-8 text-xs"
+                />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <Input
+                    value={dnsForm.v4a}
+                    onChange={(e) => setDnsForm({ ...dnsForm, v4a: e.target.value })}
+                    placeholder="IPv4 основной"
+                    className="h-8 text-xs font-mono"
+                  />
+                  <Input
+                    value={dnsForm.v4b}
+                    onChange={(e) => setDnsForm({ ...dnsForm, v4b: e.target.value })}
+                    placeholder="IPv4 дополнительный (необязательно)"
+                    className="h-8 text-xs font-mono"
+                  />
+                  <Input
+                    value={dnsForm.v6a}
+                    onChange={(e) => setDnsForm({ ...dnsForm, v6a: e.target.value })}
+                    placeholder="IPv6 основной (необязательно)"
+                    className="h-8 text-xs font-mono"
+                  />
+                  <Input
+                    value={dnsForm.v6b}
+                    onChange={(e) => setDnsForm({ ...dnsForm, v6b: e.target.value })}
+                    placeholder="IPv6 дополнительный (необязательно)"
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+                <Input
+                  value={dnsForm.doh}
+                  onChange={(e) => setDnsForm({ ...dnsForm, doh: e.target.value })}
+                  placeholder="Шаблон DoH: https://dns.example.com/dns-query (пусто — без шифрования)"
+                  className="h-8 text-xs font-mono"
+                />
+                <label className="flex items-center justify-between gap-3 text-[11px] cursor-pointer">
+                  <span className="text-muted-foreground">
+                    Разрешить возврат к обычному DNS, если DoH не ответил (иначе — только шифрованно)
+                  </span>
+                  <Switch
+                    checked={dnsForm.fallback}
+                    onCheckedChange={(v) => setDnsForm({ ...dnsForm, fallback: v })}
+                    disabled={!dnsForm.doh.trim()}
+                  />
+                </label>
+                <p className="text-[10px] text-muted-foreground leading-relaxed">
+                  Шаблон DoH привязывается к каждому адресу (IPv4 и IPv6) — как в настройках Windows 11. IPv6 ставится
+                  только на адаптеры, где IPv6 включён.
+                </p>
+                <div className="flex justify-end gap-2">
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setShowDnsForm(false)}>
+                    Отмена
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => void handleAddCustomDns()}
+                    disabled={savingDns || !dnsForm.name.trim() || !dnsForm.v4a.trim()}
+                  >
+                    Добавить
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="pt-2 flex items-center justify-between gap-2">
+              {!showDnsForm ? (
+                <Button size="sm" variant="outline" onClick={() => setShowDnsForm(true)} className="text-xs h-7 gap-1">
+                  <Plus className="h-3.5 w-3.5" />
+                  Свой DNS-сервер
+                </Button>
+              ) : (
+                <span />
+              )}
               <Button
                 size="sm"
                 variant="ghost"

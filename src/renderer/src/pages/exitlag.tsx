@@ -97,16 +97,17 @@ export default function ExitLagPage(): React.ReactElement {
    * на вкладке INCY или из трея. Если туннель поднят, main переподключит его
    * сам — ручное «переподключите» больше не нужно.
    */
-  const handleUpdateSettings = async (patch: Partial<IncySettings>): Promise<boolean> => {
-    if (!settings) return false
+  /** 'hot' — применено на лету, 'reconnect' — туннель переподключается, null — туннель не поднят. */
+  const handleUpdateSettings = async (patch: Partial<IncySettings>): Promise<'hot' | 'reconnect' | null> => {
+    if (!settings) return null
     setSettings({ ...settings, ...patch })
     try {
       const res = await incyPatchSettings(patch)
       setSettings(res.settings)
-      return res.reapplied
+      return res.hotApplied ? 'hot' : res.reapplied ? 'reconnect' : null
     } catch (e: any) {
       toast.error('Не удалось сохранить настройки', { description: e?.message || String(e) })
-      return false
+      return null
     }
   }
 
@@ -114,16 +115,19 @@ export default function ExitLagPage(): React.ReactElement {
     // Режим, выбранный карточкой («Все, кроме выбранных»), не трогаем —
     // раньше включение всегда сбрасывало его на белый список.
     const mode = settings?.perAppMode ?? 'proxy_only'
-    const reapplied = await handleUpdateSettings(
-      enabled ? { perAppProxy: true, perAppMode: mode } : { perAppProxy: false }
-    )
-    if (reapplied) {
+    const how = await handleUpdateSettings(enabled ? { perAppProxy: true, perAppMode: mode } : { perAppProxy: false })
+    const what = enabled
+      ? mode === 'bypass_only'
+        ? 'через VPN идёт всё, кроме приложений из списка'
+        : 'через VPN идут только приложения из списка'
+      : 'весь трафик снова идёт через VPN'
+    if (how === 'hot') {
+      toast.success(enabled ? 'ExitLag включён' : 'ExitLag выключен', {
+        description: `Сразу, без переподключения — ${what}. Уже открытые соединения (TeamSpeak, Discord, игра) не рвутся.`
+      })
+    } else if (how === 'reconnect') {
       toast.info(enabled ? 'ExitLag включён' : 'ExitLag выключен', {
-        description: enabled
-          ? mode === 'bypass_only'
-            ? 'Туннель переподключается: через VPN идёт всё, кроме приложений из списка.'
-            : 'Туннель переподключается: через VPN пойдут только приложения из списка.'
-          : 'Туннель переподключается: весь трафик снова идёт через VPN.'
+        description: `Туннель переподключается: ${what}. Голосовые чаты на пару секунд переподключатся.`
       })
     } else {
       toast.success(enabled ? 'Режим ExitLag активирован' : 'Режим ExitLag выключен')
@@ -131,8 +135,9 @@ export default function ExitLagPage(): React.ReactElement {
   }
 
   const handleSetPerAppMode = async (mode: 'proxy_only' | 'bypass_only'): Promise<void> => {
-    const reapplied = await handleUpdateSettings({ perAppMode: mode })
-    if (reapplied) toast.info('Режим изменён — туннель переподключается')
+    const how = await handleUpdateSettings({ perAppMode: mode })
+    if (how === 'hot') toast.success('Режим изменён — применено сразу, без переподключения')
+    else if (how === 'reconnect') toast.info('Режим изменён — туннель переподключается')
   }
 
   const handleAddPerAppProcess = async (processName: string): Promise<void> => {

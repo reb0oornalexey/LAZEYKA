@@ -850,11 +850,31 @@ let reapplyTimer: ReturnType<typeof setTimeout> | null = null
  * загорается. Теперь сравниваем с тем, что реально применено в сессии.
  */
 let sessionTunnelSig: string | null = null
-function tunnelSig(s: IncySettings): string {
+/**
+ * Сессия поднята с ExitLag на горячо подменяемых rule-set файлах (TUN,
+ * sing-box ≥ 1.10). Тогда включение/выключение ExitLag и правка списка не
+ * переподключают туннель — sing-box сам перечитывает файлы, и уже открытые
+ * соединения (голос в TeamSpeak/Discord, игра) не рвутся.
+ */
+let sessionHotExitLag = false
+let sessionMode: 'tun' | 'system_proxy' | 'only_proxy' | null = null
+const PER_APP_KEYS = ['perAppProxy', 'perAppMode', 'perAppProcesses']
+
+/** Режим подключения, который выберет connect для этих настроек (ExitLag всегда поднимает TUN). */
+function effectiveConnectionMode(s: IncySettings): 'tun' | 'system_proxy' | 'only_proxy' {
+  const list = normalizePerAppList(s.perAppProcesses)
+  const whitelist = Boolean(s.perAppProxy) && s.perAppMode !== 'bypass_only'
+  const perAppActive = whitelist || (Boolean(s.perAppProxy) && list.length > 0)
+  return perAppActive ? 'tun' : s.connectionMode || 'tun'
+}
+
+function tunnelSig(s: IncySettings, excludePerApp = false): string {
   // Список ExitLag сравниваем по сути: пока ExitLag выключен, правка списка
   // туннель не трогает; регистр, порядок и дубли тоже не в счёт.
   const eff: Record<string, unknown> = { ...s }
-  if (!s.perAppProxy) {
+  if (excludePerApp) {
+    for (const k of PER_APP_KEYS) eff[k] = null
+  } else if (!s.perAppProxy) {
     eff.perAppMode = null
     eff.perAppProcesses = null
   } else {
@@ -865,11 +885,86 @@ function tunnelSig(s: IncySettings): string {
   return JSON.stringify([...TUNNEL_SETTING_KEYS].map((k) => eff[k] ?? null))
 }
 function tunnelOutdated(): boolean {
-  return (
-    (currentStatus.state === 'running' || isConnecting) &&
-    sessionTunnelSig !== null &&
-    tunnelSig(loadIncySettings()) !== sessionTunnelSig
-  )
+  if (!(currentStatus.state === 'running' || isConnecting) || sessionTunnelSig === null) return false
+  const s = loadIncySettings()
+  if (sessionHotExitLag) {
+    // ExitLag применяется на лету — переподключаемся, только если меняется
+    // сам режим (например, ExitLag выключили, а сохранён «Системный прокси»)
+    // или что-то помимо списка приложений.
+    if (effectiveConnectionMode(s) !== sessionMode) return true
+    return tunnelSig(s, true) !== sessionTunnelSig
+  }
+  return tunnelSig(s) !== sessionTunnelSig
+}
+
+// ---- ExitLag на горячо подменяемых rule-set --------------------------------
+
+function exitLagRuleSetPath(kind: 'vpn' | 'direct'): string {
+  return path.join(dataDir(), `exitlag-${kind}.json`)
+}
+
+/** Правило, которое не совпадает ни с чем, — пустой rule-set sing-box может не принять. */
+const NEVER_MATCH = { process_name: ['__lazeyka_no_match__.exe'] }
+
+/**
+ * Содержимое двух rule-set файлов ExitLag:
+ *  - exitlag-vpn    → outbound proxy (приложения из белого списка);
+ *  - exitlag-direct → outbound direct (всё остальное в белом списке, либо
+ *    приложения-исключения в режиме «Все, кроме выбранных»).
+ * ExitLag выключен — оба файла ничего не ловят, работает route.final.
+ */
+function buildExitLagRuleSets(s: IncySettings): {
+  vpn: Record<string, unknown>[]
+  direct: Record<string, unknown>[]
+  whitelist: boolean
+  list: string[]
+} {
+  const list = normalizePerAppList(s.perAppProcesses)
+  const whitelist = Boolean(s.perAppProxy) && s.perAppMode !== 'bypass_only'
+  const regexes: string[] = []
+  if (list.length > 0) regexes.push(perAppPathRegex(list))
+  if (list.some((n) => TELEGRAM_CLIENTS.has(n.toLowerCase()))) {
+    for (const p of [tgwsCliPaths()?.python, tgwsBinaryPath()].filter((x): x is string => Boolean(x))) {
+      regexes.push(exactPathRegex(p))
+    }
+  }
+  const byProcess = regexes.length > 0 ? [{ process_path_regex: regexes }] : [NEVER_MATCH]
+  if (!s.perAppProxy) return { vpn: [NEVER_MATCH], direct: [NEVER_MATCH], whitelist: false, list }
+  if (whitelist) {
+    // Всё, что не из списка (и пакеты, чей процесс не определился), — напрямую.
+    return { vpn: byProcess, direct: [{ network: ['tcp', 'udp'] }], whitelist, list }
+  }
+  return { vpn: [NEVER_MATCH], direct: byProcess, whitelist, list }
+}
+
+function writeExitLagRuleSets(s: IncySettings): ReturnType<typeof buildExitLagRuleSets> {
+  const rs = buildExitLagRuleSets(s)
+  mkdirSync(dataDir(), { recursive: true })
+  // version 3 понимают sing-box 1.11+; 1.10 — версию 2 (поля те же).
+  writeFileAtomic(exitLagRuleSetPath('vpn'), JSON.stringify({ version: 2, rules: rs.vpn }, null, 1))
+  writeFileAtomic(exitLagRuleSetPath('direct'), JSON.stringify({ version: 2, rules: rs.direct }, null, 1))
+  return rs
+}
+
+/** Применить новый список ExitLag к живому туннелю без переподключения. */
+function hotApplyExitLag(s: IncySettings): void {
+  const rs = writeExitLagRuleSets(s)
+  const active = Boolean(s.perAppProxy) && rs.whitelist
+  exitLagLogTagging = active
+  sessionTunnelSig = tunnelSig(s, true)
+  if (!s.perAppProxy) {
+    appendLog('ExitLag выключен на лету — весь трафик снова идёт через VPN, туннель не переподключался.')
+  } else if (rs.whitelist) {
+    appendLog(
+      rs.list.length > 0
+        ? `Режим ExitLag (на лету, без переподключения): через VPN идут только ${rs.list.length} прилож. (${rs.list.join(', ')}), остальной трафик — напрямую`
+        : 'Режим ExitLag (на лету): список пуст — через VPN сейчас ничего не идёт.',
+      'exitlag'
+    )
+  } else {
+    appendLog(`Режим приложений (на лету): ${rs.list.length} приложений идут напрямую: ${rs.list.join(', ')}`)
+  }
+  broadcastStatus({ exitLagActive: active, exitLagApps: active ? rs.list : [] })
 }
 
 /**
@@ -1021,16 +1116,38 @@ export function reapplyIncyTunnelIfRunning(): boolean {
  * вкладке, в трее или по deeplink. Теперь в main уходит только изменённая
  * часть, а если она влияет на туннель — он переподключается сам.
  */
-export function patchIncySettings(patch: Partial<IncySettings>): { settings: IncySettings; reapplied: boolean } {
+export function patchIncySettings(patch: Partial<IncySettings>): {
+  settings: IncySettings
+  reapplied: boolean
+  hotApplied: boolean
+} {
   const current = loadIncySettings()
   const next = { ...current, ...patch } as IncySettings
   saveIncySettings(next)
+  // ExitLag на живом TUN-туннеле — сразу, без переподключения (если режим
+  // подключения от этого не меняется).
+  let hotApplied = false
+  if (
+    sessionHotExitLag &&
+    currentStatus.state === 'running' &&
+    !isConnecting &&
+    Object.keys(patch).some((k) => PER_APP_KEYS.includes(k)) &&
+    effectiveConnectionMode(next) === sessionMode
+  ) {
+    try {
+      hotApplyExitLag(next)
+      hotApplied = true
+    } catch (e) {
+      appendLog(`ExitLag на лету не применился: ${e instanceof Error ? e.message : String(e)} — переподключаю туннель.`)
+      scheduleTunnelReapply(true)
+    }
+  }
   // Переподключаемся, если применённые в сессии настройки туннеля отличаются
   // от новых — в том числе когда туннель сейчас ещё подключается.
   const reapplied =
     Object.keys(patch).some((k) => TUNNEL_SETTING_KEYS.has(k)) && (isConnecting || tunnelOutdated())
   if (reapplied) scheduleTunnelReapply()
-  return { settings: loadIncySettings(), reapplied }
+  return { settings: loadIncySettings(), reapplied, hotApplied }
 }
 
 /**
@@ -3480,6 +3597,9 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       appendLog('ExitLag: режим подключения принудительно переключён на TUN — иначе трафик игр не перехватить.')
     }
     const routingMode = settings.routingMode || 'bypass-ru'
+    // ExitLag через rule-set файлы (sing-box перечитывает их сам) — на любом
+    // TUN-подключении, чтобы ExitLag потом включался/выключался без разрыва.
+    const hotExitLag = mode === 'tun' && coreMinor >= 10
     currentStatus.connectionMode = mode
     currentStatus.routingMode = routingMode
 
@@ -3625,7 +3745,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
      * который ядро принимает.
      */
 
-    const dnsServersModern = isExitLagWhitelist
+    const dnsServersModern = isExitLagWhitelist && !hotExitLag
       ? [
           buildModernDnsServer('local-dns', dnsPair.local, null, needsResolver(dnsPair.local)),
           buildModernDnsServer('remote-dns', dnsPair.remote, 'proxy', needsResolver(dnsPair.remote)),
@@ -3636,7 +3756,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
           buildModernDnsServer('local-dns', dnsPair.local, null, needsResolver(dnsPair.local)),
           { tag: 'dns-bootstrap', type: 'udp', server: bootstrapIp }
         ]
-    const dnsServersLegacy = isExitLagWhitelist
+    const dnsServersLegacy = isExitLagWhitelist && !hotExitLag
       ? [
           {
             tag: 'local-dns',
@@ -3750,7 +3870,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       outbounds: outboundsList,
       route: {
         rules: [],
-        final: routingMode === 'direct' || isExitLagWhitelist ? 'direct' : 'proxy',
+        final: routingMode === 'direct' || (isExitLagWhitelist && !hotExitLag) ? 'direct' : 'proxy',
         auto_detect_interface: true,
         /**
          * Чем резолвить имена, когда исходящее соединение набирает хост.
@@ -3831,7 +3951,12 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // Оговорка: системные DNS-запросы на Windows отправляет служба Dnscache
     // (svchost.exe), а не сама игра, поэтому это правило срабатывает только
     // для приложений со своим резолвером (браузеры с DoH, Discord и т.п.).
-    if (perAppMatcher) {
+    if (hotExitLag) {
+      // То же самое через rule-set: из списка ExitLag — remote-dns, всё
+      // остальное (в белом списке) — local-dns; выключен — правила пустые.
+      dnsRules.push({ rule_set: ['lz-exitlag-vpn'], server: 'remote-dns' })
+      dnsRules.push({ rule_set: ['lz-exitlag-direct'], server: 'local-dns' })
+    } else if (perAppMatcher) {
       if (settings.perAppMode === 'bypass_only') {
         // Blacklist: bypassed apps resolve via local-dns
         dnsRules.unshift({ ...perAppMatcher, server: 'local-dns' })
@@ -4041,7 +4166,24 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // Instead, we use simple positive matching:
     //   proxy_only: listed processes → proxy, route.final → direct
     //   bypass_only: listed processes → direct, route.final → proxy (unchanged)
-    if (perAppMatcher) {
+    if (hotExitLag) {
+      config.route.find_process = true
+      const rs = writeExitLagRuleSets(settings)
+      config.route.rule_set = [
+        ...(Array.isArray(config.route.rule_set) ? config.route.rule_set : []),
+        { type: 'local', tag: 'lz-exitlag-vpn', format: 'source', path: exitLagRuleSetPath('vpn') },
+        { type: 'local', tag: 'lz-exitlag-direct', format: 'source', path: exitLagRuleSetPath('direct') }
+      ]
+      config.route.rules.push({ rule_set: ['lz-exitlag-vpn'], outbound: 'proxy' })
+      config.route.rules.push({ rule_set: ['lz-exitlag-direct'], outbound: 'direct' })
+      if (settings.perAppProxy) {
+        appendLog(
+          rs.whitelist
+            ? `Режим ExitLag: через VPN идут только ${rs.list.length} прилож. (${rs.list.join(', ')}), остальной трафик — напрямую. Список меняется на лету, без переподключения.`
+            : `Режим приложений: ${rs.list.length} приложений исключены (напрямую): ${rs.list.join(', ')}`
+        )
+      }
+    } else if (perAppMatcher) {
       // Поиск процесса у sing-box включается сам, если есть правила по
       // процессам; явный флаг — на случай, если это поведение поменяется.
       config.route.find_process = true
@@ -4058,7 +4200,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         )
       }
     }
-    if (isExitLagWhitelist) {
+    if (isExitLagWhitelist && !hotExitLag) {
       // Всё, что не в списке (и пакеты, чей процесс не определился), — напрямую.
       config.route.final = 'direct'
     }
@@ -4217,6 +4359,8 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       // XRAY_ONLY: Xray has no Clash API, so bytes cannot be counted here —
       // the session still records duration and the connection itself.
       beginStatsSession(0)
+      sessionHotExitLag = false
+      sessionMode = mode
       sessionTunnelSig = tunnelSig(settings)
       lastSession = { nodeId: target.id, mode, singBox: false }
       const okStatus = broadcastStatus({
@@ -4461,7 +4605,9 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     beginStatsSession(statsClashPort)
 
     exitLagLogTagging = isExitLagWhitelist
-    sessionTunnelSig = tunnelSig(settings)
+    sessionHotExitLag = hotExitLag
+    sessionMode = mode
+    sessionTunnelSig = tunnelSig(settings, hotExitLag)
     lastSession = { nodeId: target.id, mode, singBox: true }
     const status = broadcastStatus({
       state: 'running',
