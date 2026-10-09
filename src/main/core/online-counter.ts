@@ -27,6 +27,8 @@ const JITTER_MS = 40 * 1000
 let lastOnline: { online: number; at: number } | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 let zapretHintDone = false
+/** Подряд неудачных отметок — после сбоя повторяем через минуту, а не через 5. */
+let failures = 0
 
 function installId(): string {
   const file = path.join(dataDir(), 'online-id')
@@ -76,51 +78,71 @@ async function hintZapret(): Promise<void> {
   }
 }
 
-async function ping(): Promise<void> {
+/** Запрос: сначала сетевой стек Chromium (как браузер), при ошибке — fetch Node. */
+async function postPing(url: string, body: string): Promise<{ online?: number } | null> {
+  const opts = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'User-Agent': 'LAZEYKA' },
+    body
+  }
+  try {
+    const { net } = await import('electron')
+    const res = await net.fetch(url, { ...opts, signal: AbortSignal.timeout(15_000) })
+    return (await res.json().catch(() => null)) as { online?: number } | null
+  } catch {
+    const res = await fetch(url, { ...opts, signal: AbortSignal.timeout(15_000) })
+    return (await res.json().catch(() => null)) as { online?: number } | null
+  }
+}
+
+async function ping(): Promise<boolean> {
   if (!(await enabled())) {
     if (lastOnline) {
       lastOnline = null
       broadcast()
     }
-    return
+    return true
   }
   try {
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 10_000)
-    const res = await fetch(`${ONLINE_COUNTER_URL.replace(/\/+$/, '')}/ping`, {
-      method: 'POST',
-      signal: ctrl.signal,
-      headers: { 'Content-Type': 'application/json', 'User-Agent': 'LAZEYKA' },
-      body: JSON.stringify({ id: installId() })
-    })
-    clearTimeout(t)
-    const data = (await res.json().catch(() => null)) as { online?: number } | null
+    const data = await postPing(`${ONLINE_COUNTER_URL.replace(/\/+$/, '')}/ping`, JSON.stringify({ id: installId() }))
     if (data && typeof data.online === 'number') {
       lastOnline = { online: data.online, at: Date.now() }
       broadcast()
+      failures = 0
+      return true
     }
+    throw new Error('пустой ответ')
   } catch (e) {
+    failures++
+    const cause = e instanceof Error && (e as Error & { cause?: { code?: string } }).cause?.code
     logToFile({
       time: Date.now(),
       type: 'warn',
       source: 'app',
-      payload: `счётчик онлайна недоступен: ${e instanceof Error ? e.message : String(e)}`
+      payload: `счётчик онлайна недоступен: ${e instanceof Error ? e.message : String(e)}${cause ? ` (${cause})` : ''}` +
+        (failures <= 3 ? ' — повтор через минуту' : '')
     })
     void hintZapret()
+    return false
   }
 }
 
 function schedule(delay: number): void {
   if (timer) clearTimeout(timer)
   timer = setTimeout(() => {
-    void ping().finally(() => schedule(INTERVAL_MS + Math.round((Math.random() * 2 - 1) * JITTER_MS)))
+    void ping().then((ok) =>
+      schedule(!ok && failures <= 3 ? 60_000 : INTERVAL_MS + Math.round((Math.random() * 2 - 1) * JITTER_MS))
+    )
   }, delay)
 }
 
-/** Запустить отметки (первая — через 15–45 с после старта, чтобы не мешать запуску служб). */
+/**
+ * Запустить отметки. Первая — через 60–90 с: в первые секунды после старта
+ * перезапускается Zapret, и соединения в этот момент рвутся.
+ */
 export function startOnlineCounter(): void {
   if (!ONLINE_COUNTER_URL) return
-  schedule(15_000 + Math.round(Math.random() * 30_000))
+  schedule(60_000 + Math.round(Math.random() * 30_000))
 }
 
 /** Последнее известное число (null — выключено или ещё не получено). */

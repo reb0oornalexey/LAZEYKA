@@ -340,7 +340,7 @@ const TelegramPage: React.FC = () => {
           icon={TelegramIcon}
           title="Telegram"
           subtitle={`${tgws?.host ?? '127.0.0.1'}:${tgws?.port ?? 1443}`}
-          version={tgws?.installedVersion ?? updateInfo?.installed}
+          version={updateInfo?.installed ?? tgws?.installedVersion}
           versionFallback="встроенная"
           status={status}
           onToggle={(v) => (v ? tgwsStart() : tgwsStop()).catch(() => void 0)}

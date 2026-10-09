@@ -555,6 +555,12 @@ async function startTgwsImpl(): Promise<void> {
       spawnArgs = ['-u', '-B', '-X', 'utf8', cli.bootstrap, cli.appDir, ...args]
       cwd = cli.appDir
       log('info', `режим: консольный (Flowseal tg-ws-proxy ${cli.version || '?'}, без трея)`)
+      // Версия в конфиге — от прошлого обновления. Новая сборка LAZEYKA могла
+      // привезти TgWsProxy свежее, и на главной висела старая цифра.
+      if (cli.version && t.installedVersion !== cli.version) {
+        const cfgNow = await getAppConfig()
+        await patchAppConfig({ tgws: { ...cfgNow.tgws!, installedVersion: cli.version } }).catch(() => void 0)
+      }
     } else {
       spawnArgs = args
       cwd = path.dirname(bin)
