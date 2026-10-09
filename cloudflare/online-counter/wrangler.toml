@@ -1,0 +1,16 @@
+# Счётчик «сейчас онлайн» для LAZEYKA.
+# Разворачивать в ОТДЕЛЬНОМ бесплатном аккаунте Cloudflare (не там, где Worker
+# для Telegram): лимит 100 000 запросов в сутки общий на аккаунт.
+name = "lazeyka-online"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[[durable_objects.bindings]]
+name = "COUNTER"
+class_name = "OnlineCounter"
+
+# SQLite-класс — Durable Objects на бесплатном тарифе бывают только такими.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["OnlineCounter"]

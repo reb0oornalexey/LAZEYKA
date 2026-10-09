@@ -1006,6 +1006,11 @@ export interface BufferbloatResult {
 /** Пинг в покое и под нагрузкой (bufferbloat). */
 export const optimizerBufferbloat = (ip?: string): Promise<BufferbloatResult> => invoke('optimizer:bufferbloat', ip)
 
+/** Сколько людей сейчас в LAZEYKA (null — выключено или ещё нет данных). */
+export const appGetOnlineCount = (): Promise<{ online: number; at: number } | null> => invoke('app:getOnlineCount')
+export const appOnlineCounterInfo = (): Promise<{ configured: boolean }> => invoke('app:onlineCounterInfo')
+export const appRefreshOnlineCount = (): Promise<void> => invoke('app:refreshOnlineCount')
+
 /** Живая проверка ExitLag: IP приложений не из списка и из списка. */
 export const exitLagCheck = (): Promise<ExitLagCheckResult> => invoke('exitlag:check')
 

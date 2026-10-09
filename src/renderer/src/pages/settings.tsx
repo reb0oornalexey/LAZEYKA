@@ -21,6 +21,7 @@ import { Input } from '@renderer/components/ui/input'
 import {
   appRelaunch,
   appCheckUpdateNow,
+  appRefreshOnlineCount,
   profileExport,
   profileImport,
   dnsGetProviders,
@@ -729,6 +730,22 @@ const Settings: React.FC = () => {
               <Switch
                 checked={appConfig?.autoCheckUpdate ?? true}
                 onCheckedChange={(v) => patchAppConfig({ autoCheckUpdate: v })}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col">
+                <Label className="text-sm">Показывать, сколько людей онлайн</Label>
+                <span className="text-xs text-muted-foreground">
+                  Раз в 5 минут LAZEYKA анонимно отмечается на своём счётчике (только случайный номер установки, без
+                  данных о вас) и показывает на главной, сколько человек сейчас в программе. Выключено — не
+                  отправляется ничего.
+                </span>
+              </div>
+              <Switch
+                checked={appConfig?.onlineStats ?? true}
+                onCheckedChange={(v) => {
+                  void patchAppConfig({ onlineStats: v }).then(() => appRefreshOnlineCount().catch(() => void 0))
+                }}
               />
             </div>
 

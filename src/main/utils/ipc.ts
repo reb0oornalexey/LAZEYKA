@@ -22,6 +22,7 @@ import {
 import { exportLazeykaProfile, importLazeykaProfile } from '../core/profile-manager'
 import { getComponentReleaseHistory } from '../core/component-releases'
 import { checkExitLag } from '../core/exitlag-check'
+import { getOnlineCount, refreshOnlineCounter, isOnlineCounterConfigured } from '../core/online-counter'
 import { traceRoute } from '../core/route-trace'
 import { runBufferbloatTest } from '../core/bufferbloat'
 import { showSystemNotification } from './notifications'
@@ -587,6 +588,10 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('system:scanInstalledGames', h(() => scanInstalledGames()))
   ipcMain.handle('incy:appActivity', h(() => fetchAppActivity()))
   ipcMain.handle('exitlag:check', h(() => checkExitLag()))
+  // «Сейчас онлайн» на главной.
+  ipcMain.handle('app:getOnlineCount', h(() => getOnlineCount()))
+  ipcMain.handle('app:onlineCounterInfo', h(() => ({ configured: isOnlineCounterConfigured() })))
+  ipcMain.handle('app:refreshOnlineCount', h(() => refreshOnlineCounter()))
   // Оптимизатор: трассировка до сервера (мимо TUN) и пинг под нагрузкой.
   ipcMain.handle('optimizer:trace', h((target) => traceRoute(String(target ?? ''))))
   ipcMain.handle('optimizer:bufferbloat', h((ip) => runBufferbloatTest(ip ? String(ip) : undefined)))
