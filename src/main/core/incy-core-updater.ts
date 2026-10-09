@@ -56,6 +56,13 @@ interface CoreSpec {
   /** Config file this core is validated against. */
   configFile: () => string
   minBytes: number
+  /**
+   * Брать и релизы с пометкой «pre-release». Xray-core с 2026 года помечает
+   * так ВСЕ свои выпуски (последний «обычный» — 26.3.27), и апдейтер, который
+   * смотрел только /releases/latest, навсегда застревал на мартовской версии.
+   * У sing-box пометка честная (1.15.0-alpha) — там её соблюдаем.
+   */
+  allowPrerelease?: boolean
 }
 
 const CORES: CoreSpec[] = [
@@ -75,6 +82,7 @@ const CORES: CoreSpec[] = [
     exeName: 'xray.exe',
     repo: 'XTLS/Xray-core',
     matchAsset: (n) => /^Xray-windows-64\.zip$/i.test(n),
+    allowPrerelease: true,
     currentPath: xrayBinaryPath,
     validateArgs: (cfg) => ['-test', '-config', cfg],
     versionArgs: ['version'],
@@ -166,11 +174,28 @@ export async function probeCoreVersion(spec: CoreSpec): Promise<string | undefin
 // check
 // ---------------------------------------------------------------------------
 
-import { fetchLatestGithubRelease, type GhRelease } from '../utils/github-release'
+import { fetchLatestGithubRelease, fetchGithubReleases, type GhRelease } from '../utils/github-release'
 
-async function fetchLatestRelease(repo: string): Promise<GhRelease | null> {
+async function fetchLatestRelease(spec: CoreSpec): Promise<GhRelease | null> {
+  if (spec.allowPrerelease) {
+    // Свежий выпуск с Windows-архивом, включая помеченные «pre-release»
+    // (кроме черновиков и тегов с «-alpha/-beta/-rc»).
+    try {
+      const list = await fetchGithubReleases(spec.repo, 1, 15)
+      const pick = list.find(
+        (r) =>
+          !r.draft &&
+          r.tag_name &&
+          !/-(alpha|beta|rc)/i.test(r.tag_name) &&
+          (r.assets ?? []).some((a) => spec.matchAsset(a.name))
+      )
+      if (pick) return { ...pick, prerelease: false }
+    } catch {
+      /* ниже — обычный путь */
+    }
+  }
   try {
-    return await fetchLatestGithubRelease(repo)
+    return await fetchLatestGithubRelease(spec.repo)
   } catch {
     return null
   }
@@ -182,7 +207,7 @@ export async function checkCoreUpdates(): Promise<CoreUpdateState[]> {
   for (const spec of CORES) {
     const present = existsSync(spec.currentPath())
     const installed = await probeCoreVersion(spec)
-    const release = await fetchLatestRelease(spec.repo)
+    const release = await fetchLatestRelease(spec)
     const latest = release?.tag_name?.replace(/^v/i, '').trim()
     const asset = (release?.assets ?? []).find((a) => spec.matchAsset(a.name))
     const kind =
