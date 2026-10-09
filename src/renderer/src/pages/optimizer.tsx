@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import BasePage from '@renderer/components/base/base-page'
 import AutoSelectCard from '@renderer/components/auto-select-card'
 import ValveRegionsCard from '@renderer/components/valve-regions-card'
+import SiteCheckCard from '@renderer/components/site-check-card'
 import { Card, CardHeader, CardTitle, CardContent } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import { Badge } from '@renderer/components/ui/badge'
@@ -644,6 +645,8 @@ export default function OptimizerPage(): React.ReactElement {
             </div>
           </CardContent>
         </Card>
+
+        <SiteCheckCard />
 
         <ValveRegionsCard />
 

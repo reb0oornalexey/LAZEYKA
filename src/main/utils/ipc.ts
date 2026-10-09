@@ -25,6 +25,7 @@ import { checkExitLag } from '../core/exitlag-check'
 import { getOnlineCount, refreshOnlineCounter, isOnlineCounterConfigured } from '../core/online-counter'
 import { traceRoute } from '../core/route-trace'
 import { runBufferbloatTest } from '../core/bufferbloat'
+import { checkSite, addSitesToZapret } from '../core/site-check'
 import { showSystemNotification } from './notifications'
 import {
   getAutopilotStatus,
@@ -594,6 +595,8 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('app:refreshOnlineCount', h(() => refreshOnlineCounter()))
   // Оптимизатор: трассировка до сервера (мимо TUN) и пинг под нагрузкой.
   ipcMain.handle('optimizer:trace', h((target) => traceRoute(String(target ?? ''))))
+  ipcMain.handle('optimizer:checkSite', h((url) => checkSite(String(url ?? ''))))
+  ipcMain.handle('optimizer:addSitesToZapret', h((domains) => addSitesToZapret(Array.isArray(domains) ? domains.map(String) : [])))
   ipcMain.handle('optimizer:bufferbloat', h((ip) => runBufferbloatTest(ip ? String(ip) : undefined)))
   // Оптимизатор: пинг до регионов Valve (CS2, Dota 2).
   ipcMain.handle('optimizer:valveRegions', h(() => measureValveRegions()))

@@ -1011,6 +1011,46 @@ export const appGetOnlineCount = (): Promise<{ online: number; at: number } | nu
 export const appOnlineCounterInfo = (): Promise<{ configured: boolean }> => invoke('app:onlineCounterInfo')
 export const appRefreshOnlineCount = (): Promise<void> => invoke('app:refreshOnlineCount')
 
+export interface SiteHostProbe {
+  host: string
+  ip: string | null
+  dnsMs: number | null
+  tcpMs: number | null
+  tlsMs: number | null
+  ttfbMs: number | null
+  error?: string
+  verdict: 'ok' | 'dns-blocked' | 'dns-failed' | 'tcp-blocked' | 'dpi-blocked' | 'slow' | 'server-error'
+  vpnMs?: number | null
+  vpnError?: string
+  zapret: 'listed' | 'excluded' | 'none'
+  baseDomain: string
+}
+export interface SitePageHost {
+  host: string
+  requests: number
+  failed: number
+  hanging: number
+  maxMs: number
+  early: boolean
+}
+export interface SiteCheckResult {
+  url: string
+  host: string
+  pageLoadMs: number | null
+  pageTimedOut: boolean
+  pageError?: string
+  pageHosts: SitePageHost[]
+  probes: SiteHostProbe[]
+  zapretRunning: boolean
+  vpnNode?: string
+  viaTunnel: boolean
+  verdict: string[]
+}
+/** Почему сайт грузится долго: загрузка в скрытом окне + пошаговая проверка доменов. */
+export const optimizerCheckSite = (url: string): Promise<SiteCheckResult> => invoke('optimizer:checkSite', url)
+export const optimizerAddSitesToZapret = (domains: string[]): Promise<{ added: number; restarted: boolean }> =>
+  invoke('optimizer:addSitesToZapret', domains)
+
 /** Живая проверка ExitLag: IP приложений не из списка и из списка. */
 export const exitLagCheck = (): Promise<ExitLagCheckResult> => invoke('exitlag:check')
 
