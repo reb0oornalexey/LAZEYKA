@@ -6,9 +6,9 @@
  * сколько разных ID отметились за последние 7 минут.
  *
  * Никаких ключей в программе нет: это обычный публичный адрес. Хранится только
- * время последней отметки каждого ID — в памяти одного Durable Object, без
- * записи на диск. IP не сохраняется: он нужен только на минуту, чтобы
- * ограничить накрутку с одного адреса.
+ * анонимный ID и время его последней отметки (SQLite Durable Object), записи
+ * старше окна удаляются. IP не сохраняется: он живёт в памяти одно окно,
+ * чтобы ограничить накрутку с одного адреса.
  *
  * Защита от накрутки:
  *  - ID только 32 hex-символа;
@@ -40,22 +40,27 @@ function json(data, status = 200) {
 export class OnlineCounter extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env)
-    /** id → время последней отметки */
-    this.seen = new Map()
-    /** ip → { at, hits, ids:Set } — только в памяти, на одно окно */
+    // Отметки — во встроенной SQLite объекта: память Durable Object
+    // очищается, когда он простаивает (десятки секунд без запросов), и
+    // счётчик в памяти обнулялся бы.
+    this.sql = ctx.storage.sql
+    this.sql.exec('CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, at INTEGER NOT NULL)')
+    this.sql.exec('CREATE INDEX IF NOT EXISTS seen_at ON seen (at)')
+    /** ip → { at, hits, ids:Set } — только в памяти, на одно окно (защита от накрутки). */
     this.byIp = new Map()
     this.lastPrune = 0
   }
 
   prune(now) {
-    if (now - this.lastPrune < 30_000) return
+    if (now - this.lastPrune < 60_000) return
     this.lastPrune = now
-    for (const [id, t] of this.seen) if (now - t > WINDOW_MS) this.seen.delete(id)
+    this.sql.exec('DELETE FROM seen WHERE at < ?', now - WINDOW_MS)
     for (const [ip, r] of this.byIp) if (now - r.at > WINDOW_MS) this.byIp.delete(ip)
   }
 
-  online() {
-    return this.seen.size
+  online(now) {
+    const row = this.sql.exec('SELECT COUNT(*) AS n FROM seen WHERE at >= ?', now - WINDOW_MS).one()
+    return Number(row?.n ?? 0)
   }
 
   async fetch(request) {
@@ -64,7 +69,7 @@ export class OnlineCounter extends DurableObject {
     this.prune(now)
 
     if (url.pathname === '/online' && request.method === 'GET') {
-      return json({ online: this.online() })
+      return json({ online: this.online(now) })
     }
 
     if (url.pathname === '/ping' && request.method === 'POST') {
@@ -84,12 +89,12 @@ export class OnlineCounter extends DurableObject {
         this.byIp.set(ip, r)
       }
       r.hits++
-      if (r.hits > MAX_HITS_PER_IP) return json({ online: this.online() }, 429)
+      if (r.hits > MAX_HITS_PER_IP) return json({ online: this.online(now) }, 429)
       if (r.ids.has(id) || r.ids.size < MAX_IDS_PER_IP) {
         r.ids.add(id)
-        this.seen.set(id, now)
+        this.sql.exec('INSERT INTO seen (id, at) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET at = excluded.at', id, now)
       }
-      return json({ online: this.online() })
+      return json({ online: this.online(now) })
     }
 
     return json({ error: 'not found' }, 404)

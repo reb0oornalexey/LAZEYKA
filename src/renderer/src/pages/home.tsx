@@ -562,7 +562,7 @@ const Home: React.FC = () => {
             onToggle={(v) => void toggleTgws(v)}
             rows={[
               { label: 'Прокси', value: `127.0.0.1:${appConfig?.tgws?.port || 1443}` },
-              { label: 'Версия', value: appConfig?.tgws?.installedVersion ?? tgwsUpdate?.installed ?? 'встроенная' }
+              { label: 'Версия', value: tgwsUpdate?.installed ?? appConfig?.tgws?.installedVersion ?? 'встроенная' }
             ]}
             note={tgws.state === 'error' ? tgws.lastError : undefined}
             onOpen={() => navigate('/telegram')}
