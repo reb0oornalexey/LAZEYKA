@@ -16,9 +16,12 @@ import {
   restartTgws,
   getTgwsLink,
   getTgwsShareLinks,
+  checkTgwsWorkers,
   pingTelegramDataCenters
 } from '../core/tgws'
 import { exportLazeykaProfile, importLazeykaProfile } from '../core/profile-manager'
+import { getComponentReleaseHistory } from '../core/component-releases'
+import { checkExitLag } from '../core/exitlag-check'
 import { showSystemNotification } from './notifications'
 import {
   getAutopilotStatus,
@@ -291,9 +294,25 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('tgws:getLink', h(() => getTgwsLink()))
   ipcMain.handle('tgws:checkUpdate', h((force) => checkTgwsUpdate(Boolean(force))))
   ipcMain.handle('tgws:installUpdate', h((url, expectedVersion) =>
-    installTgwsUpdate(url as string, expectedVersion as string | undefined)
+    installTgwsUpdate(url as string, expectedVersion as string | undefined, (msg) => {
+      // Шаги установки (скачивание зависимостей) — в окно обновления.
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (!w.isDestroyed()) w.webContents.send('component:updateStep', { component: 'tgws', message: msg })
+      }
+    })
   ))
   ipcMain.handle('tgws:dismissUpdate', h((tag) => dismissTgwsUpdate(tag as string)))
+  // Заметки авторов к релизам Zapret / TgWsProxy — для окна обновления.
+  ipcMain.handle(
+    'component:releaseHistory',
+    h((component, page, perPage) =>
+      getComponentReleaseHistory(
+        component === 'tgws' ? 'tgws' : 'zapret',
+        typeof page === 'number' ? page : 1,
+        typeof perPage === 'number' ? perPage : 6
+      )
+    )
+  )
 
   // ---- Zapret -------------------------------------------------------------
   ipcMain.handle('zapret:status', h(() => getZapretStatus()))
@@ -370,6 +389,7 @@ export function registerIpcMainHandlers(): void {
 
   // ---- Tgws Sharing & Data Centers --------------------------------------
   ipcMain.handle('tgws:getShareLinks', h(() => getTgwsShareLinks()))
+  ipcMain.handle('tgws:checkWorkers', h(() => checkTgwsWorkers()))
   ipcMain.handle('tgws:pingDataCenters', h(() => pingTelegramDataCenters()))
 
   // ---- Profiles Export / Import ------------------------------------------
@@ -556,6 +576,7 @@ export function registerIpcMainHandlers(): void {
   // ExitLag: игры из библиотек Steam и Epic; кто из приложений сейчас в сети.
   ipcMain.handle('system:scanInstalledGames', h(() => scanInstalledGames()))
   ipcMain.handle('incy:appActivity', h(() => fetchAppActivity()))
+  ipcMain.handle('exitlag:check', h(() => checkExitLag()))
   // Оптимизатор: пинг до регионов Valve (CS2, Dota 2).
   ipcMain.handle('optimizer:valveRegions', h(() => measureValveRegions()))
   // Серверы Valve → списки Zapret: подсети ретрансляторов в list-general.txt

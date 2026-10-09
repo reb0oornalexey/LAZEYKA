@@ -423,7 +423,7 @@ const Home: React.FC = () => {
               <UpdateNotice
                 title={`Доступно обновление Zapret — v${zapretUpdate.latest}`}
                 subtitle={formatInstalledVersion(zapretUpdate.installed)}
-                onDetails={() => navigate('/zapret')}
+                onDetails={() => navigate('/zapret', { state: { openUpdate: true } })}
                 onDismiss={() => setZapretSessionDismissed(true)}
               />
             )}
@@ -431,7 +431,7 @@ const Home: React.FC = () => {
               <UpdateNotice
                 title={`Доступно обновление TgWsProxy — v${tgwsUpdate.latest}`}
                 subtitle={formatInstalledVersion(tgwsUpdate.installed)}
-                onDetails={() => navigate('/telegram')}
+                onDetails={() => navigate('/telegram', { state: { openUpdate: true } })}
                 onDismiss={() => setTgwsSessionDismissed(true)}
               />
             )}

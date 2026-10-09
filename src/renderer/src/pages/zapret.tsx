@@ -20,6 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/u
 import { Button } from '@renderer/components/ui/button'
 import ZapretIcon from '@renderer/components/zapret-icon'
 import { cn, formatInstalledVersion, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
+import ComponentUpdateDialog from '@renderer/components/component-update-dialog'
 import BasePage from '@renderer/components/base/base-page'
 import SwitcherCard from '@renderer/components/switcher-card'
 import ZapretIpListCard from '@renderer/components/zapret-iplist-card'
@@ -136,21 +137,25 @@ const Zapret: React.FC = () => {
 
   const showBanner = !!updateInfo && updateInfo.hasUpdate && !updateInfo.dismissed && !!updateInfo.assetUrl
 
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false)
+  // «Подробнее» на главной ведёт сюда и сразу открывает окно обновления.
+  const openUpdateRef = useRef<boolean>(Boolean((location.state as { openUpdate?: boolean } | null)?.openUpdate))
+  useEffect(() => {
+    if (openUpdateRef.current && updateInfo?.hasUpdate) {
+      openUpdateRef.current = false
+      setUpdateDialogOpen(true)
+    }
+  }, [updateInfo])
+
+  /** Установка из окна обновления: ошибку показывает само окно. */
   const installUpdate = async (): Promise<void> => {
     if (installingRef.current || !updateInfo?.assetUrl) return
     installingRef.current = true
     setInstalling(true)
-    const tId = toast.loading('Скачиваем сборку Zapret…', {
-      description: updateInfo.assetName ?? `v${updateInfo.latest}`
-    })
     try {
       const res = await zapretInstallUpdate(updateInfo.assetUrl, updateInfo.latest)
       toast.success('Zapret обновлён', {
-        id: tId,
         description: `Версия ${res.installedVersion ?? updateInfo.latest} — стратегий: ${res.strategies}`,
-        // Same vivid power-on green as the other success toasts (copy-link,
-        // regenerate-key, processes-reloaded) and the active home-page
-        // power-on disc, so success feedback across the app is one colour.
         style: POWER_ON_BANNER_STYLE
       })
       // If the active strategy no longer exists in the new bundle, drop it
@@ -168,9 +173,6 @@ const Zapret: React.FC = () => {
       // Re-check so the banner disappears immediately.
       const fresh = await zapretCheckUpdate(true).catch(() => null)
       setUpdateInfo(fresh)
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      toast.error('Не удалось обновить Zapret', { id: tId, description: msg })
     } finally {
       setInstalling(false)
       installingRef.current = false
@@ -205,6 +207,14 @@ const Zapret: React.FC = () => {
 
   return (
     <BasePage title="Zapret">
+      <ComponentUpdateDialog
+        component="zapret"
+        open={updateDialogOpen}
+        info={updateInfo}
+        onInstall={installUpdate}
+        onLater={dismissUpdate}
+        onClose={() => setUpdateDialogOpen(false)}
+      />
       <div className="px-4 pb-6 space-y-4">
         {showBanner && updateInfo && (
           <div className={cn(
@@ -233,7 +243,7 @@ const Zapret: React.FC = () => {
                 <Button variant="ghost" size="sm" onClick={dismissUpdate}>
                   Позже
                 </Button>
-                <Button size="sm" onClick={() => { void installUpdate() }}>
+                <Button size="sm" onClick={() => setUpdateDialogOpen(true)}>
                   <Download className="h-3.5 w-3.5" />
                   Обновить
                 </Button>

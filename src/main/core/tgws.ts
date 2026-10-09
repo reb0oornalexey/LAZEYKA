@@ -339,6 +339,35 @@ function splitDomains(v?: string): string[] {
     .filter((d) => /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(d))
 }
 
+function cmpVer(a: string, b: string): number {
+  const pa = String(a || '0').split('.').map((x) => parseInt(x, 10) || 0)
+  const pb = String(b || '0').split('.').map((x) => parseInt(x, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return 0
+}
+
+/** Домены Cloudflare из инструкции Flowseal — без них Worker из России недоступен. */
+const CLOUDFLARE_ZAPRET_HOSTS = ['workers.dev', 'cloudflare.com', 'cloudflare.dev']
+
+async function ensureCloudflareInZapret(userDomains: string[]): Promise<void> {
+  if (userDomains.length === 0) return
+  try {
+    const { addHostsToZapretUserList } = await import('./zapret-iplist')
+    const added = addHostsToZapretUserList([...CLOUDFLARE_ZAPRET_HOSTS, ...userDomains])
+    if (added === 0) return
+    log('info', `в список Zapret добавлены домены Cloudflare для Worker/CF-прокси (${added})`)
+    const { getZapretStatus, restartZapret } = await import('./zapret')
+    if (getZapretStatus().state === 'running') {
+      await restartZapret().catch((e) => log('warn', `Zapret не перезапустился: ${e instanceof Error ? e.message : e}`))
+    }
+  } catch (e) {
+    log('warn', `не удалось добавить домены Cloudflare в Zapret: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
 /**
  * Поколение процесса TgWsProxy. Обработчики `exit`/`error` запоминают своё
  * поколение и ничего не делают, если процесс уже заменён: раньше «опоздавший»
@@ -478,15 +507,45 @@ async function startTgwsImpl(): Promise<void> {
     const args: string[] = ['--host', host, '--port', String(t.port), '--secret', secret]
     for (const d of dcIp) args.push('--dc-ip', d)
     if (t.bufKb) args.push('--buf-kb', String(t.bufKb))
-    if (t.poolSize) args.push('--pool-size', String(t.poolSize))
+    const workerDomains = splitDomains(t.cfproxyWorkerDomain)
+    const workerOnly = t.routeMode === 'worker' && workerDomains.length > 0
+    if (t.routeMode === 'worker' && workerDomains.length === 0) {
+      log('warn', 'маршрут «Через Cloudflare Worker» выбран, но домен Worker не указан — работаем как обычно')
+    }
+    if (workerOnly) {
+      // Официальный способ Flowseal пустить всё через запасные пути:
+      // `--pool-size 0` выключает прямой WebSocket (proxy/pool.py), и каждое
+      // соединение идёт в do_fallback, где свой Worker стоит первым.
+      args.push('--pool-size', '0')
+    } else if (t.poolSize) {
+      args.push('--pool-size', String(t.poolSize))
+    }
     if (t.verbose) args.push('-v')
     if (t.cfproxy === false) args.push('--no-cfproxy')
     for (const d of splitDomains(t.cfproxyUserDomain)) args.push('--cfproxy-domain', d)
     // Свой Cloudflare Worker — официальное решение Flowseal для случая, когда
     // публичные CF-домены отвечают 503 (docs/RU/CfWorker.md). Пробуется
     // первым среди запасных путей.
-    for (const d of splitDomains(t.cfproxyWorkerDomain)) args.push('--cfproxy-worker-domain', d)
+    for (const d of workerDomains) args.push('--cfproxy-worker-domain', d)
     if (t.fakeTlsDomain) args.push('--fake-tls-domain', t.fakeTlsDomain)
+
+    // Шаг 1 инструкции Flowseal (docs/RU/CfWorker.md, CfProxy.md): домены
+    // Cloudflare должны быть в Zapret, иначе провайдер режет соединение с
+    // Worker'ом и каждая попытка заканчивается TimeoutError (так и было в
+    // логах). Добавляем в свой список Zapret сами и перезапускаем его, если
+    // список изменился.
+    await ensureCloudflareInZapret([...workerDomains, ...splitDomains(t.cfproxyUserDomain)])
+
+    if (workerOnly) {
+      log('info', `маршрут: всё через свой Cloudflare Worker (${workerDomains.length} дом.), прямой WebSocket выключен`)
+    } else if (workerDomains.length > 0) {
+      log('info', 'маршрут: авто — прямой WebSocket, при сбое — свой Cloudflare Worker, затем CF-прокси')
+    } else {
+      log('info', 'маршрут: авто — прямой WebSocket, при сбое — CF-прокси')
+    }
+    if (cli && workerOnly && cmpVer(cli.version, '1.11.0') < 0) {
+      log('warn', `TgWsProxy ${cli.version || '?'} старше 1.11 — режим «только Worker» может работать не полностью, обновите TgWsProxy`)
+    }
 
     let spawnArgs: string[]
     let cwd: string
@@ -786,4 +845,58 @@ export async function pingTelegramDataCenters(): Promise<TelegramDCPing[]> {
     })
   )
   return results
+}
+
+export interface TgwsWorkerCheck {
+  domain: string
+  ok: boolean
+  ms: number | null
+  /** Ответ сервера или ошибка — коротко, для человека. */
+  detail: string
+}
+
+/**
+ * Проверить свой Cloudflare Worker так же, как к нему ходит Flowseal:
+ * WebSocket-рукопожатие на `/apiws?dst=<IP DC2>&dc=2` (proxy/pool.py). 101 —
+ * Worker отвечает и открыл соединение к Telegram; 426/404 — по адресу
+ * развёрнут не тот код; таймаут — домен режет провайдер (нужен Zapret/VPN).
+ */
+export async function checkTgwsWorkers(): Promise<TgwsWorkerCheck[]> {
+  const cfg = await getAppConfig()
+  const domains = splitDomains(cfg.tgws?.cfproxyWorkerDomain)
+  const tls = await import('tls')
+  const one = (domain: string): Promise<TgwsWorkerCheck> =>
+    new Promise((resolve) => {
+      const start = performance.now()
+      let settled = false
+      const done = (ok: boolean, detail: string): void => {
+        if (settled) return
+        settled = true
+        try { sock.destroy() } catch { /* noop */ }
+        resolve({ domain, ok, ms: ok ? Math.round(performance.now() - start) : null, detail })
+      }
+      const sock = tls.connect({ host: domain, port: 443, servername: domain, ALPNProtocols: ['http/1.1'] })
+      sock.setTimeout(8000, () => done(false, 'таймаут — домен недоступен (провайдер режет Cloudflare: нужен Zapret или VPN)'))
+      sock.once('error', (e) => done(false, e.message))
+      sock.once('secureConnect', () => {
+        const key = randomBytes(16).toString('base64')
+        sock.write(
+          `GET /apiws?dst=149.154.167.51&dc=2 HTTP/1.1\r\nHost: ${domain}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+            `Sec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\nUser-Agent: LAZEYKA\r\n\r\n`
+        )
+      })
+      let head = ''
+      sock.on('data', (d: Buffer) => {
+        head += d.toString('latin1')
+        const line = head.split('\r\n')[0]
+        if (!line) return
+        const code = Number(/^HTTP\/\d(?:\.\d)?\s+(\d{3})/.exec(line)?.[1] ?? 0)
+        if (code === 101) done(true, 'Worker отвечает и соединяется с Telegram')
+        else if (code === 426 || code === 404)
+          done(false, `HTTP ${code} — по этому адресу развёрнут не код Worker'а из инструкции Flowseal`)
+        else if (code === 429) done(false, 'HTTP 429 — исчерпан дневной лимит запросов Cloudflare Workers')
+        else if (code) done(false, `HTTP ${code}`)
+      })
+    })
+  return Promise.all(domains.map(one))
 }

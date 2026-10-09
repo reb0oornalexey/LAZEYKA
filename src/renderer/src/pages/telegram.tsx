@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { toast } from 'sonner'
 import { QRCodeSVG } from 'qrcode.react'
 import { useTgwsStore } from '@renderer/store/tgws-store'
@@ -14,12 +15,15 @@ import {
   tgwsDismissUpdate,
   tgwsGetShareLinks,
   tgwsPingDataCenters,
+  tgwsCheckWorkers,
   incyReapplyTunnel,
   openExternalUrl,
   type TgwsUpdateInfo,
   type TgwsShareInfo,
-  type TelegramDCPing
+  type TelegramDCPing,
+  type TgwsWorkerCheck
 } from '@renderer/utils/ipc'
+import ComponentUpdateDialog from '@renderer/components/component-update-dialog'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -112,11 +116,56 @@ const TelegramPage: React.FC = () => {
     })
   }
 
+  /** Маршрут Telegram: авто (как у Flowseal) или всё через свой Worker. */
+  const handleSetRouteMode = async (mode: 'auto' | 'worker'): Promise<void> => {
+    if (mode === 'worker' && !(workerDraft ?? tgws?.cfproxyWorkerDomain ?? '').trim()) {
+      toast.error('Сначала укажите домен своего Cloudflare Worker ниже и сохраните его')
+      return
+    }
+    const value = (workerDraft ?? tgws?.cfproxyWorkerDomain ?? '').trim()
+    await patchAppConfig({ tgws: { ...tgws!, routeMode: mode, cfproxyWorkerDomain: value } })
+    setWorkerDraft(null)
+    if (status.state === 'running') {
+      try {
+        await tgwsRestart()
+        toast.success(mode === 'worker' ? 'Telegram идёт через ваш Cloudflare Worker' : 'Маршрут Telegram: авто', {
+          description: 'Telegram Proxy перезапущен.'
+        })
+      } catch (e) {
+        toast.error('Маршрут сохранён, но прокси не перезапустился', {
+          description: e instanceof Error ? e.message : String(e)
+        })
+      }
+    } else {
+      toast.success('Маршрут сохранён — применится при запуске Telegram Proxy')
+    }
+  }
+
+  const [workerChecks, setWorkerChecks] = useState<TgwsWorkerCheck[] | null>(null)
+  const [checkingWorker, setCheckingWorker] = useState(false)
+  const handleCheckWorker = async (): Promise<void> => {
+    if (checkingWorker) return
+    setCheckingWorker(true)
+    setWorkerChecks(null)
+    try {
+      const res = await tgwsCheckWorkers()
+      setWorkerChecks(res)
+      if (res.length === 0) toast.info('Домен Worker не указан')
+    } catch (e) {
+      toast.error('Проверка не удалась', { description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setCheckingWorker(false)
+    }
+  }
+
   /** Сохранить свой Cloudflare Worker и перезапустить прокси, если он работает. */
   const handleSaveWorker = async (): Promise<void> => {
     const value = (workerDraft ?? tgws?.cfproxyWorkerDomain ?? '').trim()
-    await patchAppConfig({ tgws: { ...tgws!, cfproxyWorkerDomain: value } })
+    await patchAppConfig({
+      tgws: { ...tgws!, cfproxyWorkerDomain: value, routeMode: value ? tgws?.routeMode : 'auto' }
+    })
     setWorkerDraft(null)
+    setWorkerChecks(null)
     if (status.state === 'running') {
       try {
         await tgwsRestart()
@@ -166,19 +215,26 @@ const TelegramPage: React.FC = () => {
 
   const showBanner = !!updateInfo && updateInfo.hasUpdate && !updateInfo.dismissed && !!updateInfo.assetUrl
 
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false)
+  // «Подробнее» на главной ведёт сюда и сразу открывает окно обновления.
+  const location = useLocation()
+  const openUpdateRef = useRef<boolean>(Boolean((location.state as { openUpdate?: boolean } | null)?.openUpdate))
+  useEffect(() => {
+    if (openUpdateRef.current && updateInfo?.hasUpdate) {
+      openUpdateRef.current = false
+      setUpdateDialogOpen(true)
+    }
+  }, [updateInfo])
+
+  /** Установка из окна обновления: ошибку показывает само окно. */
   const installUpdate = async (): Promise<void> => {
     if (installingRef.current || !updateInfo?.assetUrl) return
     installingRef.current = true
     setInstalling(true)
-    const tId = toast.loading('Скачиваем TgWsProxy…', {
-      description: updateInfo.assetName ?? `v${updateInfo.latest}`
-    })
     try {
       const res = await tgwsInstallUpdate(updateInfo.assetUrl, updateInfo.latest)
-      const mb = (res.sizeBytes / (1024 * 1024)).toFixed(1)
       toast.success('TgWsProxy обновлён', {
-        id: tId,
-        description: `Версия ${res.installedVersion ?? updateInfo.latest} — ${mb} МБ`,
+        description: `Версия ${res.installedVersion ?? updateInfo.latest}`,
         style: POWER_ON_TOAST_STYLE
       })
       const fresh = await tgwsCheckUpdate(true).catch(() => null)
@@ -186,9 +242,6 @@ const TelegramPage: React.FC = () => {
       if (running) {
         try { await tgwsStart() } catch { /* user can retry */ }
       }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      toast.error('Не удалось обновить TgWsProxy', { id: tId, description: msg })
     } finally {
       setInstalling(false)
       installingRef.current = false
@@ -238,6 +291,14 @@ const TelegramPage: React.FC = () => {
 
   return (
     <BasePage title="Telegram">
+      <ComponentUpdateDialog
+        component="tgws"
+        open={updateDialogOpen}
+        info={updateInfo}
+        onInstall={installUpdate}
+        onLater={dismissUpdate}
+        onClose={() => setUpdateDialogOpen(false)}
+      />
       <div className="px-4 pb-6 space-y-4">
         {showBanner && updateInfo && (
           <div className={cn(
@@ -257,7 +318,7 @@ const TelegramPage: React.FC = () => {
               </div>
               <div className="text-xs text-muted-foreground truncate">
                 {installing
-                  ? 'Останавливаем прокси, перезаписываем бинарник…'
+                  ? 'Проверяем новую версию и зависимости, затем перезапускаем прокси…'
                   : formatInstalledVersion(updateInfo.installed)}
               </div>
             </div>
@@ -266,7 +327,7 @@ const TelegramPage: React.FC = () => {
                 <Button variant="ghost" size="sm" onClick={dismissUpdate}>
                   Позже
                 </Button>
-                <Button size="sm" onClick={() => { void installUpdate() }}>
+                <Button size="sm" onClick={() => setUpdateDialogOpen(true)}>
                   <Download className="h-3.5 w-3.5" />
                   Обновить
                 </Button>
@@ -602,22 +663,50 @@ const TelegramPage: React.FC = () => {
           </CardContent>
         </Card>
 
-        {/* Маршрут Telegram: VPN и свой Cloudflare Worker */}
+        {/* Маршрут Telegram: свой Cloudflare Worker и VPN */}
         <Card className="cyber-card">
           <CardHeader>
             <CardTitle className="text-base font-bold">Маршрут Telegram</CardTitle>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Каким путём TgWsProxy соединяется с серверами Telegram.
+            </p>
           </CardHeader>
           <CardContent className="space-y-4">
-            <label className="flex items-center justify-between gap-4 cursor-pointer">
-              <span className="text-xs leading-relaxed">
-                <span className="font-semibold text-foreground block">TgWsProxy через VPN INCY</span>
-                <span className="text-muted-foreground">
-                  Когда INCY подключён, Telegram (фото, видео, кружки) идёт через VPN — в том числе в режиме ExitLag. Помогает,
-                  если провайдер режет серверы Telegram и видео зависает.
-                </span>
-              </span>
-              <Switch checked={Boolean(tgws?.viaIncy)} onCheckedChange={(v) => void handleToggleViaIncy(v)} />
-            </label>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {(
+                [
+                  {
+                    id: 'auto',
+                    title: 'Авто (как у Flowseal)',
+                    text: 'Прямой WebSocket к Telegram. Если не вышло — ваш Worker, затем общий CF-прокси.'
+                  },
+                  {
+                    id: 'worker',
+                    title: 'Через свой Cloudflare Worker',
+                    text: 'Все соединения идут через ваш Worker, прямой WebSocket выключен. Для случаев, когда провайдер режет Telegram.'
+                  }
+                ] as const
+              ).map((o) => {
+                const active = (tgws?.routeMode ?? 'auto') === o.id
+                return (
+                  <button
+                    key={o.id}
+                    type="button"
+                    onClick={() => void handleSetRouteMode(o.id)}
+                    className={cn(
+                      'rounded-xl border px-3 py-2.5 text-left transition-colors cursor-pointer',
+                      active ? 'border-primary/60 bg-primary/10' : 'border-border/60 bg-card/50 hover:border-primary/40'
+                    )}
+                  >
+                    <span className="flex items-center gap-2 text-xs font-semibold text-foreground">
+                      <span className={cn('size-2 rounded-full', active ? 'bg-primary' : 'bg-border')} />
+                      {o.title}
+                    </span>
+                    <span className="mt-1 block text-[11px] leading-snug text-muted-foreground">{o.text}</span>
+                  </button>
+                )
+              })}
+            </div>
 
             <div className="space-y-1.5">
               <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -638,10 +727,39 @@ const TelegramPage: React.FC = () => {
                 >
                   Сохранить
                 </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handleCheckWorker()}
+                  disabled={checkingWorker || !(tgws?.cfproxyWorkerDomain ?? '').trim()}
+                  className="shrink-0"
+                >
+                  {checkingWorker ? <Loader2 className="size-3.5 animate-spin" /> : 'Проверить'}
+                </Button>
               </div>
+              {workerChecks && workerChecks.length > 0 && (
+                <div className="space-y-1">
+                  {workerChecks.map((c) => (
+                    <div
+                      key={c.domain}
+                      className={cn(
+                        'rounded-lg border px-2.5 py-1.5 text-[11px]',
+                        c.ok
+                          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                          : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300'
+                      )}
+                    >
+                      <span className="font-mono font-semibold">{c.domain}</span> — {c.ok ? `работает, ${c.ms} мс. ` : ''}
+                      {c.detail}
+                    </div>
+                  ))}
+                </div>
+              )}
               <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Официальное решение Flowseal, когда общие серверы Cloudflare отвечают «503» и медиа не грузится: свой
-                бесплатный Worker используется первым среди запасных путей. Инструкция:{' '}
+                Бесплатный способ Flowseal: свой Worker на Cloudflare (домен вида <span className="font-mono">имя.аккаунт.workers.dev</span>).
+                Несколько доменов — через запятую. Домены Cloudflare (workers.dev, cloudflare.com, cloudflare.dev) LAZEYKA сама
+                добавит в список Zapret, как требует инструкция. Кнопка «Проверить» делает то же рукопожатие, что и
+                TgWsProxy. Инструкция:{' '}
                 <button
                   type="button"
                   className="text-primary underline underline-offset-2"
@@ -651,9 +769,20 @@ const TelegramPage: React.FC = () => {
                 >
                   CfWorker.md
                 </button>
-                . Несколько доменов — через запятую.
+                .
               </p>
             </div>
+
+            <label className="flex items-center justify-between gap-4 cursor-pointer rounded-xl border border-border/60 bg-card/50 px-3 py-2.5">
+              <span className="text-xs leading-relaxed">
+                <span className="font-semibold text-foreground block">Дополнительно: TgWsProxy через VPN INCY</span>
+                <span className="text-muted-foreground">
+                  Когда INCY подключён, соединения TgWsProxy (в том числе к Worker) выходят через VPN — и при полном VPN,
+                  и в режиме ExitLag. Не действует, пока INCY отключён.
+                </span>
+              </span>
+              <Switch checked={Boolean(tgws?.viaIncy)} onCheckedChange={(v) => void handleToggleViaIncy(v)} />
+            </label>
           </CardContent>
         </Card>
 

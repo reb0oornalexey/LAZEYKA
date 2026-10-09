@@ -84,6 +84,14 @@ interface TgwsConfig {
   cfproxyWorkerDomain?: string
   /** Пускать TgWsProxy через туннель INCY, когда он поднят. */
   viaIncy?: boolean
+  /**
+   * Маршрут Telegram:
+   *  - auto   — как у Flowseal: прямой WebSocket, при сбое — свой Worker,
+   *             затем общий CF-прокси и прямой TCP;
+   *  - worker — всё через свой Cloudflare Worker (прямой WebSocket выключен,
+   *             `--pool-size 0`); CF-прокси и TCP остаются запасными.
+   */
+  routeMode?: 'auto' | 'worker'
   fakeTlsDomain?: string
   binaryPath?: string     // override path to TgWsProxy_windows.exe
   // Version of the TgWsProxy_windows.exe currently installed in

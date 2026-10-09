@@ -8,7 +8,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Badge } from '@renderer/components/ui/badge'
 import { Input } from '@renderer/components/ui/input'
 import { Switch } from '@renderer/components/ui/switch'
-import { Target, Copy, Zap, RefreshCw, Trophy, MapPin } from 'lucide-react'
+import { Target, Copy, Zap, RefreshCw, Trophy, MapPin, ShieldPlus } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
 import { useIncyStore } from '@renderer/store/incy-store'
 import {
@@ -119,22 +119,36 @@ export default function OptimizerPage(): React.ReactElement {
   }
 
   /** IP сервера (без connect и порта) → наш список на вкладке Zapret. */
+  const [addingToZapret, setAddingToZapret] = useState(false)
   const addTargetToZapret = async (target: string): Promise<void> => {
+    if (!target.trim()) {
+      toast.error('Введите IP-адрес или строку подключения сервера Faceit / CS2')
+      return
+    }
+    setAddingToZapret(true)
     try {
-      setOptimizerProgress({ done: 0, total: 1, stage: 'Добавляю IP в список Zapret' })
       const r = await zapretAddGameServerIp(target)
-      if (!r.ip) return
+      if (!r.ip) {
+        toast.error('Не нашёл IP в строке', { description: 'Вставьте строку «connect IP:порт» из комнаты матча.' })
+        return
+      }
       if (r.added) {
         toast.success(`IP ${r.ip} добавлен в список Zapret`, {
-          description: r.restarted
-            ? 'Zapret перезапущен, чтобы применить список.'
-            : r.running
-              ? undefined
-              : 'Список применится при следующем запуске Zapret.'
+          description:
+            (r.restarted
+              ? 'Zapret перезапущен, чтобы применить список. '
+              : r.running
+                ? ''
+                : 'Список применится при следующем запуске Zapret. ') +
+            'Чтобы сравнить узлы, нажмите «Замерить пинг».'
         })
+      } else {
+        toast.info(`IP ${r.ip} уже в списке Zapret`, { description: 'Чтобы сравнить узлы, нажмите «Замерить пинг».' })
       }
     } catch (e: any) {
       toast.error('Не удалось добавить IP в список Zapret', { description: e?.message || String(e) })
+    } finally {
+      setAddingToZapret(false)
     }
   }
 
@@ -149,9 +163,8 @@ export default function OptimizerPage(): React.ReactElement {
     setMeasuringGamePing(true)
     setOptimizerProgress({ done: 0, total: 1, stage: 'Подготовка' })
     try {
-      // Сначала IP сервера — в список Zapret: если Zapret при этом
-      // перезапускается, прямой замер должен идти уже с новыми правилами.
-      if (settings?.optimizerAddToZapret !== false) await addTargetToZapret(targetToMeasure)
+      // Замер только меряет: в Zapret сервер попадает при вставке адреса
+      // (или кнопкой «В Zapret»), а не при каждом замере.
       const res = await incyPingGameServer(targetToMeasure)
       setGamePingResult(res)
       const best = res.nodes.find((n) => n.isBest)
@@ -184,12 +197,13 @@ export default function OptimizerPage(): React.ReactElement {
       if (text && text.trim()) {
         const val = text.trim()
         setGameServerTarget(val)
-        if (measuringGamePing) {
-          toast.info('Адрес вставлен — замер начнётся после текущего')
-          return
+        // Вставка только добавляет сервер в Zapret (если это включено) —
+        // замер запускается отдельно кнопкой «Замерить пинг».
+        if (settings?.optimizerAddToZapret !== false) {
+          void addTargetToZapret(val)
+        } else {
+          toast.info('Адрес вставлен', { description: 'Нажмите «Замерить пинг», чтобы сравнить узлы.' })
         }
-        toast.info('Адрес сервера вставлен из буфера')
-        void handleMeasureGamePing(val)
       } else {
         toast.info('Буфер обмена пуст')
       }
@@ -253,7 +267,7 @@ export default function OptimizerPage(): React.ReactElement {
                     value={gameServerTarget}
                     onChange={(e) => setGameServerTarget(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') void handleMeasureGamePing()
+                      if (e.key === 'Enter') void addTargetToZapret(gameServerTarget)
                     }}
                     placeholder="connect 162.19.141.22:27015 или 162.19.141.22..."
                     className="text-xs font-mono pr-20"
@@ -268,6 +282,18 @@ export default function OptimizerPage(): React.ReactElement {
                     <Copy className="h-3 w-3" /> Вставить
                   </Button>
                 </div>
+                <Button
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                  onClick={() => void addTargetToZapret(gameServerTarget)}
+                  disabled={addingToZapret || !gameServerTarget.trim()}
+                  className="text-xs h-9 shrink-0 gap-1.5 font-semibold"
+                  title="Добавить IP сервера в список Zapret (без замера)"
+                >
+                  {addingToZapret ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <ShieldPlus className="h-3.5 w-3.5" />}
+                  В Zapret
+                </Button>
                 <Button
                   size="sm"
                   type="button"
@@ -295,10 +321,11 @@ export default function OptimizerPage(): React.ReactElement {
               </label>
               <label className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-card/50 px-3 py-2 cursor-pointer">
                 <span className="text-[11px] leading-snug">
-                  <span className="font-semibold text-foreground">Добавлять IP сервера в список Zapret</span>
+                  <span className="font-semibold text-foreground">Добавлять IP сервера в Zapret при вставке</span>
                   <span className="block text-muted-foreground">
-                    Только IP, без connect и порта — в наш список на вкладке Zapret (там же, где сайты). Иногда
-                    это само по себе убирает потери и лаги. Работающий Zapret перезапустится на пару секунд.
+                    Кнопка «Вставить» (или Enter) только кладёт IP — без connect и порта — в наш список на вкладке
+                    Zapret, замер не запускается. Пинг меряется отдельно кнопкой «Замерить пинг». Работающий Zapret
+                    перезапустится на пару секунд.
                   </span>
                 </span>
                 <Switch
@@ -308,8 +335,9 @@ export default function OptimizerPage(): React.ReactElement {
               </label>
               <p className="text-[10px] text-muted-foreground leading-relaxed">
                 Скопируйте строку <span className="font-mono text-foreground">connect IP:порт</span> из комнаты матча
-                Faceit или из консоли CS2. Замер: по 20 игровых запросов (A2S) напрямую и через каждый быстрый узел
-                подписки — пинг, джиттер и потери, как у самой игры.
+                Faceit или из консоли CS2 и нажмите «Вставить» — сервер попадёт в Zapret. «Замерить пинг» — по 20
+                игровых запросов (A2S) напрямую и через каждый быстрый узел подписки: пинг, джиттер и потери. Ход
+                замера пишется во вкладку «Логи».
               </p>
               {measuringGamePing && optimizerProgress && (
                 <div className="space-y-1">

@@ -472,3 +472,23 @@ function appendToIpsetAll(ips: string[]): number {
   writeFileAtomic(file, [...lines, ...add].join('\r\n') + '\r\n')
   return add.length
 }
+
+/**
+ * Домены → list-general-user.txt (свой список пользователя Zapret: его не
+ * трогают ни обновление Zapret, ни правка основного списка). Возвращает,
+ * сколько доменов реально добавлено. Сравнение без учёта регистра.
+ */
+export function addHostsToZapretUserList(hosts: string[]): number {
+  const file = path.join(zapretBundleDir(), 'lists', 'list-general-user.txt')
+  if (!existsSync(path.dirname(file))) return 0
+  const lines = existsSync(file)
+    ? readFileSync(file, 'utf-8').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+    : []
+  // Заглушка, которую создаёт service.bat в пустом файле, — не настоящий домен.
+  const real = lines.filter((l) => !/^domain\.example\.abc$/i.test(l))
+  const have = new Set(real.map((l) => l.toLowerCase()))
+  const add = [...new Set(hosts.map((h) => h.trim().toLowerCase()))].filter((h) => HOSTNAME.test(h) && !have.has(h))
+  if (add.length === 0) return 0
+  writeFileAtomic(file, [...real, ...add].join('\r\n') + '\r\n')
+  return add.length
+}
