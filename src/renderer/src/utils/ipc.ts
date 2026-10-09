@@ -442,9 +442,24 @@ export interface DohProvider {
   url: string
   ip: string
   secondaryIp?: string
+  ipv6?: string[]
   description: string
   latencyMs: number | null
+  /** Только шифрованно, без возврата к обычному DNS. */
+  strict?: boolean
+  custom?: boolean
+  site?: string
 }
+export interface CustomDnsInput {
+  name: string
+  ipv4: string[]
+  ipv6?: string[]
+  doh?: string
+  allowFallback?: boolean
+}
+/** Добавить свой DNS-сервер. Возвращает список своих серверов. */
+export const dnsAddCustom = (input: CustomDnsInput): Promise<DohProvider[]> => invoke('dns:addCustom', input)
+export const dnsRemoveCustom = (id: string): Promise<DohProvider[]> => invoke('dns:removeCustom', id)
 
 export const dnsGetProviders = (): Promise<DohProvider[]> =>
   invoke('dns:getProviders')
@@ -736,7 +751,8 @@ export const incyReapplyTunnel = (): Promise<boolean> => invoke('incy:reapplyTun
 /** Частичное обновление; туннель сам переподключится, если изменение его касается. */
 export const incyPatchSettings = (
   patch: Partial<IncySettings>
-): Promise<{ settings: IncySettings; reapplied: boolean }> => invoke('incy:patchSettings', patch)
+): Promise<{ settings: IncySettings; reapplied: boolean; hotApplied?: boolean }> =>
+  invoke('incy:patchSettings', patch)
 export const incyImportInput = (
   input: string
 ): Promise<{ addedCount: number; subscription: IncySubscription | null; nodes: IncyNode[] }> =>
@@ -957,6 +973,39 @@ export interface ExitLagCheckResult {
   verdict: 'ok' | 'leak' | 'unknown'
   message: string
 }
+export interface TraceHop {
+  hop: number
+  ip: string | null
+  avgMs: number | null
+  minMs: number | null
+  maxMs: number | null
+  lossPct: number | null
+  deltaMs: number | null
+  isPrivate: boolean
+}
+export interface TraceResult {
+  target: string
+  targetIp: string
+  reached: boolean
+  hops: TraceHop[]
+  biggestJump: { hop: number; ip: string | null; deltaMs: number } | null
+  verdict: string[]
+  viaPhysical: boolean
+}
+/** Трассировка до сервера мимо VPN (как WinMTR). */
+export const optimizerTrace = (target: string): Promise<TraceResult> => invoke('optimizer:trace', target)
+export interface BufferbloatResult {
+  target: string
+  idle: { avgMs: number | null; maxMs: number | null; lossPct: number }
+  loaded: { avgMs: number | null; maxMs: number | null; lossPct: number }
+  downloadMbps: number | null
+  increaseMs: number | null
+  grade: 'A' | 'B' | 'C' | 'D' | 'unknown'
+  verdict: string
+}
+/** Пинг в покое и под нагрузкой (bufferbloat). */
+export const optimizerBufferbloat = (ip?: string): Promise<BufferbloatResult> => invoke('optimizer:bufferbloat', ip)
+
 /** Живая проверка ExitLag: IP приложений не из списка и из списка. */
 export const exitLagCheck = (): Promise<ExitLagCheckResult> => invoke('exitlag:check')
 
@@ -1037,6 +1086,8 @@ export interface NodeGamePingInfo {
   path?: RoutePathStats
   score?: number | null
   autoAllowed?: boolean
+  /** 'udp' — нативный UDP (Hysteria2/WireGuard), 'tcp' — UDP внутри TCP. */
+  udpTransport?: 'udp' | 'tcp'
   error?: string
   nodeToGamePing: number
   totalPing: number | null

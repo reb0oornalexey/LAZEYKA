@@ -195,6 +195,50 @@ export async function resolveGameServerGeo(host: string, port = 27015): Promise<
     // Ignore fetch error, fallback below
   }
 
+  // Запасной источник: ipinfo.io. ip-api.com режут DNS с фильтром трекеров
+  // (DNS-AI, AdGuard отвечают 0.0.0.0) — без геолокации оптимизатор не мог
+  // оценить путь через узлы до серверов, которые не отвечают на A2S.
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 3500)
+    const resp = await fetch(`https://ipinfo.io/${encodeURIComponent(ip)}/json`, {
+      signal: controller.signal,
+      headers: { Accept: 'application/json', 'User-Agent': 'curl/8' }
+    })
+    clearTimeout(timer)
+    if (resp.ok) {
+      const d: any = await resp.json()
+      const [lat, lon] = String(d?.loc ?? '')
+        .split(',')
+        .map((x: string) => Number(x))
+      if (d && Number.isFinite(lat) && Number.isFinite(lon) && String(d.loc ?? '').includes(',')) {
+        let country: string | undefined = d.country
+        try {
+          country = new Intl.DisplayNames(['en'], { type: 'region' }).of(String(d.country)) ?? d.country
+        } catch {
+          /* код страны */
+        }
+        const info: GameServerGeoInfo = {
+          ip,
+          host,
+          port,
+          country,
+          countryCode: d.country,
+          city: d.city,
+          regionName: d.region,
+          isp: String(d.org ?? '').replace(/^AS\d+\s+/, '') || undefined,
+          org: d.org,
+          lat,
+          lon
+        }
+        geoCache.set(ip, info)
+        return info
+      }
+    }
+  } catch {
+    // ниже — эвристика по имени хоста
+  }
+
   // Fallback heuristic: check if host/IP matches common regions.
   // Если по имени хоста ничего не понятно — честно «неизвестно», а не
   // выдуманный Франкфурт (он искажал оценку маршрута для всех узлов).

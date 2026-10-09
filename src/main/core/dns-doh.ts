@@ -1,4 +1,6 @@
 import http2 from 'node:http2'
+import net from 'node:net'
+import dgram from 'node:dgram'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
@@ -12,14 +14,40 @@ const execFileAsync = promisify(execFile)
 export interface DohProvider {
   id: string
   name: string
+  /** Шаблон DoH (`https://…/dns-query`). Пусто — обычный DNS без шифрования. */
   url: string
   ip: string
   secondaryIp?: string
+  /** IPv6-адреса (основной, второй) — ставятся вместе с IPv4, если на адаптере включён IPv6. */
+  ipv6?: string[]
   description: string
   latencyMs: number | null
+  /**
+   * Только шифрованно, без возврата к открытому тексту (AllowFallbackToUdp
+   * = false + флаг адаптера DohFlags = 1) — так требует, например, dns-ai.ru.
+   */
+  strict?: boolean
+  /** Добавлен пользователем в настройках. */
+  custom?: boolean
+  /** Страница сервиса — ссылка «подробнее». */
+  site?: string
 }
 
 export const DOH_PROVIDERS: DohProvider[] = [
+  {
+    id: 'dns-ai',
+    name: 'DNS-AI (dns-ai.ru)',
+    url: 'https://dns.dns-ai.ru/dns-query',
+    // Актуальные адреса берутся из endpoints.json сервиса (см. refreshDnsAi),
+    // здесь — встроенная пара на случай, если список недоступен.
+    ip: '192.144.59.14',
+    secondaryIp: '186.246.49.127',
+    ipv6: ['2a0d:8480:0:67c::14', '2a0a:2b41:0:500d::53'],
+    description: 'Открывает зарубежные нейросети и AI-сервисы, режет рекламу и трекеры, без журнала запросов. IPv4 + IPv6, только шифрованный DoH',
+    latencyMs: null,
+    strict: true,
+    site: 'https://dns-ai.ru/#setup'
+  },
   {
     id: 'cloudflare',
     name: 'Cloudflare 1.1.1.1',
@@ -137,76 +165,270 @@ export async function pingDohProvider(provider: DohProvider): Promise<number | n
   })
 }
 
-export async function getDohProvidersWithPing(): Promise<DohProvider[]> {
-  const results = await Promise.all(
-    DOH_PROVIDERS.map(async (p) => {
-      const latencyMs = await pingDohProvider(p)
-      return {
-        ...p,
-        latencyMs
-      }
-    })
+// ---- DNS-AI: актуальные адреса ------------------------------------------------
+//
+// Сервис меняет адреса и публикует их в endpoints.json (тот же список читает
+// его официальный скрипт setup.ps1). Берём оттуда, со встроенной парой как
+// запасным вариантом. Устаревшие адреса («retired») тоже запоминаем, чтобы
+// при смене/сбросе убрать их флаги DoH с адаптера.
+const DNS_AI_MANIFESTS = [
+  'https://raw.githubusercontent.com/confeden/DNS-AI/main/endpoints.json',
+  'https://dns-ai.ru/endpoints.json'
+]
+let dnsAiCache: { at: number; v4: string[]; v6: string[]; retired: string[] } | null = null
+
+async function refreshDnsAi(): Promise<{ v4: string[]; v6: string[]; retired: string[] } | null> {
+  if (dnsAiCache && Date.now() - dnsAiCache.at < 6 * 60 * 60 * 1000) return dnsAiCache
+  for (const url of DNS_AI_MANIFESTS) {
+    try {
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), 8000)
+      const res = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'LAZEYKA-DNS' } })
+      clearTimeout(t)
+      if (!res.ok) continue
+      const j = (await res.json()) as { v4?: string[]; v6?: string[]; retired?: string[] }
+      const v4 = (j.v4 ?? []).filter((a) => net.isIPv4(a)).slice(0, 2)
+      if (v4.length === 0) continue
+      const v6 = (j.v6 ?? []).filter((a) => net.isIPv6(a)).slice(0, 2)
+      dnsAiCache = { at: Date.now(), v4, v6, retired: (j.retired ?? []).filter((a) => net.isIP(a)) }
+      return dnsAiCache
+    } catch {
+      /* следующий источник */
+    }
+  }
+  return null
+}
+
+// ---- свои DNS-серверы пользователя ----------------------------------------------
+
+export interface CustomDnsInput {
+  name: string
+  ipv4: string[]
+  ipv6?: string[]
+  /** Шаблон DoH; пусто — без шифрования. */
+  doh?: string
+  /** Разрешить возврат к обычному DNS, если DoH не ответил. */
+  allowFallback?: boolean
+}
+
+function customDnsFile(): string {
+  return path.join(dataDir(), 'custom-dns.json')
+}
+
+function loadCustomProviders(): DohProvider[] {
+  try {
+    if (!existsSync(customDnsFile())) return []
+    const raw = JSON.parse(readFileSync(customDnsFile(), 'utf-8')) as DohProvider[]
+    return Array.isArray(raw) ? raw.filter((p) => p && p.id && net.isIP(p.ip)).map((p) => ({ ...p, custom: true, latencyMs: null })) : []
+  } catch {
+    return []
+  }
+}
+
+function saveCustomProviders(list: DohProvider[]): void {
+  mkdirSync(path.dirname(customDnsFile()), { recursive: true })
+  writeFileSync(customDnsFile(), JSON.stringify(list.map((p) => ({ ...p, latencyMs: null })), null, 2), 'utf-8')
+}
+
+function normalizeTemplate(raw?: string): string {
+  const v = String(raw ?? '').trim()
+  if (!v) return ''
+  let u: URL
+  try {
+    u = new URL(v)
+  } catch {
+    throw new Error('Шаблон DoH должен быть ссылкой вида https://dns.example.com/dns-query')
+  }
+  if (u.protocol !== 'https:') throw new Error('Шаблон DoH должен начинаться с https://')
+  return u.toString()
+}
+
+export function addCustomDnsProvider(input: CustomDnsInput): DohProvider[] {
+  const name = String(input.name ?? '').trim().slice(0, 60)
+  if (!name) throw new Error('Укажите название сервера')
+  const v4 = (input.ipv4 ?? []).map((a) => a.trim()).filter(Boolean)
+  const v6 = (input.ipv6 ?? []).map((a) => a.trim()).filter(Boolean)
+  if (v4.length === 0) throw new Error('Нужен хотя бы один IPv4-адрес')
+  for (const a of v4) if (!net.isIPv4(a)) throw new Error(`«${a}» — не IPv4-адрес`)
+  for (const a of v6) if (!net.isIPv6(a)) throw new Error(`«${a}» — не IPv6-адрес`)
+  const url = normalizeTemplate(input.doh)
+  const list = loadCustomProviders()
+  const provider: DohProvider = {
+    id: `custom-${Date.now().toString(36)}`,
+    name,
+    url,
+    ip: v4[0],
+    secondaryIp: v4[1],
+    ipv6: v6.slice(0, 2),
+    description: [
+      [...v4.slice(0, 2), ...v6.slice(0, 2)].join(', '),
+      url ? (input.allowFallback ? 'DoH, с запасным обычным DNS' : 'только DoH') : 'без шифрования'
+    ].join(' · '),
+    latencyMs: null,
+    strict: Boolean(url) && !input.allowFallback,
+    custom: true
+  }
+  saveCustomProviders([...list, provider])
+  return loadCustomProviders()
+}
+
+export function removeCustomDnsProvider(id: string): DohProvider[] {
+  saveCustomProviders(loadCustomProviders().filter((p) => p.id !== id))
+  return loadCustomProviders()
+}
+
+async function allProviders(): Promise<DohProvider[]> {
+  const fresh = await refreshDnsAi().catch(() => null)
+  const builtins = DOH_PROVIDERS.map((p) =>
+    p.id === 'dns-ai' && fresh
+      ? { ...p, ip: fresh.v4[0], secondaryIp: fresh.v4[1], ipv6: fresh.v6.length ? fresh.v6 : p.ipv6 }
+      : p
   )
-  return results
+  return [...builtins, ...loadCustomProviders()]
+}
+
+/** Обычный DNS-запрос по UDP — для своих серверов без DoH. */
+function pingUdpDns(ip: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const sock = dgram.createSocket(net.isIPv6(ip) ? 'udp6' : 'udp4')
+    const q = Buffer.from(dnsWireQuery('youtube.com').replace(/-/g, '+').replace(/_/g, '/'), 'base64')
+    q.writeUInt16BE(0x1d2c, 0)
+    let t0 = 0
+    const done = (v: number | null): void => {
+      clearTimeout(timer)
+      try { sock.close() } catch { /* noop */ }
+      resolve(v)
+    }
+    const timer = setTimeout(() => done(null), 3000)
+    sock.once('message', () => done(Math.max(1, Date.now() - t0)))
+    sock.once('error', () => done(null))
+    t0 = Date.now()
+    sock.send(q, 53, ip, (e) => e && done(null))
+  })
+}
+
+export async function getDohProvidersWithPing(): Promise<DohProvider[]> {
+  const list = await allProviders()
+  return Promise.all(
+    list.map(async (p) => ({ ...p, latencyMs: p.url ? await pingDohProvider(p) : await pingUdpDns(p.ip) }))
+  )
 }
 
 /**
- * PowerShell-скрипт смены DNS.
+ * PowerShell-скрипт смены DNS — тот же порядок, что у официального скрипта
+ * DNS-AI (setup.ps1) и в инструкции dns-ai.ru для Windows 11:
  *
- * Меняем только адаптеры, через которые реально идёт интернет (маршрут по
- * умолчанию), без VPN- и виртуальных адаптеров. Раньше условие
- * `Status -eq 'Up' -or InterfaceType -ne 'Loopback'` было всегда истинным, и
- * DNS прописывался на Hyper-V, WSL, VMware и чужие VPN, а «Сбросить» стирал
- * ручной DNS везде. Прежние значения теперь запоминаются и возвращаются.
+ *  1. каждому адресу (IPv4 и IPv6) — свой шаблон DoH
+ *     (Add/Set-DnsClientDohServerAddress, AutoUpgrade, AllowFallbackToUdp);
+ *  2. на адаптере — IPv4, и IPv6, если протокол на нём включён;
+ *  3. «только шифрованно» — флаг адаптера DohFlags = 1 для каждого адреса
+ *     (Dnscache\InterfaceSpecificParameters\{GUID}\DohInterfaceSettings\
+ *     Doh|Doh6\<IP>), после чего список DNS записывается ещё раз, чтобы
+ *     служба DNS перечитала флаг;
+ *  4. сброс DNS-кэша.
+ *
+ * Меняются только физические адаптеры, через которые идёт интернет, без VPN
+ * и виртуальных (Hyper-V, WSL, Wintun…). Прежние адреса (IPv4 и IPv6)
+ * запоминаются и возвращаются при сбросе; наши флаги DoH при этом убираются.
  */
 const PS_DNS = String.raw`param([string]$Mode, [string]$ArgsFile)
 $ErrorActionPreference = 'Stop'
 $cfg = Get-Content -Raw -LiteralPath $ArgsFile | ConvertFrom-Json
+$DohKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters'
+$skip = 'Wintun|WireGuard|TAP-|sing-box|Hyper-V|vEthernet|VMware|VirtualBox|WSL|Tailscale|ZeroTier|Amnezia|OpenVPN|Loopback|Virtual'
 $route = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty InterfaceIndex -Unique)
-$skip = 'Wintun|WireGuard|TAP-|sing-box|Hyper-V|VMware|VirtualBox|Loopback'
-$ad = @(Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and ($route -contains $_.InterfaceIndex) -and $_.InterfaceDescription -notmatch $skip })
+$phys = @(Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and -not $_.Virtual -and $_.Name -notmatch $skip -and $_.InterfaceDescription -notmatch $skip })
+$ad = @($phys | Where-Object { $route -contains $_.InterfaceIndex })
+if ($ad.Count -eq 0) { $ad = $phys }
 if ($ad.Count -eq 0) { $ad = @(Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' }) }
-function Get-StaticDns($a) {
-  $p = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($a.InterfaceGuid)"
+function Get-StaticDns($a, $stack) {
+  $p = "HKLM:\SYSTEM\CurrentControlSet\Services\$stack\Parameters\Interfaces\$($a.InterfaceGuid)"
   $ns = (Get-ItemProperty -LiteralPath $p -Name NameServer -ErrorAction SilentlyContinue).NameServer
   if ($ns) { return @($ns -split '[ ,]+' | Where-Object { $_ }) }
   return @()
 }
+function Has-V6($a) {
+  $b = Get-NetAdapterBinding -Name $a.Name -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
+  return [bool]($b -and $b.Enabled)
+}
+function Clear-OurFlags($a, $keep) {
+  foreach ($fam in 'Doh', 'Doh6') {
+    $k = Join-Path $DohKey ("{0}\DohInterfaceSettings\{1}" -f $a.InterfaceGuid, $fam)
+    foreach ($ip in @($cfg.ours)) {
+      if ($keep -contains $ip) { continue }
+      $ik = Join-Path $k $ip
+      if (Test-Path -LiteralPath $ik) { Remove-Item -LiteralPath $ik -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+  }
+}
 $before = @{}
-foreach ($a in $ad) { $before[[string]$a.InterfaceIndex] = @(Get-StaticDns $a) }
+foreach ($a in $ad) { $before[[string]$a.InterfaceIndex] = [pscustomobject]@{ v4 = @(Get-StaticDns $a 'Tcpip'); v6 = @(Get-StaticDns $a 'Tcpip6') } }
 $hasDoh = [bool](Get-Command Add-DnsClientDohServerAddress -ErrorAction SilentlyContinue)
+$v6used = $false
 if ($Mode -eq 'set') {
-  $servers = @($cfg.servers)
+  $v4 = @($cfg.v4 | Where-Object { $_ })
+  $v6 = @($cfg.v6 | Where-Object { $_ })
+  $fallback = [bool]$cfg.fallback
   if ($cfg.doh -and $hasDoh) {
-    foreach ($s in $servers) {
-      try {
-        Add-DnsClientDohServerAddress -ServerAddress $s -DohTemplate $cfg.doh -AllowFallbackToUdp $true -AutoUpgrade $true -ErrorAction Stop | Out-Null
-      } catch {
-        try { Set-DnsClientDohServerAddress -ServerAddress $s -DohTemplate $cfg.doh -AllowFallbackToUdp $true -AutoUpgrade $true -ErrorAction Stop | Out-Null } catch { }
+    foreach ($ip in $v4 + $v6) {
+      if (Get-DnsClientDohServerAddress -ServerAddress $ip -ErrorAction SilentlyContinue) {
+        Set-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $cfg.doh -AllowFallbackToUdp $fallback -AutoUpgrade $true | Out-Null
+      } else {
+        Add-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $cfg.doh -AllowFallbackToUdp $fallback -AutoUpgrade $true | Out-Null
       }
     }
   }
-  foreach ($a in $ad) { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ServerAddresses $servers }
+  foreach ($a in $ad) {
+    $useV6 = ($v6.Count -gt 0) -and (Has-V6 $a)
+    if ($useV6) { $v6used = $true }
+    $servers = if ($useV6) { @($v4 + $v6) } else { @($v4) }
+    Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ServerAddresses $servers
+    $keep = @()
+    if ($cfg.doh -and $hasDoh -and -not $fallback) {
+      $sets = @(@{ Fam = 'Doh'; Ips = $v4 })
+      if ($useV6) { $sets += @{ Fam = 'Doh6'; Ips = $v6 } }
+      foreach ($s in $sets) {
+        $k = Join-Path $DohKey ("{0}\DohInterfaceSettings\{1}" -f $a.InterfaceGuid, $s.Fam)
+        foreach ($ip in $s.Ips) {
+          $ik = Join-Path $k $ip
+          if (-not (Test-Path -LiteralPath $ik)) { New-Item -Path $ik -Force | Out-Null }
+          New-ItemProperty -Path $ik -Name 'DohFlags' -PropertyType QWord -Value 1 -Force | Out-Null
+          $keep += $ip
+        }
+      }
+    }
+    Clear-OurFlags $a $keep
+    Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ServerAddresses $servers
+  }
 } elseif ($Mode -eq 'reset') {
   $restore = $cfg.restore
   foreach ($a in $ad) {
     $k = [string]$a.InterfaceIndex
-    $saved = @()
-    if ($restore -and ($restore.PSObject.Properties.Name -contains $k)) { $saved = @($restore.$k) }
-    if ($saved.Count -gt 0) { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ServerAddresses $saved }
+    $s4 = @(); $s6 = @()
+    if ($restore -and ($restore.PSObject.Properties.Name -contains $k)) {
+      $r = $restore.$k
+      if ($r -is [System.Array] -or $r -is [string]) { $s4 = @($r) }
+      else { $s4 = @($r.v4); $s6 = @($r.v6) }
+    }
+    $s4 = @($s4 | Where-Object { $_ }); $s6 = @($s6 | Where-Object { $_ })
+    Clear-OurFlags $a @()
+    if (($s4.Count + $s6.Count) -gt 0) { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ServerAddresses @($s4 + $s6) }
     else { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses }
   }
 }
 if ($Mode -ne 'read') { Clear-DnsClientCache -ErrorAction SilentlyContinue }
 $now = @{}
-foreach ($a in $ad) { $now[[string]$a.InterfaceIndex] = @((Get-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -AddressFamily IPv4).ServerAddresses) }
-[pscustomobject]@{ before = $before; now = $now; doh = $hasDoh; count = $ad.Count } | ConvertTo-Json -Depth 5 -Compress
+foreach ($a in $ad) {
+  $now[[string]$a.InterfaceIndex] = @((Get-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -AddressFamily IPv4).ServerAddresses) + @((Get-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -AddressFamily IPv6).ServerAddresses)
+}
+[pscustomobject]@{ before = $before; now = $now; doh = $hasDoh; v6 = $v6used; count = $ad.Count } | ConvertTo-Json -Depth 5 -Compress
 `
 
 interface PsDnsResult {
-  before: Record<string, string[]>
+  before: Record<string, { v4: string[]; v6: string[] }>
   now: Record<string, string[]>
   doh: boolean
+  v6: boolean
   count: number
 }
 
@@ -218,28 +440,39 @@ async function runDnsScript(mode: 'set' | 'reset' | 'read', args: Record<string,
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const script = path.join(os.tmpdir(), `lazeyka-dns-${id}.ps1`)
   const argsFile = path.join(os.tmpdir(), `lazeyka-dns-${id}.json`)
-  writeFileSync(script, PS_DNS, 'utf-8')
+  // BOM: Windows PowerShell 5 читает .ps1 без BOM в кодировке ANSI.
+  writeFileSync(script, '﻿' + PS_DNS, 'utf-8')
   writeFileSync(argsFile, JSON.stringify(args), 'utf-8')
   try {
     const { stdout } = await execFileAsync(
       'powershell.exe',
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Mode', mode, '-ArgsFile', argsFile],
-      { windowsHide: true, timeout: 30_000 }
+      { windowsHide: true, timeout: 45_000 }
     )
     const line = String(stdout).trim().split(/\r?\n/).pop() ?? ''
-    const parsed = JSON.parse(line) as PsDnsResult
-    const norm = (m: unknown): Record<string, string[]> => {
-      const out: Record<string, string[]> = {}
-      for (const [k, v] of Object.entries((m as Record<string, unknown>) ?? {})) {
-        out[k] = (Array.isArray(v) ? v : v ? [v] : []).map(String)
-      }
-      return out
+    const parsed = JSON.parse(line) as Record<string, unknown>
+    const arr = (v: unknown): string[] => (Array.isArray(v) ? v : v ? [v] : []).map(String)
+    const now: Record<string, string[]> = {}
+    for (const [k, v] of Object.entries((parsed.now as Record<string, unknown>) ?? {})) now[k] = arr(v)
+    const before: Record<string, { v4: string[]; v6: string[] }> = {}
+    for (const [k, v] of Object.entries((parsed.before as Record<string, unknown>) ?? {})) {
+      const o = (v ?? {}) as { v4?: unknown; v6?: unknown }
+      before[k] = { v4: arr(o.v4), v6: arr(o.v6) }
     }
-    return { before: norm(parsed.before), now: norm(parsed.now), doh: Boolean(parsed.doh), count: Number(parsed.count) || 0 }
+    return { before, now, doh: Boolean(parsed.doh), v6: Boolean(parsed.v6), count: Number(parsed.count) || 0 }
   } finally {
     try { unlinkSync(script) } catch { /* noop */ }
     try { unlinkSync(argsFile) } catch { /* noop */ }
   }
+}
+
+/** Все адреса, которые LAZEYKA могла выставить, — их флаги DoH убираем при смене/сбросе. */
+async function ourAddresses(): Promise<string[]> {
+  const list = await allProviders()
+  const fresh = dnsAiCache
+  const all = list.flatMap((p) => [p.ip, p.secondaryIp, ...(p.ipv6 ?? [])])
+  if (fresh) all.push(...fresh.retired)
+  return [...new Set(all.filter((a): a is string => Boolean(a)))]
 }
 
 /** Какие DNS-серверы сейчас стоят на рабочих адаптерах (для подсветки в настройках). */
@@ -260,30 +493,42 @@ export async function applySystemDns(target: string | 'dhcp'): Promise<{ success
   }
 
   try {
+    const ours = await ourAddresses()
     if (target === 'dhcp') {
-      let restore: Record<string, string[]> | undefined
+      let restore: Record<string, unknown> | undefined
       try {
         if (existsSync(dnsBackupFile())) restore = JSON.parse(readFileSync(dnsBackupFile(), 'utf-8'))
       } catch {
         restore = undefined
       }
-      const r = await runDnsScript('reset', { restore: restore ?? {} })
+      const r = await runDnsScript('reset', { restore: restore ?? {}, ours })
       if (r.count === 0) return { success: false, message: 'Не найден активный сетевой адаптер' }
       try { unlinkSync(dnsBackupFile()) } catch { /* noop */ }
-      const hadStatic = restore && Object.values(restore).some((v) => v.length > 0)
+      const hadStatic =
+        restore &&
+        Object.values(restore).some((v) =>
+          Array.isArray(v) ? v.length > 0 : ((v as { v4?: string[] })?.v4?.length ?? 0) + ((v as { v6?: string[] })?.v6?.length ?? 0) > 0
+        )
       return {
         success: true,
         message: hadStatic ? 'Возвращён DNS, который стоял до LAZEYKA' : 'DNS сброшен на стандартный от провайдера (DHCP)'
       }
     }
 
-    // Только известные серверы: строка из окна уходила в команду
-    // PowerShell как есть.
-    const provider = DOH_PROVIDERS.find((p) => p.id === target || p.ip === target)
+    // Только известные серверы (встроенные и добавленные в настройках):
+    // произвольная строка из окна в команду PowerShell не попадает.
+    const provider = (await allProviders()).find((p) => p.id === target || p.ip === target)
     if (!provider) return { success: false, message: 'Неизвестный DNS-сервер' }
-    const servers = [provider.ip, provider.secondaryIp].filter(Boolean) as string[]
+    const v4 = [provider.ip, provider.secondaryIp].filter((a): a is string => Boolean(a) && net.isIPv4(String(a)))
+    const v6 = (provider.ipv6 ?? []).filter((a) => net.isIPv6(a))
 
-    const r = await runDnsScript('set', { servers, doh: provider.url || '' })
+    const r = await runDnsScript('set', {
+      v4,
+      v6,
+      doh: provider.url || '',
+      fallback: !provider.strict,
+      ours
+    })
     if (r.count === 0) return { success: false, message: 'Не найден активный сетевой адаптер' }
     // Прежние значения запоминаем один раз — до первой смены из LAZEYKA.
     if (!existsSync(dnsBackupFile())) {
@@ -294,12 +539,17 @@ export async function applySystemDns(target: string | 'dhcp'): Promise<{ success
     if (!applied) {
       return { success: false, message: 'Windows не применила DNS. Проверьте, что LAZEYKA запущена от администратора.' }
     }
-    const desc = servers.join(', ')
+    const desc = [...v4, ...(r.v6 ? v6 : [])].join(', ')
+    const enc = !provider.url
+      ? 'без шифрования'
+      : !r.doh
+        ? 'эта версия Windows не умеет DoH — запросы идут без шифрования (нужна Windows 11)'
+        : provider.strict
+          ? 'только шифрованный DoH, без возврата к открытому тексту'
+          : 'DoH с запасным обычным DNS'
     return {
       success: true,
-      message: r.doh
-        ? `Системный DNS: ${provider.name} (${desc}), шифрование DoH включено`
-        : `Системный DNS: ${provider.name} (${desc}). Эта версия Windows не умеет DoH — запросы идут без шифрования`
+      message: `Системный DNS: ${provider.name} (${desc}) — ${enc}${v6.length && !r.v6 ? '. IPv6 на адаптере выключен — заданы только IPv4' : ''}`
     }
   } catch (e: any) {
     throw new Error(`Не удалось изменить DNS: ${e?.message || String(e)}`)

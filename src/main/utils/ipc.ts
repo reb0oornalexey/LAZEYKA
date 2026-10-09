@@ -22,13 +22,21 @@ import {
 import { exportLazeykaProfile, importLazeykaProfile } from '../core/profile-manager'
 import { getComponentReleaseHistory } from '../core/component-releases'
 import { checkExitLag } from '../core/exitlag-check'
+import { traceRoute } from '../core/route-trace'
+import { runBufferbloatTest } from '../core/bufferbloat'
 import { showSystemNotification } from './notifications'
 import {
   getAutopilotStatus,
   setAutopilotEnabled,
   runAutopilotCycle
 } from '../core/zapret-autopilot'
-import { getDohProvidersWithPing, applySystemDns, getSystemDnsState } from '../core/dns-doh'
+import {
+  getDohProvidersWithPing,
+  applySystemDns,
+  getSystemDnsState,
+  addCustomDnsProvider,
+  removeCustomDnsProvider
+} from '../core/dns-doh'
 import { getRealNetworkSpeed } from './network-stats'
 import { getGameModeStatus, setGameModeWatcher } from '../core/game-mode'
 import { pingDiscordVoiceRegions } from '../core/discord-ping'
@@ -414,6 +422,8 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('dns:getProviders', h(() => getDohProvidersWithPing()))
   ipcMain.handle('dns:applySystemDns', h((ip) => applySystemDns(String(ip) as any)))
   ipcMain.handle('dns:getSystemState', h(() => getSystemDnsState()))
+  ipcMain.handle('dns:addCustom', h((input) => addCustomDnsProvider(input as any)))
+  ipcMain.handle('dns:removeCustom', h((id) => removeCustomDnsProvider(String(id))))
 
   // ---- Smart Game Mode ---------------------------------------------------
   ipcMain.handle('gameMode:getStatus', h(() => getGameModeStatus()))
@@ -577,6 +587,9 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('system:scanInstalledGames', h(() => scanInstalledGames()))
   ipcMain.handle('incy:appActivity', h(() => fetchAppActivity()))
   ipcMain.handle('exitlag:check', h(() => checkExitLag()))
+  // Оптимизатор: трассировка до сервера (мимо TUN) и пинг под нагрузкой.
+  ipcMain.handle('optimizer:trace', h((target) => traceRoute(String(target ?? ''))))
+  ipcMain.handle('optimizer:bufferbloat', h((ip) => runBufferbloatTest(ip ? String(ip) : undefined)))
   // Оптимизатор: пинг до регионов Valve (CS2, Dota 2).
   ipcMain.handle('optimizer:valveRegions', h(() => measureValveRegions()))
   // Серверы Valve → списки Zapret: подсети ретрансляторов в list-general.txt
