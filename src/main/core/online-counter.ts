@@ -19,7 +19,7 @@ import { logToFile } from '../utils/file-logger'
  * Адрес развёрнутого счётчика (README в cloudflare/online-counter).
  * Пусто — функция выключена и на главной ничего не показывается.
  */
-export const ONLINE_COUNTER_URL = ''
+export const ONLINE_COUNTER_URL = 'https://lazeyka-online.reb0oorn-alexey.workers.dev'
 
 const INTERVAL_MS = 5 * 60 * 1000
 const JITTER_MS = 40 * 1000
