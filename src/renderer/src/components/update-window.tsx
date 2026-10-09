@@ -69,7 +69,7 @@ function cleanBody(body: string): string {
 }
 
 /** Markdown заметок к релизу в стиле приложения. */
-function ReleaseBody({ body }: { body: string }): React.ReactElement {
+export function ReleaseBody({ body }: { body: string }): React.ReactElement {
   const text = cleanBody(body)
   if (!text) return <p className="text-xs text-muted-foreground">Описание к этой версии не добавлено.</p>
   return (

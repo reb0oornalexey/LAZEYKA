@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Activity } from 'lucide-react'
-import { incyGetAppActivity, type AppActivity } from '@renderer/utils/ipc'
+import { Activity, CheckCircle2, Loader2, ShieldAlert } from 'lucide-react'
+import { incyGetAppActivity, exitLagCheck, type AppActivity, type ExitLagCheckResult } from '@renderer/utils/ipc'
 
 interface Props {
   /** Приложения из списка ExitLag. */
@@ -31,11 +31,35 @@ function fmtRate(bps: number): string {
  */
 const AppActivityCard: React.FC<Props> = ({ apps, active, mode }) => {
   const [rows, setRows] = useState<Row[] | null>(null)
+  /** Приложения НЕ из списка, которые сейчас идут через VPN (в белом списке их быть не должно). */
+  const [leaks, setLeaks] = useState<{ name: string; viaVpn: number }[]>([])
+  const [check, setCheck] = useState<ExitLagCheckResult | null>(null)
+  const [checking, setChecking] = useState(false)
+  const runCheck = async (): Promise<void> => {
+    if (checking) return
+    setChecking(true)
+    try {
+      setCheck(await exitLagCheck())
+    } catch (e) {
+      setCheck({
+        exitLagActive: active,
+        mode,
+        outside: { ip: null },
+        listed: { ip: null },
+        selfListed: false,
+        verdict: 'unknown',
+        message: e instanceof Error ? e.message : String(e)
+      })
+    } finally {
+      setChecking(false)
+    }
+  }
   const prev = useRef<Map<string, { up: number; down: number; at: number }>>(new Map())
 
   useEffect(() => {
     if (!active) {
       setRows(null)
+      setLeaks([])
       return
     }
     let stopped = false
@@ -49,6 +73,15 @@ const AppActivityCard: React.FC<Props> = ({ apps, active, mode }) => {
       }
       const now = Date.now()
       const next: Row[] = []
+      // Служебные процессы LAZEYKA (ядра, TgWsProxy) решают сами — не «утечка».
+      const own = new Set(['xray.exe', 'sing-box.exe', 'python.exe', 'tgwsproxy_windows.exe'])
+      setLeaks(
+        mode === 'proxy_only'
+          ? (list as AppActivity[])
+              .filter((a) => !want.has(a.name.toLowerCase()) && !own.has(a.name.toLowerCase()) && a.viaVpn > 0)
+              .map((a) => ({ name: a.name, viaVpn: a.viaVpn }))
+          : []
+      )
       for (const a of list as AppActivity[]) {
         const key = a.name.toLowerCase()
         if (!want.has(key)) continue
@@ -106,6 +139,55 @@ const AppActivityCard: React.FC<Props> = ({ apps, active, mode }) => {
               </div>
             )
           })}
+        </div>
+      )}
+
+      {active && leaks.length > 0 && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+          Через VPN идут приложения не из списка: {leaks.map((l) => `${l.name} (${l.viaVpn})`).join(', ')}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-2 border-t border-border/40 pt-2">
+        <span className="text-[11px] text-muted-foreground">
+          Проверка: с какого IP выходят приложения из списка и все остальные.
+        </span>
+        <button
+          type="button"
+          onClick={() => void runCheck()}
+          disabled={checking}
+          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border/60 px-2 py-1 text-[11px] font-semibold text-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-60 cursor-pointer"
+        >
+          {checking && <Loader2 className="size-3 animate-spin" />}
+          Проверить ExitLag
+        </button>
+      </div>
+      {check && (
+        <div
+          className={
+            check.verdict === 'ok'
+              ? 'space-y-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-[11px]'
+              : check.verdict === 'leak'
+                ? 'space-y-1 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-2 text-[11px]'
+                : 'space-y-1 rounded-lg border border-border/60 bg-card/60 px-2.5 py-2 text-[11px]'
+          }
+        >
+          <div className="flex items-start gap-1.5 font-semibold">
+            {check.verdict === 'ok' ? (
+              <CheckCircle2 className="mt-px size-3.5 shrink-0 text-emerald-500" />
+            ) : (
+              <ShieldAlert className="mt-px size-3.5 shrink-0 text-amber-500" />
+            )}
+            <span>{check.message}</span>
+          </div>
+          <div className="font-mono text-muted-foreground">
+            не из списка: {check.outside.ip ?? '—'} {check.outside.country ? `· ${check.outside.country}` : ''}
+            {check.outside.isp ? ` · ${check.outside.isp}` : ''}
+          </div>
+          <div className="font-mono text-muted-foreground">
+            из списка: {check.listed.ip ?? '—'} {check.listed.country ? `· ${check.listed.country}` : ''}
+            {check.listed.isp ? ` · ${check.listed.isp}` : ''}
+          </div>
         </div>
       )}
     </div>

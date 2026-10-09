@@ -103,15 +103,43 @@ export function tgwsCliPaths(): { python: string; bootstrap: string; appDir: str
   if (!existsSync(python) || !existsSync(bootstrap)) return null
   const runtimeApp = path.join(tgwsRuntimeDir(), 'app')
   const bundledApp = path.join(resourcesDir(), 'tgws', 'app')
-  const appDir = existsSync(path.join(runtimeApp, 'proxy', 'tg_ws_proxy.py')) ? runtimeApp : bundledApp
-  if (!existsSync(path.join(appDir, 'proxy', 'tg_ws_proxy.py'))) return null
-  let version = ''
-  try {
-    version = readFileSync(path.join(appDir, 'VERSION'), 'utf-8').trim()
-  } catch {
-    /* unknown */
+  const readVersion = (dir: string): string => {
+    try {
+      return readFileSync(path.join(dir, 'VERSION'), 'utf-8').trim()
+    } catch {
+      return ''
+    }
   }
-  return { python, bootstrap, appDir, version }
+  const hasRuntime = existsSync(path.join(runtimeApp, 'proxy', 'tg_ws_proxy.py'))
+  const hasBundled = existsSync(path.join(bundledApp, 'proxy', 'tg_ws_proxy.py'))
+  // Обновлённая копия важнее встроенной, но только если она не старее:
+  // новая сборка LAZEYKA может везти более свежий TgWsProxy, чем тот, что
+  // когда-то скачало автообновление, — тогда старая копия не должна его
+  // перекрывать.
+  let appDir: string
+  if (hasRuntime && hasBundled) {
+    appDir = cmpDottedVersion(readVersion(runtimeApp), readVersion(bundledApp)) >= 0 ? runtimeApp : bundledApp
+  } else if (hasRuntime) {
+    appDir = runtimeApp
+  } else if (hasBundled) {
+    appDir = bundledApp
+  } else {
+    return null
+  }
+  return { python, bootstrap, appDir, version: readVersion(appDir) }
+}
+
+/** «1.11.1» vs «1.10.4»; пустая/неизвестная версия считается самой старой. */
+function cmpDottedVersion(a: string, b: string): number {
+  const pa = a.replace(/^v/i, '').split('.').map((x) => parseInt(x, 10) || 0)
+  const pb = b.replace(/^v/i, '').split('.').map((x) => parseInt(x, 10) || 0)
+  if (!a && b) return -1
+  if (a && !b) return 1
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return 0
 }
 
 export function zapretRuntimeDir(): string {

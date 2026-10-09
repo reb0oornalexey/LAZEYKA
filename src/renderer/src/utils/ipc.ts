@@ -57,6 +57,33 @@ export const tgwsInstallUpdate = (
 export const tgwsDismissUpdate = (tag: string): Promise<void> =>
   invoke('tgws:dismissUpdate', tag)
 
+export interface TgwsWorkerCheck {
+  domain: string
+  ok: boolean
+  ms: number | null
+  detail: string
+}
+/** Проверить свои Cloudflare Worker'ы WebSocket-рукопожатием, как это делает Flowseal. */
+export const tgwsCheckWorkers = (): Promise<TgwsWorkerCheck[]> => invoke('tgws:checkWorkers')
+
+export type UpdatableComponent = 'zapret' | 'tgws'
+export interface ComponentReleaseNote {
+  tag: string
+  version: string
+  title: string
+  /** Заметки автора к релизу (markdown). */
+  body: string
+  publishedAt?: string
+  url?: string
+  installed: boolean
+}
+/** История релизов Zapret / TgWsProxy с GitHub автора. */
+export const componentReleaseHistory = (
+  component: UpdatableComponent,
+  page = 1,
+  perPage = 6
+): Promise<ComponentReleaseNote[]> => invoke('component:releaseHistory', component, page, perPage)
+
 // ---- Zapret -----------------------------------------------------------------
 export const zapretStatus = (): Promise<CoreStatus> => invoke('zapret:status')
 export const zapretListStrategies = (): Promise<{ file: string; title: string; description: string }[]> =>
@@ -913,6 +940,25 @@ export interface AppActivity {
 }
 /** Какие приложения сейчас держат соединения и через что (null — туннель не поднят). */
 export const incyGetAppActivity = (): Promise<AppActivity[] | null> => invoke('incy:appActivity')
+
+export interface ExitIp {
+  ip: string | null
+  country?: string
+  countryCode?: string
+  isp?: string
+  error?: string
+}
+export interface ExitLagCheckResult {
+  exitLagActive: boolean
+  mode: 'proxy_only' | 'bypass_only'
+  outside: ExitIp
+  listed: ExitIp
+  selfListed: boolean
+  verdict: 'ok' | 'leak' | 'unknown'
+  message: string
+}
+/** Живая проверка ExitLag: IP приложений не из списка и из списка. */
+export const exitLagCheck = (): Promise<ExitLagCheckResult> => invoke('exitlag:check')
 
 export interface ValveRegionsReport {
   regions: {

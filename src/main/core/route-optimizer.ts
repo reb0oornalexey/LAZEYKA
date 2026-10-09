@@ -30,6 +30,7 @@ import {
   connectIncyNode,
   selectIncyNode,
   isNodeAllowedForAuto,
+  appendLog,
   type IncyNode
 } from './incy-engine'
 import { startTempCore, withCoreSlot, physicalSourceIp, tcpRtt, icmpRtt, sleep, type TempCore } from './core-probe'
@@ -112,6 +113,23 @@ const DEEP_NODES = 12
 const CONCURRENCY = 4
 
 // ---- progress --------------------------------------------------------------
+
+/** Строка в общий лог (вкладка «Логи» и файл) — раньше оптимизатор не писал ничего. */
+function olog(line: string): void {
+  try {
+    appendLog(`[оптимизатор] ${line}`, 'exitlag')
+  } catch {
+    /* лог не критичен */
+  }
+}
+
+function fmtStats(p: PathStats): string {
+  if (p.pingMs == null) return `${p.method === 'failed' ? 'нет ответа' : p.method}`
+  const parts = [`${p.pingMs} мс`]
+  if (p.jitterMs != null) parts.push(`±${p.jitterMs}`)
+  if (p.lossPct != null && p.method !== 'estimate') parts.push(`потери ${p.lossPct}%`)
+  return `${parts.join(' ')} (${p.method === 'a2s' ? `A2S ${p.received}/${p.sent}` : p.method === 'icmp' ? 'ICMP' : 'оценка'})`
+}
 
 function progress(done: number, total: number, stage: string): void {
   for (const w of BrowserWindow.getAllWindows()) {
@@ -354,6 +372,7 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
     const parsed = parseGameServerAddress(input)
     if (!parsed) throw new Error('Не удалось распознать адрес. Вставьте строку «connect IP:порт» из комнаты матча.')
 
+    olog(`замер ${parsed.host}:${parsed.port}`)
     const geo = await resolveGameServerGeo(parsed.host, parsed.port)
     const targetIp = geo.ip
     if (!net.isIPv4(targetIp)) throw new Error(`Не удалось определить IPv4-адрес сервера «${parsed.host}».`)
@@ -378,6 +397,10 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
       directSamples = await icmpSeries(targetIp, 10, sourceIp)
       direct = summarize('icmp', directSamples)
     }
+    olog(
+      `сервер ${targetIp}:${parsed.port}${geo.city || geo.country ? ` (${[geo.city, geo.country].filter(Boolean).join(', ')})` : ''}` +
+        ` — напрямую: ${fmtStats(direct)}${sourceIp ? `, в обход TUN с ${sourceIp}` : ''}`
+    )
 
     // 2) Отбор узлов по задержке ПК → узел.
     const all = loadIncyNodes().filter((n) => n.server && n.port)
@@ -422,6 +445,9 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
         error = e instanceof Error ? e.message : String(e)
       }
       progress(++done, deep.length, 'Замер через узлы')
+      olog(
+        `  ${n.name}: ПК→узел ${rtt ?? '—'} мс, до сервера ${error ? `ошибка: ${error}` : fmtStats(pathStats)}`
+      )
       return {
         ...base,
         path: pathStats,
@@ -476,6 +502,12 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
     measured.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9))
     const best = measured.find((m) => m.score != null)
     if (best && (directScore == null || best.score! < directScore)) best.isBest = true
+    olog(
+      best?.isBest
+        ? `лучший маршрут: ${best.nodeName} — ${fmtStats(best.path)} (напрямую ${direct.pingMs ?? '—'} мс)`
+        : `ни один узел не быстрее прямого пути (${fmtStats(direct)}); проверено узлов: ${measured.length} из ${all.length}`
+    )
+    for (const w of warnings) olog(`внимание: ${w}`)
 
     // Автоподключение — только если пользователь сам включил его и лучший узел
     // измерен по-настоящему (не «оценка»).
@@ -522,6 +554,9 @@ export async function optimizeRoute(input: string): Promise<RouteOptimizerResult
       directPing: direct.pingMs,
       directPingEstimated: false
     }
+  } catch (e) {
+    olog(`замер не выполнен: ${e instanceof Error ? e.message : String(e)}`)
+    throw e
   } finally {
     for (const t of temps) t.stop()
     running = false
