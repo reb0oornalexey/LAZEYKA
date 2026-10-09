@@ -26,6 +26,7 @@ import {
   incyGetNodes,
   getAppVersion,
   appCheckUpdateNow,
+  appGetOnlineCount,
   openExternalUrl,
   type IncyNode,
   type ZapretUpdateInfo,
@@ -297,6 +298,19 @@ const Home: React.FC = () => {
       : 'Обход РФ'
 
   // ---- Общие действия ----
+  // ---- Сейчас онлайн ----
+  const [online, setOnline] = useState<number | null>(null)
+  useEffect(() => {
+    appGetOnlineCount()
+      .then((r) => setOnline(r ? r.online : null))
+      .catch(() => setOnline(null))
+    const onCount = (_e: unknown, r: { online: number } | null): void => setOnline(r ? r.online : null)
+    window.electron.ipcRenderer.on('app:onlineCount', onCount)
+    return () => {
+      window.electron.ipcRenderer.removeAllListeners('app:onlineCount')
+    }
+  }, [])
+
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   useEffect(() => {
@@ -391,6 +405,18 @@ const Home: React.FC = () => {
       title="Главная"
       header={
         <>
+          {online != null && online > 0 && (
+            <span
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/60 px-2.5 text-xs text-muted-foreground tabular-nums"
+              title="Сколько человек сейчас запустили LAZEYKA (анонимно, за последние минуты)"
+            >
+              <span className="relative flex size-2">
+                <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-500/60" />
+                <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+              </span>
+              {online.toLocaleString('ru-RU')} онлайн
+            </span>
+          )}
           <Button
             variant="outline"
             size="sm"

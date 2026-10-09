@@ -4,6 +4,7 @@ import windowStateKeeper from 'electron-window-state'
 import { join } from 'path'
 import icon from '../../resources/icon.png?asset'
 import { registerIpcMainHandlers } from './utils/ipc'
+import { startOnlineCounter } from './core/online-counter'
 import { init } from './utils/init'
 import { getAppConfig, getAppConfigSync } from './config'
 import { createTray, isTrayActive, refreshTray } from './resolve/tray'
@@ -126,6 +127,7 @@ app.whenReady().then(async () => {
 
   registerIpcMainHandlers()
   const appConfig = await getAppConfig()
+  startOnlineCounter()
 
   // Log files are new — `maxLogDays` finally has files to rotate. Pruning runs
   // once per launch, which is precise enough for day-granular filenames.
