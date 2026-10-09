@@ -9,7 +9,7 @@ import { showSystemNotification } from '../utils/notifications'
 import { logToFile } from '../utils/file-logger'
 import { getGameFilterMode, getZapretWindowsServiceStatus } from './zapret-service-settings'
 import { createConsoleDecoder, decodeConsole } from '../utils/console-decode'
-import { mergeLazeykaIpset } from './zapret-iplist'
+import { mergeLazeykaIpset, addHostsToZapretUserList } from './zapret-iplist'
 
 export interface StrategyDescriptor {
   file: string
@@ -580,6 +580,30 @@ async function killOwnTree(): Promise<void> {
   })
 }
 
+/**
+ * Домены, которые провайдеры режут по DPI, но которых нет в списке Flowseal,
+ * а из-за них «висят» популярные сайты. Пример: cdn.cookielaw.org (баннер
+ * cookie OneTrust) — HLTV ждёт этот скрипт перед отрисовкой, и страница
+ * открывалась 30–40 секунд вместо одной.
+ *
+ * Добавляются в list-general-user.txt один раз на версию набора (метка
+ * рядом со списками), чтобы пользователь мог убрать домен руками и он не
+ * возвращался при каждом запуске.
+ */
+const LAZEYKA_EXTRA_HOSTS = { version: 1, hosts: ['cookielaw.org', 'onetrust.com'] }
+
+function ensureLazeykaHosts(bundleDir: string): void {
+  try {
+    const marker = path.join(bundleDir, 'lists', `.lazeyka-extra-hosts-v${LAZEYKA_EXTRA_HOSTS.version}`)
+    if (existsSync(marker)) return
+    const added = addHostsToZapretUserList(LAZEYKA_EXTRA_HOSTS.hosts)
+    writeFileSync(marker, new Date().toISOString(), 'utf-8')
+    if (added > 0) log('info', `в список Zapret добавлены домены, которые режет DPI (${LAZEYKA_EXTRA_HOSTS.hosts.join(', ')})`)
+  } catch {
+    /* не критично */
+  }
+}
+
 async function startZapretImpl(): Promise<void> {
   // Процесс остался от запуска, который не дождался winws (таймаут), —
   // гасим его, иначе повторный «Старт» молча ничего не делал.
@@ -602,6 +626,7 @@ async function startZapretImpl(): Promise<void> {
     throw new Error(`zapret strategy not found: ${batPath}`)
   }
 
+  ensureLazeykaHosts(dir)
   setStatus({ state: 'starting', startedAt: Date.now(), lastError: undefined })
   log('info', `launching: ${batPath}`)
   // If Zapret is already running as a Windows Service, mark as running and return
