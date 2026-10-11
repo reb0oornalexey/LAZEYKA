@@ -14,6 +14,7 @@ import { attachTgwsStore } from '@renderer/store/tgws-store'
 import { attachZapretStore } from '@renderer/store/zapret-store'
 import { attachZapretTestStore } from '@renderer/store/zapret-test-store'
 import { attachIncyStore } from '@renderer/store/incy-store'
+import { copyText, insertIntoField, isEditableField, readClipboardText } from '@renderer/utils/clipboard-field'
 
 const App: React.FC = () => {
   const { appConfig } = useAppConfig()
@@ -34,6 +35,36 @@ const App: React.FC = () => {
       d4()
       d5()
     }
+  }, [])
+
+  // Правая кнопка мыши — как в консоли Windows: в поле ввода вставляет текст
+  // из буфера, а если что-то выделено (в поле или на странице) — копирует.
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent): void => {
+      // Своё контекстное меню у компонента важнее.
+      if (e.defaultPrevented) return
+      const target = e.target
+      if (isEditableField(target)) {
+        e.preventDefault()
+        const start = target.selectionStart ?? 0
+        const end = target.selectionEnd ?? 0
+        if (end > start && !(target instanceof HTMLInputElement && target.type === 'password')) {
+          void copyText(target.value.slice(start, end)).then((ok) => ok && toast.success('Скопировано', { duration: 1200 }))
+          return
+        }
+        void readClipboardText().then((text) => {
+          if (text) insertIntoField(target, text, 'insert')
+        })
+        return
+      }
+      const sel = window.getSelection()?.toString() ?? ''
+      if (sel.trim()) {
+        e.preventDefault()
+        void copyText(sel).then((ok) => ok && toast.success('Скопировано', { duration: 1200 }))
+      }
+    }
+    document.addEventListener('contextmenu', onContextMenu)
+    return () => document.removeEventListener('contextmenu', onContextMenu)
   }, [])
 
   useEffect(() => {

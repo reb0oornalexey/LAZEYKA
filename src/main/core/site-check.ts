@@ -148,6 +148,21 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   })
 }
 
+/** Адрес домена у публичного DNS (Google/Cloudflare) — в обход системного. */
+async function publicResolve(host: string): Promise<string | null> {
+  for (const server of ['8.8.8.8', '1.1.1.1']) {
+    try {
+      const r = new dns.promises.Resolver({ timeout: 2500, tries: 1 })
+      r.setServers([server])
+      const a = await r.resolve4(host)
+      if (a.length > 0) return a[0]
+    } catch {
+      /* следующий */
+    }
+  }
+  return null
+}
+
 async function probeDirect(host: string, src?: string): Promise<HostProbe> {
   const base: HostProbe = {
     host,
@@ -167,8 +182,17 @@ async function probeDirect(host: string, src?: string): Promise<HostProbe> {
     base.ip = r.address
     base.dnsMs = Math.round(performance.now() - t0)
   } catch (e) {
-    base.error = e instanceof Error ? e.message : String(e)
-    base.verdict = 'dns-failed'
+    // Имя не нашлось: это фильтр в вашем DNS (DNS-AI, AdGuard отвечают
+    // «нет такого домена» на рекламу и трекеры) или домена правда нет?
+    // Спрашиваем публичный DNS напрямую.
+    const pub = await publicResolve(host)
+    if (pub) {
+      base.verdict = 'dns-blocked'
+      base.error = `ваш DNS не отдаёт этот домен (у публичного DNS он есть: ${pub}) — это фильтр рекламы/трекеров в вашем DNS`
+    } else {
+      base.error = e instanceof Error ? e.message : String(e)
+      base.verdict = 'dns-failed'
+    }
     return base
   }
   if (/^(0\.0\.0\.0|127\.)/.test(base.ip)) {
@@ -426,7 +450,7 @@ export async function checkSite(input: string): Promise<SiteCheckResult> {
     const vpn = p.vpnMs != null ? ` Через VPN — ${p.vpnMs} мс.` : ''
     switch (p.verdict) {
       case 'dns-blocked':
-        return `${p.host}: ${p.error}. Это не провайдер, а ваш DNS (DNS-AI, AdGuard и т. п.). Если сайту он нужен — смените DNS в настройках.`
+        return `${p.host}: ${p.error}. Это не провайдер: обычно это реклама/аналитика, и сайт работает без неё. Zapret тут не нужен. Если без домена что-то ломается — смените DNS в настройках.`
       case 'dns-failed':
         return `${p.host}: DNS не отвечает (${p.error}).`
       case 'tcp-blocked':
@@ -453,8 +477,12 @@ export async function checkSite(input: string): Promise<SiteCheckResult> {
           ? ` Она ждёт ответа от: ${blockers.map((b) => b.host).join(', ')} — пока они не ответят, страница не дорисуется.`
           : '')
     )
-  } else if (page.loadMs != null && verdict.length === 0) {
-    verdict.push(`Страница загрузилась за ${(page.loadMs / 1000).toFixed(1)} с, проблем не найдено.`)
+  } else if (page.loadMs != null) {
+    const onlyDnsFilter = probes.every((p) => p.verdict === 'ok' || p.verdict === 'dns-blocked')
+    verdict.unshift(
+      `Страница загрузилась за ${(page.loadMs / 1000).toFixed(1)} с` +
+        (verdict.length === 0 ? ', проблем не найдено.' : onlyDnsFilter ? ' — нормально; ниже только то, что режет ваш DNS-фильтр.' : '.')
+    )
   }
   if (page.error) verdict.unshift(`Страница не открылась: ${page.error}.`)
   if (viaTunnel) verdict.push('Сейчас включён полный VPN (TUN): страница открывалась через него. Для чистой проверки провайдера отключите VPN.')

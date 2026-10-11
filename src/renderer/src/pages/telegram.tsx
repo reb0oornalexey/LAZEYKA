@@ -613,7 +613,7 @@ const TelegramPage: React.FC = () => {
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-4">
             <div className="space-y-1.5">
               <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Хост</Label>
-              <Input
+              <Input paste
                 value={hostDraft ?? tgws?.host ?? ''}
                 onChange={(e) => setHostDraft(e.target.value)}
                 placeholder="127.0.0.1"
@@ -631,7 +631,7 @@ const TelegramPage: React.FC = () => {
             </div>
             <div className="md:col-span-2 space-y-1.5">
               <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Секретный ключ (32-hex MTProto)</Label>
-              <Input
+              <Input paste
                 value={secretDraft ?? tgws?.secret ?? ''}
                 onChange={(e) => setSecretDraft(e.target.value)}
                 className="font-mono text-xs rounded-xl bg-background/50 border-border/70"
@@ -713,7 +713,7 @@ const TelegramPage: React.FC = () => {
                 Свой Cloudflare Worker (домен)
               </Label>
               <div className="flex gap-2">
-                <Input
+                <Input paste
                   value={workerDraft ?? tgws?.cfproxyWorkerDomain ?? ''}
                   onChange={(e) => setWorkerDraft(e.target.value)}
                   placeholder="my-worker.example.workers.dev"

@@ -424,32 +424,32 @@ const Settings: React.FC = () => {
                   className="h-8 text-xs"
                 />
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <Input
+                  <Input paste
                     value={dnsForm.v4a}
                     onChange={(e) => setDnsForm({ ...dnsForm, v4a: e.target.value })}
                     placeholder="IPv4 основной"
                     className="h-8 text-xs font-mono"
                   />
-                  <Input
+                  <Input paste
                     value={dnsForm.v4b}
                     onChange={(e) => setDnsForm({ ...dnsForm, v4b: e.target.value })}
                     placeholder="IPv4 дополнительный (необязательно)"
                     className="h-8 text-xs font-mono"
                   />
-                  <Input
+                  <Input paste
                     value={dnsForm.v6a}
                     onChange={(e) => setDnsForm({ ...dnsForm, v6a: e.target.value })}
                     placeholder="IPv6 основной (необязательно)"
                     className="h-8 text-xs font-mono"
                   />
-                  <Input
+                  <Input paste
                     value={dnsForm.v6b}
                     onChange={(e) => setDnsForm({ ...dnsForm, v6b: e.target.value })}
                     placeholder="IPv6 дополнительный (необязательно)"
                     className="h-8 text-xs font-mono"
                   />
                 </div>
-                <Input
+                <Input paste
                   value={dnsForm.doh}
                   onChange={(e) => setDnsForm({ ...dnsForm, doh: e.target.value })}
                   placeholder="Шаблон DoH: https://dns.example.com/dns-query (пусто — без шифрования)"
@@ -624,7 +624,7 @@ const Settings: React.FC = () => {
               )}
 
               <div className="pt-2 flex flex-col sm:flex-row gap-2">
-                <Input
+                <Input paste
                   value={newDomain}
                   onChange={(e) => setNewDomain(e.target.value)}
                   placeholder="Домен (например, mysite.ru или *.work.com)"

@@ -295,6 +295,7 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('shell:openTelegramLink', h((url) => openTelegramLink(url as string)))
   ipcMain.handle('shell:openExternal', h((url) => shell.openExternal(url as string)))
   ipcMain.handle('clipboard:writeText', h((text) => { clipboard.writeText(text as string) }))
+  ipcMain.handle('clipboard:readText', h(() => clipboard.readText()))
 
   // ---- TG WS Proxy --------------------------------------------------------
   ipcMain.handle('tgws:status', h(() => getTgwsStatus()))
