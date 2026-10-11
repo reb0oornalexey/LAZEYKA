@@ -9,11 +9,13 @@ import {
   PlusCircle,
   RotateCcw,
   Star,
-  Trash2
+  Trash2,
+  ClipboardPaste
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
+import { readClipboardText } from '@renderer/utils/clipboard-field'
 import {
   zapretGetCuratedIpSets,
   zapretGetIpList,
@@ -306,8 +308,26 @@ const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason })
               </div>
 
               <div>
-                <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground font-mono">
-                  Свои хосты / IP
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="text-xs uppercase tracking-wide text-muted-foreground font-mono">Свои хосты / IP</span>
+                  <button
+                    type="button"
+                    disabled={disabled || busy}
+                    onClick={async () => {
+                      const text = (await readClipboardText()).trim()
+                      if (!text) {
+                        toast.info('Буфер обмена пуст')
+                        return
+                      }
+                      // Дописываем с новой строки — уже введённое не теряется.
+                      setCustom((prev) => (prev.trim() ? `${prev.replace(/\s+$/, '')}\n${text}` : text))
+                    }}
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-primary hover:bg-primary/10 disabled:opacity-40 cursor-pointer"
+                    title="Вставить из буфера обмена (или правая кнопка мыши в поле)"
+                  >
+                    <ClipboardPaste className="size-3.5" />
+                    Вставить
+                  </button>
                 </div>
                 <textarea
                   value={custom}
@@ -323,7 +343,8 @@ const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason })
                   )}
                 />
                 <p className="mt-1.5 text-[11px] text-muted-foreground">
-                  По одному в строке. Поддерживаются домены, IPv4/IPv6 и CIDR. Невалидные строки игнорируются.
+                  По одному в строке. Поддерживаются домены, IPv4/IPv6 и CIDR. Невалидные строки игнорируются. Правая
+                  кнопка мыши в поле — вставить из буфера.
                 </p>
               </div>
 

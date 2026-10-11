@@ -535,7 +535,7 @@ export default function ExitLagPage(): React.ReactElement {
 
                 {/* Manual Input */}
                 <div className="flex gap-2">
-                  <Input
+                  <Input paste
                     value={newAppInput}
                     onChange={(e) => setNewAppInput(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') void handleAddPerAppProcess(newAppInput) }}

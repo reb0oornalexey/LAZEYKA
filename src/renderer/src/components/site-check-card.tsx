@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { toast } from 'sonner'
-import { Globe, RefreshCw, ShieldPlus } from 'lucide-react'
+import { Copy, Globe, Plus, RefreshCw, ShieldPlus } from 'lucide-react'
+import { copyText } from '@renderer/utils/clipboard-field'
 import { Card, CardHeader, CardTitle, CardContent } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -49,13 +50,48 @@ const SiteCheckCard: React.FC = () => {
     }
   }
 
-  const fixable = (result?.probes ?? []).filter((p) => p.verdict === 'dpi-blocked' && p.zapret === 'none')
-  const addToZapret = async (): Promise<void> => {
-    const domains = [...new Set(fixable.map((p) => p.baseDomain))]
+  // Что Zapret может вылечить: всё проблемное, кроме того, что режет ваш
+  // DNS-фильтр (реклама/трекеры — им Zapret не поможет) и уже добавленного.
+  const fixable = (result?.probes ?? []).filter(
+    (p) => p.verdict !== 'ok' && p.verdict !== 'dns-blocked' && p.zapret === 'none'
+  )
+  const dpi = fixable.filter((p) => p.verdict === 'dpi-blocked')
+
+  const copy = async (text: string, what = 'Скопировано'): Promise<void> => {
+    if (await copyText(text)) toast.success(what, { duration: 1200 })
+  }
+
+  const reportText = (r: SiteCheckResult): string =>
+    [
+      `Проверка сайта: ${r.url}`,
+      `Загрузка: ${r.pageError ? `ошибка (${r.pageError})` : r.pageTimedOut ? '> 35 с' : r.pageLoadMs != null ? `${(r.pageLoadMs / 1000).toFixed(1)} с` : '—'}; Zapret ${r.zapretRunning ? 'работает' : 'выключен'}`,
+      '',
+      ...r.verdict.map((v) => `• ${v}`),
+      '',
+      'Домен | итог | DNS | TCP | TLS | ответ | VPN | Zapret',
+      ...r.probes.map(
+        (p) =>
+          `${p.host} | ${VERDICT_LABEL[p.verdict].text} | ${ms(p.dnsMs)} | ${ms(p.tcpMs)} | ${ms(p.tlsMs)} | ${ms(p.ttfbMs)} | ${p.vpnMs ?? '—'} | ${p.zapret}`
+      ),
+      '',
+      'Все домены страницы:',
+      ...r.pageHosts.map(
+        (h) => `${h.host} — запросов ${h.requests}, макс ${(h.maxMs / 1000).toFixed(1)} с${h.hanging ? `, висит ${h.hanging}` : ''}${h.failed ? `, ошибок ${h.failed}` : ''}`
+      )
+    ].join('\n')
+
+  const addToZapret = async (list: SiteHostProbe[] | string[]): Promise<void> => {
+    const domains = [...new Set(list.map((p) => (typeof p === 'string' ? p : p.baseDomain)))]
     if (domains.length === 0) return
     setAdding(true)
     try {
       const r = await optimizerAddSitesToZapret(domains)
+      setResult((prev) =>
+        prev && {
+          ...prev,
+          probes: prev.probes.map((p) => (domains.includes(p.baseDomain) ? { ...p, zapret: 'listed' as const } : p))
+        }
+      )
       toast.success(r.added > 0 ? `Добавлено в Zapret: ${domains.join(', ')}` : 'Эти домены уже в списке Zapret', {
         description: r.restarted ? 'Zapret перезапущен. Проверьте сайт ещё раз.' : 'Применится при следующем запуске Zapret.'
       })
@@ -81,7 +117,7 @@ const SiteCheckCard: React.FC = () => {
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex gap-2">
-          <Input
+          <Input paste
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => {
@@ -97,7 +133,7 @@ const SiteCheckCard: React.FC = () => {
         </div>
 
         {result && (
-          <div className="space-y-3 rounded-xl border border-border/50 bg-background/40 p-3">
+          <div className="select-text space-y-3 rounded-xl border border-border/50 bg-background/40 p-3">
             <div className="text-[11px] text-muted-foreground font-mono">
               {result.host} · загрузка:{' '}
               {result.pageError
@@ -117,11 +153,43 @@ const SiteCheckCard: React.FC = () => {
               ))}
             </ul>
 
-            {fixable.length > 0 && (
-              <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => void addToZapret()} disabled={adding}>
-                {adding ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <ShieldPlus className="h-3.5 w-3.5" />}
-                Добавить в Zapret: {[...new Set(fixable.map((p) => p.baseDomain))].join(', ')}
+            <div className="flex flex-wrap gap-2">
+              {fixable.length > 0 && (
+                <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => void addToZapret(fixable)} disabled={adding}>
+                  {adding ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <ShieldPlus className="h-3.5 w-3.5" />}
+                  Добавить всё в Zapret ({[...new Set(fixable.map((p) => p.baseDomain))].length})
+                </Button>
+              )}
+              {dpi.length > 0 && dpi.length < fixable.length && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1.5 text-xs"
+                  onClick={() => void addToZapret(dpi)}
+                  disabled={adding}
+                >
+                  Только блокировки DPI: {[...new Set(dpi.map((p) => p.baseDomain))].join(', ')}
+                </Button>
+              )}
+              <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" onClick={() => void copy(reportText(result), 'Отчёт скопирован')}>
+                <Copy className="h-3.5 w-3.5" />
+                Скопировать отчёт
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 gap-1.5 text-xs"
+                onClick={() => void copy(result.pageHosts.map((h) => h.host).join('\n'), 'Домены скопированы')}
+              >
+                <Copy className="h-3.5 w-3.5" />
+                Скопировать домены
+              </Button>
+            </div>
+            {fixable.length > 0 && (
+              <p className="text-[10px] text-muted-foreground">
+                В Zapret попадут: {[...new Set(fixable.map((p) => p.baseDomain))].join(', ')}. Домены, которые режет ваш DNS
+                (реклама и аналитика), не добавляются — Zapret им не поможет.
+              </p>
             )}
 
             <div className="space-y-1">
@@ -129,8 +197,8 @@ const SiteCheckCard: React.FC = () => {
                 Пошагово, мс (напрямую, мимо VPN)
               </div>
               <div className="overflow-x-auto">
-                <div className="min-w-[560px] space-y-0.5 font-mono text-[11px]">
-                  <div className="grid grid-cols-[minmax(0,1fr)_7rem_3rem_3rem_3rem_3.5rem_4rem_4.5rem] gap-2 text-muted-foreground">
+                <div className="min-w-[600px] space-y-0.5 font-mono text-[11px]">
+                  <div className="grid grid-cols-[minmax(0,1fr)_7rem_3rem_3rem_3rem_3.5rem_4rem_4.5rem_2.5rem] gap-2 text-muted-foreground">
                     <span>домен</span>
                     <span>итог</span>
                     <span className="text-right">DNS</span>
@@ -139,16 +207,24 @@ const SiteCheckCard: React.FC = () => {
                     <span className="text-right">ответ</span>
                     <span className="text-right">VPN</span>
                     <span>Zapret</span>
+                    <span />
                   </div>
                   {result.probes.map((p) => {
                     const v = VERDICT_LABEL[p.verdict]
                     return (
                       <div
                         key={p.host}
-                        className="grid grid-cols-[minmax(0,1fr)_7rem_3rem_3rem_3rem_3.5rem_4rem_4.5rem] gap-2"
+                        className="grid grid-cols-[minmax(0,1fr)_7rem_3rem_3rem_3rem_3.5rem_4rem_4.5rem_2.5rem] items-center gap-2"
                         title={p.error ?? ''}
                       >
-                        <span className="truncate">{p.host}</span>
+                        <button
+                          type="button"
+                          className="truncate text-left hover:text-primary cursor-pointer"
+                          title="Нажмите, чтобы скопировать"
+                          onClick={() => void copy(p.host)}
+                        >
+                          {p.host}
+                        </button>
                         <span
                           className={cn(
                             v.tone === 'ok' && 'text-emerald-500',
@@ -168,6 +244,19 @@ const SiteCheckCard: React.FC = () => {
                         <span className="text-muted-foreground">
                           {p.zapret === 'listed' ? 'в списке' : p.zapret === 'excluded' ? 'исключён' : 'нет'}
                         </span>
+                        {p.zapret === 'none' && p.verdict !== 'dns-blocked' ? (
+                          <button
+                            type="button"
+                            className="inline-flex size-6 items-center justify-center rounded-md text-primary hover:bg-primary/10 cursor-pointer"
+                            title={`Добавить ${p.baseDomain} в Zapret`}
+                            onClick={() => void addToZapret([p.baseDomain])}
+                            disabled={adding}
+                          >
+                            <Plus className="size-3.5" />
+                          </button>
+                        ) : (
+                          <span />
+                        )}
                       </div>
                     )
                   })}
@@ -183,7 +272,14 @@ const SiteCheckCard: React.FC = () => {
                 <div className="mt-1 space-y-0.5 font-mono">
                   {result.pageHosts.map((h) => (
                     <div key={h.host} className="grid grid-cols-[minmax(0,1fr)_3rem_4.5rem_6rem] gap-2">
-                      <span className="truncate">{h.host}</span>
+                      <button
+                        type="button"
+                        className="truncate text-left hover:text-primary cursor-pointer"
+                        title="Нажмите, чтобы скопировать"
+                        onClick={() => void copy(h.host)}
+                      >
+                        {h.host}
+                      </button>
                       <span className="text-right text-muted-foreground">{h.requests}</span>
                       <span className={cn('text-right', h.maxMs > 3000 && 'text-amber-500')}>
                         {(h.maxMs / 1000).toFixed(1)} с

@@ -3285,7 +3285,7 @@ export default function IncyPage(): React.ReactElement {
                 )}
 
                 <div className="flex flex-col sm:flex-row gap-2 pt-1 border-t border-border/40">
-                  <Input
+                  <Input paste
                     value={newRuleValue}
                     onChange={(e) => setNewRuleValue(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') void addRoutingRule() }}
@@ -3728,7 +3728,7 @@ export default function IncyPage(): React.ReactElement {
                     ))}
                   </div>
                   {settings.vpnDns === 'Custom' && (
-                    <Input
+                    <Input paste
                       value={settings.customDns || ''}
                       onChange={(e) => handleUpdateSettings({ customDns: e.target.value })}
                       placeholder="Введите IP DNS через запятую (напр. 77.88.8.8, 1.1.1.1)"
@@ -3955,7 +3955,7 @@ export default function IncyPage(): React.ReactElement {
 
                 <div className="space-y-1.5 pt-2 border-t border-border/50">
                   <Label className="text-xs font-semibold">Тестовый URL</Label>
-                  <Input
+                  <Input paste
                     value={settings.pingTestUrl}
                     onChange={(e) => handleUpdateSettings({ pingTestUrl: e.target.value })}
                     className="h-7 text-xs font-mono"

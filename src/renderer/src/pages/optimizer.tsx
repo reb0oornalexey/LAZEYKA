@@ -397,7 +397,7 @@ export default function OptimizerPage(): React.ReactElement {
 
             {/* Results */}
             {gamePingResult && (
-              <div className="space-y-3 p-3.5 rounded-xl border border-primary/30 bg-primary/5 animate-in fade-in duration-200">
+              <div className="select-text space-y-3 p-3.5 rounded-xl border border-primary/30 bg-primary/5 animate-in fade-in duration-200">
                 {/* Header */}
                 <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-border/40 text-xs">
                   <div className="flex items-center gap-2 min-w-0">
@@ -574,7 +574,7 @@ export default function OptimizerPage(): React.ReactElement {
             </div>
 
             {trace && (
-              <div className="space-y-2 rounded-xl border border-border/50 bg-background/40 p-3">
+              <div className="select-text space-y-2 rounded-xl border border-border/50 bg-background/40 p-3">
                 <div className="text-[11px] text-muted-foreground">
                   До {trace.targetIp}
                   {trace.reached ? '' : ' (сервер на пинг не отвечает)'} · {trace.hops.length} узлов
@@ -608,7 +608,7 @@ export default function OptimizerPage(): React.ReactElement {
             )}
 
             {bloat && (
-              <div className="space-y-1.5 rounded-xl border border-border/50 bg-background/40 p-3 text-[11px]">
+              <div className="select-text space-y-1.5 rounded-xl border border-border/50 bg-background/40 p-3 text-[11px]">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono">
                   <span>
                     Оценка:{' '}
