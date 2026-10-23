@@ -19,7 +19,7 @@ import { clearWindowsSystemProxy, clearWindowsSystemProxySync } from './utils/sy
 import { appLog } from './utils/app-logger'
 import { killRegisteredChildrenSync } from './utils/child-registry'
 import { enableAutoRun, disableAutoRun } from './sys/autoRun'
-import { isRunningAsAdmin } from './utils/elevation'
+import { isRunningAsAdmin, relaunchElevated, ELEVATED_FLAG } from './utils/elevation'
 import { pruneOldLogs, flushLogsNow, currentLogFilePath } from './utils/file-logger'
 import { flushStats } from './core/incy-stats'
 import { registerDeepLinkScheme, findDeepLinkInArgv, handleDeepLink } from './core/deeplink'
@@ -97,6 +97,16 @@ app.whenReady().then(async () => {
   registerDeepLinkScheme()
 
   if (process.platform === 'win32' && !is.dev && !(await isRunningAsAdmin())) {
+    // Автоматически перезапускаемся с правами администратора (UAC). Флаг защищает от
+    // цикла: если повышенная копия всё равно не админ — показываем пояснение.
+    if (!process.argv.includes(ELEVATED_FLAG)) {
+      appLog('info', 'Нужны права администратора — перезапуск через UAC')
+      if (await relaunchElevated()) {
+        app.quit()
+        return
+      }
+      appLog('warn', 'Перезапуск с правами администратора не удался или отклонён')
+    }
     dialog.showErrorBox(
       'LAZEYKA — нужны права администратора',
       'LAZEYKA должен быть запущен с правами администратора, иначе Zapret\n' +

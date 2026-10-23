@@ -162,15 +162,18 @@ export function incyRuntimeDir(): string {
 
 const coreVersionCache = new Map<string, { mtimeMs: number; version: number[] | null }>()
 
-/** Версия ядра `x.y.z` (sing-box/xray печатают её в `version`). Кэш по mtime. */
+/**
+ * Версия ядра `x.y.z` (sing-box/xray печатают её в `version`) плюс номер
+ * сборки sing-box-lx (`1.14.3-lx.23` → 23; у обычного ядра −1). Кэш по mtime.
+ */
 function coreVersion(bin: string): number[] | null {
   try {
     const mtimeMs = statSync(bin).mtimeMs
     const cached = coreVersionCache.get(bin)
     if (cached && cached.mtimeMs === mtimeMs) return cached.version
     const r = spawnSync(bin, ['version'], { windowsHide: true, timeout: 5000, encoding: 'utf8' })
-    const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(r.stdout ?? ''))
-    const version = m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
+    const m = /(\d+)\.(\d+)\.(\d+)(?:-lx\.(\d+))?/.exec(String(r.stdout ?? ''))
+    const version = m ? [Number(m[1]), Number(m[2]), Number(m[3]), m[4] ? Number(m[4]) : -1] : null
     coreVersionCache.set(bin, { mtimeMs, version })
     return version
   } catch {
@@ -195,8 +198,10 @@ function newerCore(runtimePath: string, bundledPath: string): string {
   const b = coreVersion(bundledPath)
   if (!a) return bundledPath
   if (!b) return runtimePath
-  for (let i = 0; i < 3; i++) {
-    if (a[i] !== b[i]) return a[i] > b[i] ? runtimePath : bundledPath
+  // Четвёртый элемент — сборка sing-box-lx: при той же версии lx (с AmneziaWG)
+  // выигрывает у обычного ядра, а более свежая сборка lx — у старой.
+  for (let i = 0; i < 4; i++) {
+    if ((a[i] ?? -1) !== (b[i] ?? -1)) return (a[i] ?? -1) > (b[i] ?? -1) ? runtimePath : bundledPath
   }
   return runtimePath
 }

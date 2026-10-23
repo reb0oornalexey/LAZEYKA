@@ -7,7 +7,7 @@ import { zapretBundleDir, zapretRuntimeDir } from '../utils/dirs'
 import { getAppConfig } from '../config'
 import { showSystemNotification } from '../utils/notifications'
 import { logToFile } from '../utils/file-logger'
-import { getGameFilterMode, getZapretWindowsServiceStatus } from './zapret-service-settings'
+import { getGameFilterVars, getZapretWindowsServiceStatus } from './zapret-service-settings'
 import { createConsoleDecoder, decodeConsole } from '../utils/console-decode'
 import { mergeLazeykaIpset, addHostsToZapretUserList } from './zapret-iplist'
 
@@ -648,9 +648,7 @@ async function startZapretImpl(): Promise<void> {
   ensureWinDivertReady()
   resetWinwsHealth()
 
-  const gameMode = getGameFilterMode()
-  const gameTcp = gameMode === 'all' || gameMode === 'tcp' ? '1024-65535' : '12'
-  const gameUdp = gameMode === 'all' || gameMode === 'udp' ? '1024-65535' : '12'
+  const gameVars = getGameFilterVars()
 
   // .bat files were patched at install time to drop `start /min`, so winws.exe
   // is now a direct child of cmd — no visible window, no taskbar icon, and
@@ -664,9 +662,7 @@ async function startZapretImpl(): Promise<void> {
       // Skip the .bat's network update check — it can hang for several
       // seconds on cold-boot autostart while DNS/network is initialising.
       NO_UPDATE_CHECK: '1',
-      GameFilterTCP: gameTcp,
-      GameFilterUDP: gameUdp,
-      GameFilter: '1024-65535'
+      ...gameVars
     }
   })
   const decodeOut = createConsoleDecoder()

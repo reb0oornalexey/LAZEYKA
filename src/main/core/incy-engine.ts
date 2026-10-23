@@ -39,6 +39,7 @@ import { logToFile } from '../utils/file-logger'
 import { registerChild, unregisterChild } from '../utils/child-registry'
 import { getAppConfig } from '../config'
 import { httpViaCore, physicalSourceIp, tcpRtt, icmpRtt } from './core-probe'
+import { extractAwgFields, validateAwgFields, coerceIntOrRange, looksLikeWireGuardConf, parseWireGuardConf } from './incy-awg'
 
 export interface IncyNode {
   id: string
@@ -2307,9 +2308,21 @@ export function clearManualIncyNodes(): IncyNode[] {
   return nextNodes
 }
 
-export async function importIncyInput(input: string): Promise<{ addedCount: number; subscription: IncySubscription | null; nodes: IncyNode[] }> {
+export async function importIncyInput(
+  input: string,
+  fileName?: string
+): Promise<{ addedCount: number; subscription: IncySubscription | null; nodes: IncyNode[] }> {
   const trimmed = input.trim()
   if (!trimmed) throw new Error('Пустая ссылка')
+
+  // Конфиг WireGuard / AmneziaWG (.conf) — целиком, многострочный текст.
+  if (looksLikeWireGuardConf(trimmed) || /^\s*\[\s*interface\s*\]/i.test(trimmed)) {
+    const node = parseWireGuardConf(trimmed, fileName)
+    const next = [...loadIncyNodes(), node]
+    saveIncyNodes(next)
+    appendLog(`Импортирован конфиг WireGuard: «${node.name}» (${node.server}:${node.port})`)
+    return { addedCount: 1, subscription: loadIncySubscription(), nodes: next }
+  }
 
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
     const { subscription, nodes } = await fetchIncySubscription(trimmed)
@@ -2363,7 +2376,7 @@ export async function importIncyInput(input: string): Promise<{ addedCount: numb
     return { addedCount: parsedNodes.length, subscription: loadIncySubscription(), nodes: next }
   }
 
-  throw new Error('Неверный формат ссылки. Поддерживаются URL подписок (https://...), а также vless://, ss://, trojan://, hysteria2://')
+  throw new Error('Неверный формат ссылки. Поддерживаются URL подписок (https://...), vless://, ss://, trojan://, hysteria2:// и конфиги WireGuard / AmneziaWG (.conf)')
 }
 
 /**
@@ -2766,6 +2779,17 @@ function splitHostPort(endpoint: string): { host: string; port: number } | null 
  * молча не работал. Теперь ключ Cloudflare подставляется только узлам WARP,
  * а без ключей подключение останавливается с понятной ошибкой.
  */
+const AWG_UNSUPPORTED_MSG = 'Ядро sing-box не поддерживает AmneziaWG — обновите ядро (нужна сборка sing-box-lx)'
+
+/** Отказ ядра из-за незнакомых полей AmneziaWG у конфига, где такой endpoint есть. */
+function awgUnsupportedHint(config: any, text: string): string | null {
+  const hasAwg = Array.isArray(config?.endpoints) &&
+    config.endpoints.some((e: any) => e?.type === 'wireguard' && Object.keys(extractAwgFields(e)).length > 0)
+  if (!hasAwg) return null
+  if (!/unknown field|json: unknown|\b(jc|jmin|jmax|s[1-4]|h[1-4]|i[1-5])\b/i.test(text)) return null
+  return AWG_UNSUPPORTED_MSG
+}
+
 export function buildWireGuardEndpoint(node: IncyNode): any {
   const raw = node.rawOutbound ?? {}
   const xs = raw.settings ?? {}
@@ -2795,6 +2819,9 @@ export function buildWireGuardEndpoint(node: IncyNode): any {
 
   const reserved = p0.reserved ?? raw.reserved ?? xs.reserved
   const psk = p0.pre_shared_key || p0.preSharedKey
+  const awg = extractAwgFields(raw)
+  validateAwgFields(awg)
+  const keepalive = coerceIntOrRange(p0.persistent_keepalive_interval ?? p0.persistentKeepalive)
 
   return {
     type: 'wireguard',
@@ -2808,17 +2835,22 @@ export function buildWireGuardEndpoint(node: IncyNode): any {
         public_key: peerPubKey,
         ...(psk ? { pre_shared_key: psk } : {}),
         allowed_ips: ['0.0.0.0/0', '::/0'],
-        ...(Array.isArray(reserved) && reserved.length === 3 ? { reserved } : {})
+        ...(Array.isArray(reserved) && reserved.length === 3 ? { reserved } : {}),
+        ...(keepalive !== null && keepalive !== 0 ? { persistent_keepalive_interval: keepalive } : {})
       }
     ],
-    mtu: Number(raw.mtu || xs.mtu) || 1280
+    mtu: Number(raw.mtu || xs.mtu) || 1280,
+    // AmneziaWG (jc/jmin/jmax/s1-s4/h1-h4/i1-i5 …): без этого обфускация молча терялась,
+    // и обычный WireGuard-хендшейк резался DPI. Поля понимает только ядро sing-box-lx.
+    ...awg
   }
 }
 
 /**
  * Endpoint WireGuard (схема sing-box ≥1.11) → outbound старой схемы (≤1.10).
  * Раньше при откате endpoint просто переносился в `outbounds` как есть, и
- * старое ядро его всё равно не принимало.
+ * старое ядро его всё равно не принимало. Поля AmneziaWG здесь намеренно не
+ * переносятся: старая схема их не знает.
  */
 function wireGuardEndpointToLegacyOutbound(ep: any): any {
   const peer = ep?.peers?.[0] ?? {}
@@ -4530,7 +4562,9 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     }
 
     if (!preflight.ok) {
-      const message = `Конфигурация отклонена ядром sing-box: ${preflight.reason}`
+      const awgHint = awgUnsupportedHint(config, String(preflight.reason ?? ''))
+      if (awgHint) appendLog(`[preflight] ${awgHint}`)
+      const message = `Конфигурация отклонена ядром sing-box: ${awgHint ? `${awgHint}. ` : ''}${preflight.reason}`
       appendLog(`[preflight] ${message}`)
       broadcastStatus({ state: 'error', activeNodeId: null, lastError: message })
       throw new Error(message)
@@ -4581,7 +4615,10 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     }
     if (!child || spawned.exitCode !== null) {
       const detail = ringLogs.slice(-3).join(' | ')
+      const awgHint = awgUnsupportedHint(config, ringLogs.slice(-8).join('\n'))
+      if (awgHint) appendLog(awgHint)
       const message =
+        (awgHint ? `${awgHint}. ` : '') +
         'sing-box завершился сразу после запуска. Проверьте параметры узла и вкладку «Логи».' +
         (detail ? ` Последние строки: ${detail}` : '')
       broadcastStatus({ state: 'error', activeNodeId: null, lastError: message })

@@ -20,6 +20,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import {
   appRelaunch,
+  appResetSettings,
   appCheckUpdateNow,
   appRefreshOnlineCount,
   profileExport,
@@ -60,6 +61,7 @@ const Settings: React.FC = () => {
   const [newComment, setNewComment] = useState('')
   const [showRuCategories, setShowRuCategories] = useState(false)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [resetStep, setResetStep] = useState<'idle' | 'confirm' | 'busy'>('idle')
 
   useEffect(() => {
     // Подсветка реально стоящего DNS: раньше после перезапуска активным
@@ -628,13 +630,14 @@ const Settings: React.FC = () => {
                   value={newDomain}
                   onChange={(e) => setNewDomain(e.target.value)}
                   placeholder="Домен (например, mysite.ru или *.work.com)"
+                  wrapperClassName="sm:flex-[3] sm:basis-0"
                   className="text-xs font-mono"
                 />
                 <Input
                   value={newComment}
                   onChange={(e) => setNewComment(e.target.value)}
                   placeholder="Описание (опционально)"
-                  className="text-xs"
+                  className="text-xs sm:flex-1 sm:basis-0"
                 />
                 <Button
                   size="sm"
@@ -825,6 +828,57 @@ const Settings: React.FC = () => {
             <Button size="sm" variant="outline" onClick={() => appRelaunch()}>
               Перезапустить приложение
             </Button>
+          </CardContent>
+        </Card>
+
+        {/* Danger zone */}
+        <Card className="cyber-card border-destructive/40">
+          <CardHeader>
+            <CardTitle className="text-destructive">Сброс настроек</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Все настройки LAZEYKA вернутся к значениям по умолчанию. Не затрагиваются: тема, подписки, узлы и
+              профили INCY, ваши списки хостов и IPSet, выбранная стратегия Zapret, адрес и ключ Telegram-прокси.
+              Работающие службы не останавливаются.
+            </p>
+            {resetStep === 'idle' ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-destructive/50 text-destructive hover:bg-destructive/10"
+                onClick={() => setResetStep('confirm')}
+              >
+                Сбросить настройки
+              </Button>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium">Точно сбросить?</span>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={resetStep === 'busy'}
+                  onClick={async () => {
+                    setResetStep('busy')
+                    try {
+                      await appResetSettings()
+                      toast.success('Настройки сброшены', { style: POWER_ON_BANNER_STYLE })
+                      setTimeout(() => window.location.reload(), 500)
+                    } catch (e) {
+                      toast.error('Не удалось сбросить настройки', {
+                        description: e instanceof Error ? e.message : String(e)
+                      })
+                      setResetStep('idle')
+                    }
+                  }}
+                >
+                  {resetStep === 'busy' ? 'Сбрасываю…' : 'Да'}
+                </Button>
+                <Button size="sm" variant="ghost" disabled={resetStep === 'busy'} onClick={() => setResetStep('idle')}>
+                  Отмена
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

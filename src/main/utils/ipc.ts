@@ -1,13 +1,14 @@
 import { ipcMain, app, shell, clipboard, BrowserWindow, dialog, desktopCapturer, screen } from 'electron'
-import { generateCloudflareWarpNode } from '../core/incy-warp'
+import { generateWarpAndPick, pickWarpEndpoint, checkWarpNode } from '../core/incy-warp'
 import { optimizeRoute } from '../core/route-optimizer'
 import { runIncySpeedTest } from '../core/incy-speedtest'
 import { scanInstalledGames } from '../core/game-scan'
 import { measureValveRegions, valveRelaySubnets } from '../core/valve-regions'
 import { fetchAppActivity } from '../core/incy-stats'
+import { getAppTraffic, getConnections, closeConnection } from '../core/incy-traffic'
 import { extractServerIp, extractServerHost } from './server-ip'
 import { listRunningProcesses } from './process-helper'
-import { getAppConfig, patchAppConfig } from '../config'
+import { getAppConfig, patchAppConfig, resetAppSettings } from '../config'
 import { applyTheme, setNativeTheme } from '../resolve/theme'
 import {
   getTgwsStatus,
@@ -22,7 +23,7 @@ import {
 import { exportLazeykaProfile, importLazeykaProfile } from '../core/profile-manager'
 import { getComponentReleaseHistory } from '../core/component-releases'
 import { checkExitLag } from '../core/exitlag-check'
-import { getOnlineCount, refreshOnlineCounter, isOnlineCounterConfigured } from '../core/online-counter'
+import { getOnlineCount, getSavedInstallNum, refreshOnlineCounter, isOnlineCounterConfigured } from '../core/online-counter'
 import { traceRoute } from '../core/route-trace'
 import { runBufferbloatTest } from '../core/bufferbloat'
 import { checkSite, addSitesToZapret } from '../core/site-check'
@@ -111,6 +112,8 @@ import {
 } from '../core/zapret-updater'
 import {
   runStrategyTests,
+  stopStrategyTests,
+  clearStrategyTestResults,
   getStrategyTestResults,
   isStrategyTestRunning
 } from '../core/zapret-tester'
@@ -126,6 +129,8 @@ import {
 import {
   getGameFilterMode,
   setGameFilterMode,
+  getGameFilterSettings,
+  setGameFilterSettings,
   getIpsetFilterSnapshot,
   setIpsetFilterMode,
   updateIpsetList,
@@ -159,7 +164,7 @@ import { closeUpdateSplash } from '../core/update-window'
 import { checkAppUpdateFromUi } from '../core/app-update-watcher'
 import { getHwidHeaders } from '../core/incy-hwid'
 import { execFile } from 'node:child_process'
-import { writeFileSync, unlinkSync, readFileSync } from 'node:fs'
+import { writeFileSync, unlinkSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 //
@@ -341,7 +346,9 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('zapret:dismissUpdate', h((tag) => dismissZapretUpdate(tag as string)))
 
   // ---- Zapret strategy tester --------------------------------------------
-  ipcMain.handle('zapret:runStrategyTest', h(() => runStrategyTests()))
+  ipcMain.handle('zapret:runStrategyTest', h((opts) => runStrategyTests((opts ?? {}) as { resume?: boolean })))
+  ipcMain.handle('zapret:stopStrategyTest', h(() => stopStrategyTests()))
+  ipcMain.handle('zapret:clearStrategyTestResults', h(() => clearStrategyTestResults()))
   ipcMain.handle('zapret:getStrategyTestResults', h(() => getStrategyTestResults()))
   ipcMain.handle('zapret:isStrategyTestRunning', h(() => isStrategyTestRunning()))
 
@@ -362,6 +369,12 @@ export function registerIpcMainHandlers(): void {
     const next = await setGameFilterMode(mode as GameFilterMode)
     if (getZapretStatus().state === 'running') await restartZapret()
     return next
+  }))
+  ipcMain.handle('zapret:getGameFilterSettings', h(() => getGameFilterSettings()))
+  ipcMain.handle('zapret:setGameFilterSettings', h(async (next) => {
+    const res = await setGameFilterSettings((next ?? {}) as { mode?: GameFilterMode; tcp?: string; udp?: string })
+    if (getZapretStatus().state === 'running') await restartZapret()
+    return res
   }))
   ipcMain.handle('zapret:getIpsetFilter', h(() => getIpsetFilterSnapshot()))
   ipcMain.handle('zapret:setIpsetFilter', h(async (mode) => {
@@ -482,8 +495,8 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('incy:installCoreUpdate', h((id, url, version) =>
     installCoreUpdate(id as 'sing-box' | 'xray', String(url), version as string | undefined)
   ))
-  ipcMain.handle('incy:importInput', h(async (input) => {
-    const res = await importIncyInput(String(input))
+  ipcMain.handle('incy:importInput', h(async (input, fileName) => {
+    const res = await importIncyInput(String(input), typeof fileName === 'string' ? fileName : undefined)
     if (res.addedCount > 0) {
       const nodes = loadIncyNodes()
       if (nodes.length > 0) {
@@ -543,7 +556,12 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('incy:backupLink', h(() => buildIncyBackupLink()))
 
   // ---- Cloudflare WARP ---------------------------------------------------
-  ipcMain.handle('incy:generateWarpNode', h(() => generateCloudflareWarpNode()))
+  ipcMain.handle('incy:getAppTraffic', h((name) => getAppTraffic(typeof name === 'string' ? name : undefined)))
+  ipcMain.handle('incy:getConnections', h(() => getConnections()))
+  ipcMain.handle('incy:closeConnection', h((id) => closeConnection(String(id))))
+  ipcMain.handle('incy:generateWarpNode', h(() => generateWarpAndPick()))
+  ipcMain.handle('incy:pickWarpEndpoint', h((id) => pickWarpEndpoint(String(id))))
+  ipcMain.handle('incy:checkWarp', h((id) => checkWarpNode(String(id))))
 
   // ---- Game Server / Faceit CS2 Ping (ExitLag) ---------------------------
   // Оптимизатор маршрута: реальный замер пинга/джиттера/потерь до игрового
@@ -592,8 +610,13 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('exitlag:check', h(() => checkExitLag()))
   // «Сейчас онлайн» на главной.
   ipcMain.handle('app:getOnlineCount', h(() => getOnlineCount()))
+  ipcMain.handle('app:getOnlineNum', h(() => getSavedInstallNum()))
   ipcMain.handle('app:onlineCounterInfo', h(() => ({ configured: isOnlineCounterConfigured() })))
   ipcMain.handle('app:refreshOnlineCount', h(() => refreshOnlineCounter()))
+  ipcMain.handle('app:resetSettings', h(async () => {
+    await resetAppSettings()
+    refreshOnlineCounter()
+  }))
   // Оптимизатор: трассировка до сервера (мимо TUN) и пинг под нагрузкой.
   ipcMain.handle('optimizer:trace', h((target) => traceRoute(String(target ?? ''))))
   ipcMain.handle('optimizer:checkSite', h((url) => checkSite(String(url ?? ''))))
@@ -639,6 +662,21 @@ export function registerIpcMainHandlers(): void {
     })
     if (res.canceled || res.filePaths.length === 0) return null
     return path.basename(res.filePaths[0])
+  }))
+  ipcMain.handle('dialog:pickWireGuardConf', h(async () => {
+    const res = await dialog.showOpenDialog({
+      title: 'Выберите конфиг WireGuard / AmneziaWG',
+      filters: [{ name: 'Конфиги (.conf, .txt)', extensions: ['conf', 'txt'] }],
+      properties: ['openFile']
+    })
+    if (res.canceled || res.filePaths.length === 0) return null
+    const filePath = res.filePaths[0]
+    // конфиг — это пара килобайт; всё большее точно не он
+    if (statSync(filePath).size > 256 * 1024) throw new Error('Файл слишком большой для конфига WireGuard (больше 256 КБ).')
+    return {
+      name: path.basename(filePath).replace(/\.(conf|txt)$/i, ''),
+      text: readFileSync(filePath, 'utf-8')
+    }
   }))
   ipcMain.handle('dialog:pickImageFile', h(async () => {
     const res = await dialog.showOpenDialog({

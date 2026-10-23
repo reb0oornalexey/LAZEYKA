@@ -1,4 +1,5 @@
 import { execFile } from 'child_process'
+import { app } from 'electron'
 import { promisify } from 'util'
 
 const execFilePromise = promisify(execFile)
@@ -35,3 +36,46 @@ export async function isRunningAsAdmin(): Promise<boolean> {
   }
 }
 
+
+/** Флаг, который получает перезапущенная с повышением копия: защита от бесконечного цикла. */
+export const ELEVATED_FLAG = '--lazeyka-elevated'
+
+/** Аргумент командной строки Windows: в кавычки, если есть пробелы/кавычки. */
+function quoteWinArg(a: string): string {
+  if (a !== '' && !/[\s"]/.test(a)) return a
+  return `"${a.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`
+}
+
+/** Строка PowerShell в одинарных кавычках. */
+function psQuote(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`
+}
+
+/**
+ * Перезапускает приложение с правами администратора через UAC.
+ * Возвращает true, если повышенная копия запущена (текущей пора выходить);
+ * false — пользователь отказал в UAC или запуск не удался.
+ *
+ * Блокировку единственного экземпляра отпускаем ДО запуска: повышенная копия
+ * стартует, пока мы ещё живы, и иначе сама бы увидела «уже запущено» и вышла.
+ */
+export async function relaunchElevated(): Promise<boolean> {
+  const args = [...process.argv.slice(1).filter((a) => a !== ELEVATED_FLAG), ELEVATED_FLAG]
+  const argList = args.map((a) => psQuote(quoteWinArg(a))).join(',')
+  const command =
+    `Start-Process -FilePath ${psQuote(process.execPath)} -ArgumentList @(${argList}) -Verb RunAs -ErrorAction Stop`
+  try {
+    app.releaseSingleInstanceLock()
+  } catch { /* не критично */ }
+  try {
+    await execFilePromise(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command],
+      { windowsHide: true, timeout: 120000 }
+    )
+    return true
+  } catch {
+    // Отказ в UAC (Start-Process бросает исключение) или PowerShell недоступен.
+    return false
+  }
+}

@@ -169,6 +169,68 @@ export function newClashSecret(): string {
   return apiSecret
 }
 
+/** Подписчики на «туннель поднят / остановлен» (запись трафика по приложениям). */
+const sessionListeners: Array<(active: boolean) => void> = []
+export function onTunnelSession(cb: (active: boolean) => void): void {
+  sessionListeners.push(cb)
+}
+function notifySession(active: boolean): void {
+  for (const cb of sessionListeners) {
+    try { cb(active) } catch { /* слушатель не должен ломать статистику */ }
+  }
+}
+
+/** Есть ли Clash API у текущего туннеля. */
+export function clashApiActive(): boolean {
+  return !!session && apiPort > 0
+}
+
+/**
+ * Запрос к Clash API ядра (loopback + секрет). Возвращает разобранный JSON,
+ * `true` для пустого успешного ответа или null при ошибке/отсутствии API.
+ */
+export function clashRequest(
+  pathName: string,
+  method: 'GET' | 'DELETE' = 'GET',
+  timeoutMs = 2000
+): Promise<any | null> {
+  if (!session || !apiPort) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port: apiPort,
+        path: pathName,
+        method,
+        timeout: timeoutMs,
+        headers: apiSecret ? { Authorization: `Bearer ${apiSecret}` } : undefined
+      },
+      (res) => {
+        let body = ''
+        res.setEncoding('utf-8')
+        res.on('data', (c) => {
+          if (body.length < 8_000_000) body += c
+        })
+        res.on('end', () => {
+          if (!res.statusCode || res.statusCode >= 400) return resolve(null)
+          if (!body.trim()) return resolve(true)
+          try {
+            resolve(JSON.parse(body))
+          } catch {
+            resolve(null)
+          }
+        })
+      }
+    )
+    req.on('error', () => resolve(null))
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(null)
+    })
+    req.end()
+  })
+}
+
 function commit(): void {
   if (!session) return
   const store = load()
@@ -283,10 +345,12 @@ export function beginSession(clashPort: number): void {
     poller.unref?.()
     // Do not wait a full second for the first sample.
     setTimeout(pollOnce, 300)
+    notifySession(true)
   }
 }
 
 export function endSession(): void {
+  notifySession(false)
   if (poller) {
     clearInterval(poller)
     poller = null

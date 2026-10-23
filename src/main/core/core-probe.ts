@@ -258,6 +258,79 @@ export async function httpViaCore(
   })
 }
 
+export interface CoreFetchResult {
+  ok: boolean
+  status: number
+  body: string
+  ms: number
+  error?: string
+}
+
+/**
+ * Полный HTTP(S) GET через временное ядро узла: тело ответа (до 64 КБ) и время
+ * до первого байта. В отличие от httpViaCore проверяет содержимое, а не только
+ * факт ответа (так определяем, что трафик WARP реально идёт через Cloudflare).
+ */
+export async function fetchViaCore(node: IncyNode, testUrl: string, timeoutMs: number): Promise<CoreFetchResult> {
+  const url = new URL(testUrl)
+  const https = url.protocol === 'https:'
+  const port = Number(url.port) || (https ? 443 : 80)
+  return withCoreSlot(async () => {
+    let tc: TempCore | null = null
+    const t0 = performance.now()
+    try {
+      tc = await startTempCore(node)
+      const deadline = Date.now() + timeoutMs
+      const left = (): number => Math.max(500, deadline - Date.now())
+      const raw = await socksConnect(tc.port, url.hostname, port, left())
+      const sock: net.Socket = https
+        ? await new Promise<net.Socket>((resolve, reject) => {
+            const t = tls.connect({ socket: raw, servername: url.hostname, ALPNProtocols: ['http/1.1'] })
+            t.setTimeout(left(), () => {
+              t.destroy()
+              reject(new Error('timeout'))
+            })
+            t.once('secureConnect', () => resolve(t))
+            t.once('error', reject)
+            t.once('close', () => reject(new Error('closed')))
+          })
+        : raw
+      let firstByte = 0
+      const text = await new Promise<string>((resolve) => {
+        const chunks: Buffer[] = []
+        let size = 0
+        const finish = (): void => resolve(Buffer.concat(chunks).toString('utf8'))
+        sock.setTimeout(left(), finish)
+        sock.on('data', (d: Buffer) => {
+          if (!firstByte) firstByte = performance.now()
+          chunks.push(d)
+          size += d.length
+          if (size > 65536) finish()
+        })
+        sock.once('error', finish)
+        sock.once('close', finish)
+        sock.write(
+          `GET ${url.pathname || '/'}${url.search} HTTP/1.1\r\nHost: ${url.hostname}\r\nUser-Agent: LAZEYKA\r\nConnection: close\r\n\r\n`
+        )
+      })
+      sock.destroy()
+      const m = /^HTTP\/1\.[01] (\d{3})/.exec(text)
+      if (!m) return { ok: false, status: 0, body: '', ms: 0, error: 'нет ответа' }
+      const idx = text.indexOf('\r\n\r\n')
+      return {
+        ok: true,
+        status: Number(m[1]),
+        body: idx >= 0 ? text.slice(idx + 4) : '',
+        ms: Math.max(1, Math.round((firstByte || performance.now()) - t0))
+      }
+    } catch (e) {
+      return { ok: false, status: 0, body: '', ms: 0, error: e instanceof Error ? e.message : String(e) }
+    } finally {
+      tc?.stop()
+    }
+  })
+}
+
 // ---- in front of the TUN ---------------------------------------------------------
 
 let srcCache: { at: number; ip: string | null } | null = null

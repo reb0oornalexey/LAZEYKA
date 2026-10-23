@@ -1,5 +1,5 @@
 import { spawn, ChildProcess } from 'child_process'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs'
 import path from 'path'
 import { BrowserWindow } from 'electron'
 import { dataDir, zapretBundleDir } from '../utils/dirs'
@@ -14,7 +14,7 @@ import {
   withZapretLock
 } from './zapret'
 import { getAppConfig } from '../config'
-import { getGameFilterMode } from './zapret-service-settings'
+import { getGameFilterVars } from './zapret-service-settings'
 
 // HTTPS hosts that DPI bypass solutions are typically tested against.
 const HTTP_TARGETS: string[] = [
@@ -52,10 +52,14 @@ export interface StrategyTestReport {
   bundleVersion?: string
   results: Record<string, StrategyTestResult>
   bestStrategy?: string
+  /** Тест остановлен пользователем — можно продолжить с места остановки. */
+  partial?: boolean
+  /** Сколько стратегий всего было в наборе на момент запуска. */
+  totalStrategies?: number
 }
 
 interface TestProgress {
-  phase: 'starting' | 'testing' | 'completed' | 'error' | 'idle'
+  phase: 'starting' | 'testing' | 'completed' | 'error' | 'idle' | 'stopped'
   current?: number
   total?: number
   strategy?: string
@@ -65,6 +69,27 @@ interface TestProgress {
 
 let runningPromise: Promise<StrategyTestReport> | null = null
 let cachedReport: StrategyTestReport | null = null
+let stopRequested = false
+
+/** Остановить тест после текущей стратегии (результаты сохраняются). */
+export function stopStrategyTests(): boolean {
+  if (!runningPromise) return false
+  stopRequested = true
+  return true
+}
+
+/** Стереть сохранённые результаты теста. */
+export function clearStrategyTestResults(): void {
+  if (runningPromise) throw new Error('Сначала остановите тест')
+  cachedReport = null
+  try {
+    const p = resultsPath()
+    if (existsSync(p)) unlinkSync(p)
+  } catch (e) {
+    throw new Error(`Не удалось удалить результаты: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  broadcast('zapret:testProgress', { phase: 'idle' })
+}
 
 function resultsPath(): string {
   return path.join(dataDir(), RESULTS_FILENAME)
@@ -171,9 +196,7 @@ async function killChildTree(pid: number | undefined): Promise<void> {
 
 async function spawnStrategy(batPath: string): Promise<ChildProcess> {
   const dir = zapretBundleDir()
-  const gameMode = getGameFilterMode()
-  const gameTcp = gameMode === 'all' || gameMode === 'tcp' ? '1024-65535' : '12'
-  const gameUdp = gameMode === 'all' || gameMode === 'udp' ? '1024-65535' : '12'
+  const gameVars = getGameFilterVars()
   const c = spawn('cmd.exe', ['/c', batPath], {
     cwd: dir,
     windowsHide: true,
@@ -182,9 +205,7 @@ async function spawnStrategy(batPath: string): Promise<ChildProcess> {
       ...process.env,
       // Same flags startZapretImpl uses
       NO_UPDATE_CHECK: '1',
-      GameFilterTCP: gameTcp,
-      GameFilterUDP: gameUdp,
-      GameFilter: '1024-65535'
+      ...gameVars
     }
   })
   // Drain stdio so the child process buffer doesn't fill up and stall
@@ -246,14 +267,19 @@ async function testOneStrategy(batPath: string): Promise<{
  * the entire duration so a user toggle waits for us to finish (or queues
  * behind us). Returns the persisted report.
  */
-export function runStrategyTests(): Promise<StrategyTestReport> {
+export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<StrategyTestReport> {
   if (runningPromise) return runningPromise
+  stopRequested = false
 
   runningPromise = (async () => {
     const startedAt = Date.now()
 
     const strategies = listStrategies()
     const total = strategies.length
+    // Продолжение: берём результаты прошлого (остановленного) прогона и
+    // тестируем только то, что ещё не проверено.
+    const prev = opts.resume ? getStrategyTestResults() : null
+    const resumeFrom = prev?.partial ? prev : null
     if (total === 0) {
       const empty: StrategyTestReport = {
         ranAt: startedAt,
@@ -278,6 +304,15 @@ export function runStrategyTests(): Promise<StrategyTestReport> {
     let bestStrategy: string | undefined
     let bestScore = -1
     let testError: Error | null = null
+    let stopped = false
+    if (resumeFrom) {
+      const known = new Set(strategies.map((s) => s.file))
+      for (const [file, r] of Object.entries(resumeFrom.results)) {
+        if (!known.has(file)) continue
+        results[file] = r
+        if (r.passed && r.score > bestScore) { bestScore = r.score; bestStrategy = file }
+      }
+    }
 
     try {
       if (wasRunning) {
@@ -289,6 +324,8 @@ export function runStrategyTests(): Promise<StrategyTestReport> {
 
         for (let i = 0; i < strategies.length; i++) {
           const s = strategies[i]
+          if (results[s.file]) continue
+          if (stopRequested) { stopped = true; break }
           broadcast('zapret:testProgress', {
             phase: 'testing',
             current: i + 1,
@@ -334,8 +371,11 @@ export function runStrategyTests(): Promise<StrategyTestReport> {
       durationMs: Date.now() - startedAt,
       bundleVersion: cfg?.zapret?.installedVersion,
       results,
-      bestStrategy
+      bestStrategy,
+      totalStrategies: total,
+      ...(stopped ? { partial: true } : {})
     }
+    if (resumeFrom) report.durationMs += resumeFrom.durationMs
     saveReport(report)
 
     // Restore user's zapret if it was running before. Done OUTSIDE the
@@ -351,6 +391,8 @@ export function runStrategyTests(): Promise<StrategyTestReport> {
         message: testError.message,
         report
       })
+    } else if (stopped) {
+      broadcast('zapret:testProgress', { phase: 'stopped', report })
     } else {
       broadcast('zapret:testProgress', { phase: 'completed', report })
     }
@@ -359,6 +401,7 @@ export function runStrategyTests(): Promise<StrategyTestReport> {
 
   runningPromise.finally(() => {
     runningPromise = null
+    stopRequested = false
   })
 
   return runningPromise

@@ -1,1 +1,1 @@
-﻿export { getAppConfig, patchAppConfig, getAppConfigSync } from './app'
+﻿export { getAppConfig, patchAppConfig, getAppConfigSync, resetAppSettings } from './app'

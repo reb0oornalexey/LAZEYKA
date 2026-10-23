@@ -475,6 +475,25 @@ async function ourAddresses(): Promise<string[]> {
   return [...new Set(all.filter((a): a is string => Boolean(a)))]
 }
 
+/**
+ * Какой DNS сейчас стоит в системе — для «Проверки сайта»: адреса и, если это
+ * один из известных провайдеров (DNS-AI, AdGuard…), его название и id.
+ */
+export async function describeSystemDns(): Promise<{ servers: string[]; providerId?: string; providerName?: string }> {
+  const { servers } = await getSystemDnsState()
+  if (servers.length === 0) return { servers }
+  try {
+    const list = await allProviders()
+    for (const p of list) {
+      const addrs = [p.ip, p.secondaryIp, ...(p.ipv6 ?? [])].filter(Boolean) as string[]
+      if (servers.some((s) => addrs.includes(s))) return { servers, providerId: p.id, providerName: p.name }
+    }
+  } catch {
+    /* без названия */
+  }
+  return { servers }
+}
+
 /** Какие DNS-серверы сейчас стоят на рабочих адаптерах (для подсветки в настройках). */
 export async function getSystemDnsState(): Promise<{ servers: string[]; changedByApp: boolean }> {
   if (process.platform !== 'win32') return { servers: [], changedByApp: false }

@@ -26,7 +26,7 @@ import {
 import { cn } from '@renderer/lib/utils'
 import { useIncyStore } from '@renderer/store/incy-store'
 import InstalledGamesModal from '@renderer/components/installed-games-modal'
-import AppActivityCard from '@renderer/components/app-activity-card'
+import ExitLagTrafficCard from '@renderer/components/exitlag-traffic-card'
 import {
   incyGetSettings,
   incyPatchSettings,
@@ -579,10 +579,12 @@ export default function ExitLagPage(): React.ReactElement {
                   </div>
                 )}
 
-                <AppActivityCard
+                <ExitLagTrafficCard
                   apps={settings.perAppProcesses ?? []}
                   active={exitLagRunning}
                   mode={settings.perAppMode ?? 'proxy_only'}
+                  onAddApp={handleAddPerAppProcess}
+                  onRemoveApp={handleRemovePerAppProcess}
                 />
               </div>
             </CardContent>

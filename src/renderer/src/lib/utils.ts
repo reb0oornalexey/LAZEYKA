@@ -48,3 +48,13 @@ export const BUNDLED_VERSION_LABEL = 'встроенная сборка'
 export function formatInstalledVersion(installed?: string): string {
   return installed ? `Текущая версия: v${installed}` : `Сейчас используется ${BUNDLED_VERSION_LABEL}`
 }
+
+/** Русское склонение числительного: pluralRu(21, 'пользователь', 'пользователя', 'пользователей'). */
+export function pluralRu(n: number, one: string, few: string, many: string): string {
+  const a = Math.abs(n) % 100
+  const b = a % 10
+  if (a > 10 && a < 20) return many
+  if (b > 1 && b < 5) return few
+  if (b === 1) return one
+  return many
+}

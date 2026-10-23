@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import os from 'node:os'
 import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
-import { zapretBundleDir } from '../utils/dirs'
+import { zapretBundleDir, tgwsCliPaths } from '../utils/dirs'
 import { isRunningAsAdmin } from '../utils/elevation'
 import { mergeLazeykaIpset } from './zapret-iplist'
 import { getAppConfig, patchAppConfig } from '../config'
@@ -32,26 +32,150 @@ function gameFilterFlagFile(): string {
   return path.join(zapretBundleDir(), 'utils', 'game_filter.enabled')
 }
 
-/** Reads current mode straight from disk — source of truth, not config. */
-export function getGameFilterMode(): GameFilterMode {
-  const file = gameFilterFlagFile()
-  if (!existsSync(file)) return 'off'
+export const DEFAULT_GAME_PORTS = '1024-65535'
+
+export interface GameFilterSettings {
+  mode: GameFilterMode
+  /** Диапазоны портов в формате Flowseal: «N» или «N-M» через запятую. */
+  tcp: string
+  udp: string
+  /** service.bat умеет свои диапазоны (Flowseal 1.10.3+). */
+  rangesSupported: boolean
+  bundleVersion?: string
+}
+
+/**
+ * Проверка и нормализация списка портов — те же правила, что у Flowseal
+ * (:validate_game_filter_range / :gf_validate_item): пробелы убираются,
+ * элементы через запятую, каждый «N» или «N-M», без ведущих нулей,
+ * N ≤ M ≤ 65535. Дополнительно сортируем и склеиваем пересечения, чтобы
+ * несколько пресетов не давали дублей. Возвращает null, если что-то не так.
+ */
+export function normalizeGamePorts(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const cleaned = value.replace(/\s+/g, '')
+  if (!cleaned) return null
+  const ranges: [number, number][] = []
+  for (const item of cleaned.split(',')) {
+    if (!item) continue
+    const m = /^([1-9][0-9]{0,4})(?:-([1-9][0-9]{0,4}))?$/.exec(item)
+    if (!m) return null
+    const from = Number(m[1])
+    const to = m[2] ? Number(m[2]) : from
+    if (from > 65535 || to > 65535 || from > to) return null
+    ranges.push([from, to])
+  }
+  if (!ranges.length) return null
+  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  const merged: [number, number][] = []
+  for (const r of ranges) {
+    const last = merged[merged.length - 1]
+    if (last && r[0] <= last[1] + 1) last[1] = Math.max(last[1], r[1])
+    else merged.push([r[0], r[1]])
+  }
+  return merged.map(([a, b]) => (a === b ? String(a) : `${a}-${b}`)).join(',')
+}
+
+function readServiceBat(): string | null {
   try {
-    const firstLine = readFileSync(file, 'utf-8').split(/\r?\n/)[0]?.trim().toLowerCase()
-    if (firstLine === 'all' || firstLine === 'tcp' || firstLine === 'udp') return firstLine
-    return 'off'
+    const f = path.join(zapretBundleDir(), 'service.bat')
+    return existsSync(f) ? readFileSync(f, 'utf-8') : null
   } catch {
-    return 'off'
+    return null
   }
 }
 
-export async function setGameFilterMode(mode: GameFilterMode): Promise<GameFilterMode> {
+/** Свои диапазоны понимает только service.bat Flowseal 1.10.3+. */
+function bundleSupportsGameRanges(service = readServiceBat()): boolean {
+  return !!service && /validate_game_filter_range/i.test(service) && /GameFilterTCPRange/i.test(service)
+}
+
+/**
+ * Читает utils/game_filter.enabled так же, как :game_switch_status в
+ * service.bat: новый формат (mode=/tcp=/udp=) и старый (одно слово all/tcp/udp).
+ */
+export function getGameFilterSettings(): GameFilterSettings {
+  const service = readServiceBat()
+  const rangesSupported = bundleSupportsGameRanges(service)
+  const bundleVersion = service?.match(/set\s+"?LOCAL_VERSION=([^"\r\n]+)"?/i)?.[1]?.trim()
+  const res: GameFilterSettings = { mode: 'off', tcp: DEFAULT_GAME_PORTS, udp: DEFAULT_GAME_PORTS, rangesSupported, bundleVersion }
+  const file = gameFilterFlagFile()
+  if (!existsSync(file)) return res
+  let text = ''
+  try { text = readFileSync(file, 'utf-8') } catch { return res }
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  if (!rangesSupported) {
+    // Старый service.bat берёт первую строку; всё, что не all/tcp — это UDP.
+    const first = (lines[0] ?? '').toLowerCase()
+    res.mode = first === 'all' || first === 'tcp' ? first : 'udp'
+    return res
+  }
+  let mode = 'disabled'
+  for (const line of lines) {
+    const eq = line.indexOf('=')
+    const key = (eq >= 0 ? line.slice(0, eq) : line).trim().toLowerCase()
+    const val = eq >= 0 ? line.slice(eq + 1).trim() : ''
+    if (key === 'mode') mode = val.toLowerCase()
+    else if (key === 'all') mode = 'all'
+    else if (key === 'tcp') { if (!val) mode = 'tcp'; else res.tcp = normalizeGamePorts(val) ?? res.tcp }
+    else if (key === 'udp') { if (!val) mode = 'udp'; else res.udp = normalizeGamePorts(val) ?? res.udp }
+  }
+  res.mode = mode === 'all' || mode === 'tcp' || mode === 'udp' ? mode : 'off'
+  return res
+}
+
+/** Reads current mode straight from disk — source of truth, not config. */
+export function getGameFilterMode(): GameFilterMode {
+  return getGameFilterSettings().mode
+}
+
+/**
+ * Значения %GameFilter%, %GameFilterTCP%, %GameFilterUDP% — ровно как их
+ * выставляет service.bat (выключенный протокол = порт 12, заглушка Flowseal).
+ */
+export function getGameFilterVars(): { GameFilter: string; GameFilterTCP: string; GameFilterUDP: string } {
+  const s = getGameFilterSettings()
+  const tcp = s.rangesSupported ? s.tcp : DEFAULT_GAME_PORTS
+  const udp = s.rangesSupported ? s.udp : DEFAULT_GAME_PORTS
+  switch (s.mode) {
+    case 'all': return { GameFilter: tcp, GameFilterTCP: tcp, GameFilterUDP: udp }
+    case 'tcp': return { GameFilter: tcp, GameFilterTCP: tcp, GameFilterUDP: '12' }
+    case 'udp': return { GameFilter: udp, GameFilterTCP: '12', GameFilterUDP: udp }
+    default: return { GameFilter: '12', GameFilterTCP: '12', GameFilterUDP: '12' }
+  }
+}
+
+export async function setGameFilterSettings(next: { mode?: GameFilterMode; tcp?: string; udp?: string }): Promise<GameFilterSettings> {
+  const cur = getGameFilterSettings()
+  const mode = next.mode ?? cur.mode
+  let tcp = cur.tcp
+  let udp = cur.udp
+  if (next.tcp !== undefined) {
+    const n = next.tcp.trim() ? normalizeGamePorts(next.tcp) : DEFAULT_GAME_PORTS
+    if (!n) throw new Error(`Неверные TCP-порты: «${next.tcp}». Формат: 27015 или 27015-27050, через запятую, до 65535.`)
+    tcp = n
+  }
+  if (next.udp !== undefined) {
+    const n = next.udp.trim() ? normalizeGamePorts(next.udp) : DEFAULT_GAME_PORTS
+    if (!n) throw new Error(`Неверные UDP-порты: «${next.udp}». Формат: 27015 или 27015-27050, через запятую, до 65535.`)
+    udp = n
+  }
+  const custom = tcp !== DEFAULT_GAME_PORTS || udp !== DEFAULT_GAME_PORTS
+  if (custom && !cur.rangesSupported) {
+    throw new Error(`Свои порты поддерживает Zapret 1.10.3 и новее (сейчас ${cur.bundleVersion ?? 'старая версия'}). Обновите Zapret на вкладке Zapret.`)
+  }
   const file = gameFilterFlagFile()
   try {
-    if (mode === 'off') {
+    mkdirSync(path.dirname(file), { recursive: true })
+    if (cur.rangesSupported) {
+      // Формат Flowseal :save_game_filter_settings — выключенный режим тоже
+      // пишем, чтобы свои порты не терялись при выключении.
+      const content = `mode=${mode === 'off' ? 'disabled' : mode}\r\ntcp=${tcp}\r\nudp=${udp}\r\n`
+      if (mode === 'off' && !custom) { if (existsSync(file)) unlinkSync(file) }
+      else writeFileSync(file, content, 'utf-8')
+    } else if (mode === 'off') {
       if (existsSync(file)) unlinkSync(file)
     } else {
-      mkdirSync(path.dirname(file), { recursive: true })
       writeFileSync(file, `${mode}\r\n`, 'utf-8')
     }
   } catch (e) {
@@ -59,7 +183,11 @@ export async function setGameFilterMode(mode: GameFilterMode): Promise<GameFilte
   }
   const cfg = await getAppConfig()
   await patchAppConfig({ zapret: { ...(cfg.zapret as ZapretConfig), gameFilterMode: mode } })
-  return mode
+  return getGameFilterSettings()
+}
+
+export async function setGameFilterMode(mode: GameFilterMode): Promise<GameFilterMode> {
+  return (await setGameFilterSettings({ mode })).mode
 }
 
 // ---- IPset Filter -----------------------------------------------------------
@@ -352,9 +480,7 @@ function parseStrategyArgsForService(batPath: string, bundleDir: string): string
   }
 
   // Expand GameFilter variables based on current settings
-  const gameMode = getGameFilterMode()
-  const gameTcp = gameMode === 'all' || gameMode === 'tcp' ? '1024-65535' : '12'
-  const gameUdp = gameMode === 'all' || gameMode === 'udp' ? '1024-65535' : '12'
+  const gameVars = getGameFilterVars()
 
   let args = rawArgs
     // Expand all known bat variables to absolute paths
@@ -367,9 +493,9 @@ function parseStrategyArgsForService(batPath: string, bundleDir: string): string
     .replace(/@%~dp0/gi, `@${bundleDir}\\`)
     .replace(/@lists\\/gi, `@${listsDir}\\`)
     .replace(/@bin\\/gi, `@${binDir}\\`)
-    .replace(/%GameFilterTCP%/gi, gameTcp)
-    .replace(/%GameFilterUDP%/gi, gameUdp)
-    .replace(/%GameFilter%/gi, '1024-65535')
+    .replace(/%GameFilterTCP%/gi, gameVars.GameFilterTCP)
+    .replace(/%GameFilterUDP%/gi, gameVars.GameFilterUDP)
+    .replace(/%GameFilter%/gi, gameVars.GameFilter)
 
   // Normalize backslashes (no doubles) and remove stray carets
   args = args.replace(/\\{2,}/g, '\\')
@@ -602,11 +728,11 @@ export async function launchZapretTestsScript(): Promise<void> {
 
 export interface DiagnosticItem {
   id: string
-  category: 'system' | 'network' | 'conflicts' | 'discord'
+  category: 'system' | 'network' | 'conflicts' | 'discord' | 'telegram'
   title: string
   status: 'ok' | 'warn' | 'error'
   message: string
-  fixAction?: 'enable_tcp_timestamps' | 'remove_conflicts' | 'clear_discord_cache' | 'update_hosts' | 'disable_proxy' | 'start_bfe'
+  fixAction?: 'enable_tcp_timestamps' | 'remove_conflicts' | 'clear_discord_cache' | 'update_hosts' | 'disable_proxy' | 'start_bfe' | 'start_wmi'
   fixLabel?: string
 }
 
@@ -616,8 +742,344 @@ export interface DiagnosticReport {
   hasIssues: boolean
 }
 
+
+// ---- Дополнительные проверки («Почему может не работать?») -------------------
+
+/** Как safeExec, но с признаком успеха и ограничением по времени. */
+async function tryExec(cmd: string, timeout = 15000): Promise<{ ok: boolean; out: string }> {
+  try {
+    const { stdout, stderr } = await execAsync(cmd, { windowsHide: true, timeout })
+    return { ok: true, out: stdout + (stderr || '') }
+  } catch (e: any) {
+    return { ok: false, out: (e?.stdout || '') + (e?.stderr || '') || e?.message || '' }
+  }
+}
+
+const AV_HINT = 'скорее всего их удалил антивирус. Добавьте папку LAZEYKA в исключения и переустановите TgWsProxy'
+
+async function checkAdminRights(): Promise<DiagnosticItem> {
+  const admin = await isRunningAsAdmin().catch(() => false)
+  if (admin) {
+    return {
+      id: 'admin',
+      category: 'system',
+      title: 'Права администратора',
+      status: 'ok',
+      message: 'LAZEYKA запущена от имени администратора.'
+    }
+  }
+  return {
+    id: 'admin',
+    category: 'system',
+    title: 'Права администратора',
+    status: 'warn',
+    message:
+      'LAZEYKA запущена без прав администратора. Zapret и драйвер WinDivert требуют их, а часть проверок ниже без админа может быть неточной. Перезапустите LAZEYKA от имени администратора.'
+  }
+}
+
+async function checkWinDivert(): Promise<DiagnosticItem[]> {
+  const items: DiagnosticItem[] = []
+  const bin = path.join(zapretBundleDir(), 'bin')
+  const hasDriver = existsSync(path.join(bin, 'WinDivert64.sys')) || existsSync(path.join(bin, 'WinDivert.sys'))
+  const hasWinws = existsSync(path.join(bin, 'winws.exe'))
+  if (!hasDriver || !hasWinws) {
+    const missing = [!hasWinws && 'winws.exe', !hasDriver && 'драйвер WinDivert'].filter(Boolean).join(' и ')
+    items.push({
+      id: 'windivert_files',
+      category: 'system',
+      title: 'Файлы Zapret и драйвер WinDivert',
+      status: 'error',
+      message: `Не найдено: ${missing} — файл удалён, скорее всего антивирус. Добавьте папку LAZEYKA в исключения и переустановите Zapret.`
+    })
+  } else {
+    items.push({
+      id: 'windivert_files',
+      category: 'system',
+      title: 'Файлы Zapret и драйвер WinDivert',
+      status: 'ok',
+      message: 'Файлы winws.exe и драйвера WinDivert на месте.'
+    })
+  }
+  try {
+    const { getZapretStatus } = await import('./zapret')
+    const st = getZapretStatus()
+    if (st.state === 'error' && st.lastError && /windivert|access denied|отказано в доступе|доступ/i.test(st.lastError)) {
+      items.push({
+        id: 'windivert_error',
+        category: 'system',
+        title: 'Zapret не смог запустить драйвер',
+        status: 'error',
+        message: st.lastError
+      })
+    }
+  } catch {
+    /* статус недоступен — пропускаем */
+  }
+  return items
+}
+
+async function checkTgwsFiles(): Promise<DiagnosticItem[]> {
+  const items: DiagnosticItem[] = []
+  if (!tgwsCliPaths()) {
+    items.push({
+      id: 'tgws_files',
+      category: 'telegram',
+      title: 'Файлы TgWsProxy',
+      status: 'error',
+      message: `Не найдены Python или файлы TgWsProxy — ${AV_HINT}.`
+    })
+  } else {
+    items.push({
+      id: 'tgws_files',
+      category: 'telegram',
+      title: 'Файлы TgWsProxy',
+      status: 'ok',
+      message: 'Python и файлы TgWsProxy на месте.'
+    })
+  }
+  try {
+    const { getTgwsStatus } = await import('./tgws')
+    const st = getTgwsStatus()
+    if (st.state === 'error' && st.lastError) {
+      items.push({
+        id: 'tgws_error',
+        category: 'telegram',
+        title: 'TgWsProxy завершился с ошибкой',
+        status: 'error',
+        message: st.lastError
+      })
+    }
+  } catch {
+    /* noop */
+  }
+  return items
+}
+
+async function checkPowerShell(): Promise<DiagnosticItem> {
+  const r = await tryExec(
+    'powershell -NoProfile -Command "Get-ExecutionPolicy -Scope MachinePolicy; Get-ExecutionPolicy -Scope UserPolicy"'
+  )
+  if (!r.ok) {
+    return {
+      id: 'powershell',
+      category: 'system',
+      title: 'PowerShell',
+      status: 'error',
+      message:
+        'PowerShell недоступен или заблокирован. Через него LAZEYKA настраивает DNS и часть сетевых параметров — без него эти функции не заработают.'
+    }
+  }
+  const [machine = '', user = ''] = r.out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  const bad = (v: string): boolean => /^(restricted|allsigned)$/i.test(v)
+  if (bad(machine) || bad(user)) {
+    return {
+      id: 'powershell',
+      category: 'system',
+      title: 'PowerShell',
+      status: 'warn',
+      message: `Групповая политика (${bad(machine) ? 'компьютер' : 'пользователь'}: ${bad(machine) ? machine : user}) запрещает скрипты и перекрывает «-ExecutionPolicy Bypass»: часть функций, например настройка DNS, может не работать.`
+    }
+  }
+  return {
+    id: 'powershell',
+    category: 'system',
+    title: 'PowerShell',
+    status: 'ok',
+    message: 'PowerShell доступен, групповые политики скриптам не мешают.'
+  }
+}
+
+async function checkWmi(): Promise<DiagnosticItem> {
+  const q = await safeExec('sc query Winmgmt')
+  const qc = await safeExec('sc qc Winmgmt')
+  const running = /RUNNING/i.test(q)
+  // Название поля локализовано («ТИП_ЗАПУСКА»), значение — нет: «4  DISABLED».
+  const disabled = /:\s*4\s+DISABLED/i.test(qc)
+  if (running && !disabled) {
+    return {
+      id: 'wmi',
+      category: 'system',
+      title: 'Служба WMI (Winmgmt)',
+      status: 'ok',
+      message: 'Служба WMI работает.'
+    }
+  }
+  return {
+    id: 'wmi',
+    category: 'system',
+    title: 'Служба WMI (Winmgmt)',
+    status: 'error',
+    message: disabled
+      ? 'Служба WMI (Winmgmt) отключена. Без неё не работают часть системных проверок и определение сетевых адаптеров.'
+      : 'Служба WMI (Winmgmt) не запущена. Без неё не работают часть системных проверок и определение сетевых адаптеров.',
+    fixAction: 'start_wmi',
+    fixLabel: 'Включить и запустить WMI'
+  }
+}
+
+async function checkTelegramPort(): Promise<DiagnosticItem | null> {
+  let port = 1443
+  try {
+    port = (await getAppConfig()).tgws?.port || 1443
+  } catch {
+    /* по умолчанию */
+  }
+  try {
+    const { getTgwsStatus } = await import('./tgws')
+    const st = getTgwsStatus().state
+    if (st === 'running' || st === 'starting') return null
+  } catch {
+    /* продолжаем */
+  }
+  const out = await safeExec('netstat -ano -p TCP')
+  let pid: number | null = null
+  for (const line of out.split(/\r?\n/)) {
+    const parts = line.trim().split(/\s+/)
+    // TCP <локальный>:<порт> <внешний>:0 <состояние> <PID>. Слово состояния
+    // локализовано («ПРОСЛУШИВАЕТСЯ»), поэтому слушающий сокет узнаём по внешнему адресу :0.
+    if (parts.length < 5 || !/^TCP/i.test(parts[0])) continue
+    if (!parts[1].endsWith(`:${port}`) || !/:0$/.test(parts[2])) continue
+    const n = Number(parts[parts.length - 1])
+    if (Number.isInteger(n)) {
+      pid = n
+      break
+    }
+  }
+  if (pid === null) {
+    return {
+      id: 'tgws_port',
+      category: 'telegram',
+      title: `Порт Telegram-прокси (${port})`,
+      status: 'ok',
+      message: `Порт ${port} свободен.`
+    }
+  }
+  if (pid === 4) {
+    return {
+      id: 'tgws_port',
+      category: 'telegram',
+      title: `Порт Telegram-прокси (${port})`,
+      status: 'error',
+      message: `Порт ${port} занят системой (HTTP.sys / служба Windows) — смените порт в настройках Telegram.`
+    }
+  }
+  const t = await safeExec(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`)
+  const name = /^"([^"]+)"/.exec(t.trim())?.[1]
+  return {
+    id: 'tgws_port',
+    category: 'telegram',
+    title: `Порт Telegram-прокси (${port})`,
+    status: 'warn',
+    message: `Порт ${port} уже занят ${name ? `программой ${name}` : 'другой программой'} (PID ${pid}). Закройте её или смените порт в настройках Telegram.`
+  }
+}
+
+const HOSTS_WATCH: [string, (h: string) => boolean][] = [
+  ['discord', (h) => h.includes('discord')],
+  ['youtube', (h) => h.includes('youtube') || h.includes('youtu.be')],
+  ['googlevideo', (h) => h.includes('googlevideo')],
+  ['telegram', (h) => h.includes('telegram')],
+  ['t.me', (h) => h === 't.me' || h.endsWith('.t.me')],
+  ['instagram', (h) => h.includes('instagram')],
+  ['x.com', (h) => h === 'x.com' || h.endsWith('.x.com')],
+  ['twitter', (h) => h.includes('twitter')],
+  ['faceit', (h) => h.includes('faceit')],
+  ['steam', (h) => h.includes('steam')]
+]
+
+/** Домены из hosts, которые перенаправлены на чужой IP (блок Flowseal и блокировки на 0.0.0.0/127.0.0.1 пропускаются). */
+export function findHostsRedirects(content: string, known: Set<string> = new Set()): string[] {
+  const marker = '# --- Zapret Discord / YouTube hosts ---'
+  const own = content.indexOf(marker)
+  const text = own >= 0 ? content.slice(0, own) : content
+  const found = new Set<string>()
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/#.*/, '').trim()
+    if (!line) continue
+    const [ip, ...names] = line.split(/\s+/)
+    if (!ip || ['0.0.0.0', '127.0.0.1', '::1'].includes(ip)) continue
+    // Официальные адреса Telegram (149.154.160.0/20, 91.108.0.0/16) — так
+    // прописывает и Flowseal, это не подмена.
+    if (/^149\.154\.(1[6-7][0-9])\./.test(ip) || /^91\.108\./.test(ip)) continue
+    for (const n of names) {
+      const host = n.toLowerCase()
+      // Строка из актуального hosts Flowseal (добавлена через service.bat без нашей метки).
+      if (known.has(`${ip} ${host}`)) continue
+      if (HOSTS_WATCH.some(([, test]) => test(host))) found.add(host)
+    }
+  }
+  return [...found]
+}
+
+async function checkHostsRedirects(): Promise<DiagnosticItem> {
+  const hostsPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'drivers', 'etc', 'hosts')
+  let list: string[] = []
+  // Строки из hosts Flowseal не считаем подменой (без сети — только встроенные исключения).
+  const known = new Set<string>()
+  try {
+    const res = await fetch(HOSTS_URL, { headers: { 'User-Agent': 'LAZEYKA-Updater' }, signal: AbortSignal.timeout(5000) })
+    if (res.ok) {
+      for (const l of (await res.text()).split(/\r?\n/)) {
+        const [ip, ...names] = l.replace(/#.*/, '').trim().split(/\s+/)
+        if (ip) for (const n of names) known.add(`${ip} ${n.toLowerCase()}`)
+      }
+    }
+  } catch {
+    /* офлайн */
+  }
+  try {
+    if (existsSync(hostsPath)) list = findHostsRedirects(readFileSync(hostsPath, 'utf-8'), known)
+  } catch {
+    /* нет доступа к hosts — не считаем проблемой */
+  }
+  if (list.length === 0) {
+    return {
+      id: 'hosts_redirects',
+      category: 'network',
+      title: 'Перенаправления в hosts',
+      status: 'ok',
+      message: 'Популярные сайты (Discord, YouTube, Telegram и др.) в hosts на чужие адреса не перенаправлены.'
+    }
+  }
+  const shown = list.slice(0, 5).join(', ')
+  return {
+    id: 'hosts_redirects',
+    category: 'network',
+    title: 'Перенаправления в hosts',
+    status: 'warn',
+    message: `Файл hosts перенаправляет на другой IP: ${shown}${list.length > 5 ? ` и ещё ${list.length - 5}` : ''}. Такие записи могут ломать сайты и обход блокировок — удалите их, если не добавляли сами.`
+  }
+}
+
+/**
+ * Сторонние VPN-службы (как в диагностике Flowseal 1.10.4: «VPN» и Happ) —
+ * их TUN/WFP-драйверы перехватывают трафик раньше Zapret.
+ */
+async function checkOtherVpn(): Promise<DiagnosticItem> {
+  const out = await safeExec('sc query')
+  const names = new Set<string>()
+  for (const line of out.split(/\r?\n/)) {
+    const m = /^\s*(?:SERVICE_NAME|ИМЯ_СЛУЖБЫ)\s*:\s*(.+?)\s*$/i.exec(line)
+    if (m && /vpn|happservice/i.test(m[1])) names.add(m[1])
+  }
+  if (names.size === 0) {
+    return { id: 'other_vpn', category: 'conflicts', title: 'Другие VPN', status: 'ok', message: 'Запущенных сторонних VPN-служб не найдено.' }
+  }
+  return {
+    id: 'other_vpn',
+    category: 'conflicts',
+    title: 'Другие VPN',
+    status: 'warn',
+    message: `Запущены VPN-службы: ${[...names].slice(0, 5).join(', ')}. Они могут перехватывать трафик раньше Zapret — если что-то не работает, выключите их.`
+  }
+}
+
 export async function runZapretDiagnostics(): Promise<DiagnosticReport> {
   const items: DiagnosticItem[] = []
+
+  // 0. Права администратора — без них остальные проверки могут быть неточными
+  items.push(await checkAdminRights())
 
   // 1. Base Filtering Engine (BFE)
   const bfeOut = await safeExec('sc query BFE')
@@ -802,6 +1264,16 @@ export async function runZapretDiagnostics(): Promise<DiagnosticReport> {
     })
   }
 
+  // 8. Дополнительные проверки: драйвер, TgWsProxy, PowerShell, WMI, порт, hosts
+  items.push(...(await checkWinDivert()))
+  items.push(...(await checkTgwsFiles()))
+  items.push(await checkPowerShell())
+  items.push(await checkWmi())
+  const portItem = await checkTelegramPort()
+  if (portItem) items.push(portItem)
+  items.push(await checkHostsRedirects())
+  items.push(await checkOtherVpn())
+
   const hasIssues = items.some((i) => i.status !== 'ok')
 
   return {
@@ -830,6 +1302,21 @@ export async function fixDiagnosticIssue(action: string): Promise<{ success: boo
       return { success: true, message: 'Служба BFE успешно запущена' }
     } catch (e: any) {
       throw new Error(`Ошибка запуска службы BFE: ${e?.message || String(e)}`)
+    }
+  }
+
+  if (action === 'start_wmi') {
+    try {
+      await execAsync('sc config Winmgmt start= auto', { windowsHide: true })
+      try {
+        await execAsync('net start Winmgmt', { windowsHide: true })
+      } catch (e: any) {
+        // 2182 — «служба уже запущена»
+        if (!/2182|already been started|уже запущена/i.test(`${e?.stdout ?? ''}${e?.stderr ?? ''}${e?.message ?? ''}`)) throw e
+      }
+      return { success: true, message: 'Служба WMI включена и запущена' }
+    } catch (e: any) {
+      throw new Error(`Ошибка запуска службы WMI (нужны права администратора): ${e?.message || String(e)}`)
     }
   }
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
-import { Download, Loader2, Sparkles, FlaskConical, CheckCircle2, XCircle } from 'lucide-react'
+import { Download, Loader2, Sparkles, FlaskConical, CheckCircle2, XCircle, Square, Play, RotateCcw } from 'lucide-react'
 import { useZapretStore } from '@renderer/store/zapret-store'
 import { useZapretTestStore } from '@renderer/store/zapret-test-store'
 import {
@@ -12,6 +12,8 @@ import {
   zapretInstallUpdate,
   zapretDismissUpdate,
   zapretRunStrategyTest,
+  zapretStopStrategyTest,
+  zapretClearStrategyTestResults,
   getAppConfig,
   type ZapretUpdateInfo
 } from '@renderer/utils/ipc'
@@ -58,7 +60,7 @@ const Zapret: React.FC = () => {
   const testProgress = useZapretTestStore((s) => s.progress)
   const testReport = useZapretTestStore((s) => s.report)
   const isTestRunning = useZapretTestStore((s) => s.isRunning)
-  const autoTestStartedRef = useRef(false)
+  const isTestStopping = useZapretTestStore((s) => s.stopping)
 
   // After a test run, show strategies best-to-worst by score (okCount out
   // of 10 targets) instead of file order — untested strategies (shouldn't
@@ -96,7 +98,7 @@ const Zapret: React.FC = () => {
     }
   }
 
-  const startTest = (): void => {
+  const startTest = (resume = false): void => {
     if (useZapretTestStore.getState().isRunning) return
     // Optimistically flip isRunning so the UI dims immediately — the
     // first 'starting' IPC tick will arrive within ~100ms and reconcile.
@@ -104,7 +106,7 @@ const Zapret: React.FC = () => {
       isRunning: true,
       progress: { phase: 'starting' }
     })
-    zapretRunStrategyTest().catch((e: unknown) => {
+    zapretRunStrategyTest({ resume }).catch((e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e)
       toast.error('Тест стратегий не выполнен', { description: msg })
       useZapretTestStore.getState().set({
@@ -119,21 +121,29 @@ const Zapret: React.FC = () => {
     if (zapret?.autoUpdateCheck !== false) {
       void runCheckUpdate(false)
     }
-
-    const t = setTimeout(() => {
-      if (autoTestStartedRef.current) return
-      const s = useZapretTestStore.getState()
-      if (s.report || s.isRunning) return
-      autoTestStartedRef.current = true
-      zapretListStrategies()
-        .then((list) => {
-          if (list.length > 0) startTest()
-        })
-        .catch(() => void 0)
-    }, 250)
-    return () => clearTimeout(t)
+    // Тест стратегий больше не стартует сам при открытии вкладки — только
+    // по кнопке «Запустить тест» (он на минуты отключает обход блокировок).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const stopTest = (): void => {
+    if (!isTestRunning || isTestStopping) return
+    useZapretTestStore.getState().set({ stopping: true })
+    zapretStopStrategyTest().catch(() => useZapretTestStore.getState().set({ stopping: false }))
+  }
+
+  const resetTestResults = async (): Promise<void> => {
+    try {
+      await zapretClearStrategyTestResults()
+      useZapretTestStore.getState().set({ report: null, progress: null })
+      toast.success('Результаты теста сброшены', { style: POWER_ON_BANNER_STYLE })
+    } catch (e) {
+      toast.error('Не удалось сбросить результаты', { description: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  const testPartial = !!testReport?.partial
+  const testedCount = testReport ? Object.keys(testReport.results).length : 0
 
   const showBanner = !!updateInfo && updateInfo.hasUpdate && !updateInfo.dismissed && !!updateInfo.assetUrl
 
@@ -148,14 +158,16 @@ const Zapret: React.FC = () => {
   }, [updateInfo])
 
   /** Установка из окна обновления: ошибку показывает само окно. */
-  const installUpdate = async (): Promise<void> => {
-    if (installingRef.current || !updateInfo?.assetUrl) return
+  const installUpdate = async (target?: { assetUrl: string; version: string }): Promise<void> => {
+    const assetUrl = target?.assetUrl ?? updateInfo?.assetUrl
+    const version = target?.version ?? updateInfo?.latest
+    if (installingRef.current || !assetUrl) return
     installingRef.current = true
     setInstalling(true)
     try {
-      const res = await zapretInstallUpdate(updateInfo.assetUrl, updateInfo.latest)
-      toast.success('Zapret обновлён', {
-        description: `Версия ${res.installedVersion ?? updateInfo.latest} — стратегий: ${res.strategies}`,
+      const res = await zapretInstallUpdate(assetUrl, version)
+      toast.success(target ? 'Версия Zapret установлена' : 'Zapret обновлён', {
+        description: `Версия ${res.installedVersion ?? version} — стратегий: ${res.strategies}`,
         style: POWER_ON_BANNER_STYLE
       })
       // If the active strategy no longer exists in the new bundle, drop it
@@ -328,6 +340,17 @@ const Zapret: React.FC = () => {
                   ) : 'Инициализация тестирования…'}
                 </div>
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={stopTest}
+                disabled={isTestStopping}
+                title="Остановить после текущей стратегии — потом можно продолжить с этого места"
+                className="shrink-0 h-8 text-xs gap-1.5 rounded-xl cursor-pointer border-border/80 hover:border-rose-500/50 hover:text-rose-500"
+              >
+                {isTestStopping ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3.5" />}
+                <span>{isTestStopping ? 'Останавливаем…' : 'Остановить'}</span>
+              </Button>
             </div>
           ) : (
             <>
@@ -339,21 +362,52 @@ const Zapret: React.FC = () => {
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {testReport ? (
                     <span className="text-emerald-700 dark:text-emerald-400 font-semibold font-mono">
-                      {Object.values(testReport.results).filter((r) => r.passed).length} / {Object.keys(testReport.results).length} рабочих на вашем провайдере
+                      {Object.values(testReport.results).filter((r) => r.passed).length} / {testedCount} рабочих на вашем провайдере
+                      {testPartial && (
+                        <span className="ml-1.5 font-normal text-amber-600 dark:text-amber-400">
+                          (тест остановлен: проверено {testedCount}{testReport.totalStrategies ? ` из ${testReport.totalStrategies}` : ''})
+                        </span>
+                      )}
                     </span>
                   ) : 'Выберите оптимальный пресет для обхода блокировок.'}
                 </p>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={startTest}
-                disabled={strategies.length === 0}
-                className="shrink-0 h-8 text-xs gap-1.5 rounded-xl cursor-pointer border-border/80 hover:border-primary/50 hover:text-primary transition-all"
-              >
-                <FlaskConical className="size-3.5" />
-                <span>{testReport ? 'Перетестировать' : 'Запустить тест'}</span>
-              </Button>
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                {testPartial && (
+                  <Button
+                    size="sm"
+                    onClick={() => startTest(true)}
+                    disabled={strategies.length === 0}
+                    title="Проверить только оставшиеся стратегии"
+                    className="h-8 text-xs gap-1.5 rounded-xl cursor-pointer"
+                  >
+                    <Play className="size-3.5" />
+                    <span>Продолжить</span>
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => startTest(false)}
+                  disabled={strategies.length === 0}
+                  className="h-8 text-xs gap-1.5 rounded-xl cursor-pointer border-border/80 hover:border-primary/50 hover:text-primary transition-all"
+                >
+                  <FlaskConical className="size-3.5" />
+                  <span>{testReport ? (testPartial ? 'Заново' : 'Перетестировать') : 'Запустить тест'}</span>
+                </Button>
+                {testReport && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => { void resetTestResults() }}
+                    title="Стереть результаты теста — стратегии снова будут в обычном порядке"
+                    className="h-8 text-xs gap-1.5 rounded-xl cursor-pointer text-muted-foreground hover:text-foreground"
+                  >
+                    <RotateCcw className="size-3.5" />
+                    <span>Сбросить</span>
+                  </Button>
+                )}
+              </div>
             </>
           )}
         </CardHeader>

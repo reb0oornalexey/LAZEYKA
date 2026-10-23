@@ -29,7 +29,7 @@ import {
   Globe2,
   ShieldOff,
   QrCode,
-  Zap,
+  FileUp,
   Gamepad2,
   Monitor,
   FolderOpen,
@@ -41,6 +41,7 @@ import {
 } from 'lucide-react'
 import BasePage from '@renderer/components/base/base-page'
 import AutoSelectCard from '@renderer/components/auto-select-card'
+import { WarpCard } from '@renderer/components/warp-card'
 import SpeedTestCard from '@renderer/components/speed-test-card'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
@@ -80,8 +81,8 @@ import {
   incyCaptureRoutingProfile,
   incyGeoCategories,
   incyCheckGeoUpdate,
-  incyGenerateWarpNode,
   dialogPickImageFile,
+  dialogPickWireGuardConf,
   clipboardReadImage,
   systemCaptureScreens,
   type GeoCategoryInfo,
@@ -1252,7 +1253,6 @@ export default function IncyPage(): React.ReactElement {
   // «Только рабочие»: серверы, ответившие на последний замер пинга.
   const [onlyWorking, setOnlyWorking] = useState(false)
   const [showServerSelectModal, setShowServerSelectModal] = useState(false)
-  const [loadingWarp, setLoadingWarp] = useState(false)
   const [showQrModal, setShowQrModal] = useState(false)
   const [scanningQr, setScanningQr] = useState(false)
 
@@ -1357,12 +1357,12 @@ export default function IncyPage(): React.ReactElement {
     await handleImport(text)
   }
 
-  const handleImport = async (override?: string): Promise<void> => {
+  const handleImport = async (override?: string, fileName?: string): Promise<void> => {
     const payload = (override ?? inputUrl).trim()
     if (!payload) return
     setLoadingImport(true)
     try {
-      const res = await incyImportInput(payload)
+      const res = await incyImportInput(payload, fileName)
       setNodes(res.nodes)
       if (res.subscription) setSubscription(res.subscription)
       // Ссылка могла добавить новую подписку — список нужно перечитать,
@@ -1378,23 +1378,14 @@ export default function IncyPage(): React.ReactElement {
     }
   }
 
-  const handleGenerateWarp = async (): Promise<void> => {
-    setLoadingWarp(true)
+  /** Импорт .conf WireGuard / AmneziaWG из файла. */
+  const handleImportConfFile = async (): Promise<void> => {
     try {
-      const res = await incyGenerateWarpNode()
-      setNodes(res.allNodes)
-      setStatus(await incyGetStatus().catch(() => status))
-      toast.success('Узел Cloudflare WARP успешно добавлен!', {
-        description: 'Официальный бесплатный туннель Cloudflare готов к подключению.',
-        style: POWER_ON_BANNER_STYLE
-      })
-      void handlePingAll(res.allNodes)
-    } catch (err: any) {
-      toast.error('Не удалось сгенерировать узел WARP', {
-        description: err?.message || String(err)
-      })
-    } finally {
-      setLoadingWarp(false)
+      const picked = await dialogPickWireGuardConf()
+      if (!picked) return
+      await handleImport(picked.text, picked.name)
+    } catch (e: any) {
+      toast.error('Не удалось открыть файл', { description: e?.message || String(e) })
     }
   }
 
@@ -2855,7 +2846,16 @@ export default function IncyPage(): React.ReactElement {
               <Input
                 value={inputUrl}
                 onChange={(e) => setInputUrl(e.target.value)}
-                placeholder="Вставьте ссылку на подписку (https://...) или узел (vless://, ss://, hy2://)"
+                onPaste={(e) => {
+                  // Однострочное поле съедает переводы строк, а .conf без них не разобрать —
+                  // конфиг WireGuard импортируем сразу из буфера, минуя поле.
+                  const text = e.clipboardData.getData('text')
+                  if (/\[\s*interface\s*\]/i.test(text)) {
+                    e.preventDefault()
+                    void handleImport(text)
+                  }
+                }}
+                placeholder="Вставьте ссылку на подписку (https://...), узел (vless://, ss://, hy2://) или конфиг WireGuard / AmneziaWG"
                 className="text-xs font-mono flex-1"
               />
               <Button
@@ -2880,6 +2880,16 @@ export default function IncyPage(): React.ReactElement {
               </Button>
               <Button
                 size="sm"
+                variant="outline"
+                disabled={loadingImport}
+                onClick={() => { void handleImportConfFile() }}
+                className="gap-1.5 text-xs shrink-0"
+                title="Импортировать конфиг WireGuard / AmneziaWG из файла .conf"
+              >
+                <FileUp className="h-3.5 w-3.5" /> Импорт .conf
+              </Button>
+              <Button
+                size="sm"
                 onClick={() => { void handleImport() }}
                 disabled={loadingImport || !inputUrl.trim()}
                 className="gap-1.5 text-xs shrink-0"
@@ -2887,18 +2897,19 @@ export default function IncyPage(): React.ReactElement {
                 <Plus className="h-3.5 w-3.5" />
                 {loadingImport ? 'Загрузка...' : 'Импортировать'}
               </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={loadingWarp}
-                onClick={() => { void handleGenerateWarp() }}
-                className="gap-1.5 text-xs shrink-0 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 border border-blue-500/30"
-                title="Создать бесплатный официальный узел Cloudflare WARP в 1 клик"
-              >
-                <Zap className={cn('h-3.5 w-3.5 text-blue-500 fill-blue-500', loadingWarp && 'animate-spin')} />
-                {loadingWarp ? 'Генерация...' : 'Бесплатный WARP'}
-              </Button>
             </div>
+            <WarpCard
+              nodes={nodes}
+              selectedNodeId={status.selectedNodeId}
+              busy={loadingImport}
+              onNodes={(all) => {
+                setNodes(all)
+                void incyGetStatus().then(setStatus).catch(() => void 0)
+                void handlePingAll(all)
+              }}
+              onImportText={(text, name) => handleImport(text, name)}
+              onPickFile={handleImportConfFile}
+            />
 
             {/* Filter Pills and Search — наверху, над всеми подписками */}
             <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-1">

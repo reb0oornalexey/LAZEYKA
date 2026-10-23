@@ -4,6 +4,8 @@ import { toast } from 'sonner'
 import BasePage from '@renderer/components/base/base-page'
 import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
+import { DiagnosticsDialog } from '@renderer/components/diagnostics-dialog'
+import { AppVersionButton } from '@renderer/components/changelog-dialog'
 import ZapretIcon from '@renderer/components/zapret-icon'
 import TelegramIcon from '@renderer/components/telegram-icon'
 import LiveTrafficMonitor from '@renderer/components/live-traffic-monitor'
@@ -26,7 +28,6 @@ import {
   incyGetNodes,
   getAppVersion,
   appCheckUpdateNow,
-  appGetOnlineCount,
   openExternalUrl,
   type IncyNode,
   type ZapretUpdateInfo,
@@ -46,6 +47,7 @@ import {
   ShieldCheck,
   ShieldOff,
   Sparkles,
+  Stethoscope,
   Target,
   X,
   Zap
@@ -298,19 +300,7 @@ const Home: React.FC = () => {
       : 'Обход РФ'
 
   // ---- Общие действия ----
-  // ---- Сейчас онлайн ----
-  const [online, setOnline] = useState<number | null>(null)
-  useEffect(() => {
-    appGetOnlineCount()
-      .then((r) => setOnline(r ? r.online : null))
-      .catch(() => setOnline(null))
-    const onCount = (_e: unknown, r: { online: number } | null): void => setOnline(r ? r.online : null)
-    window.electron.ipcRenderer.on('app:onlineCount', onCount)
-    return () => {
-      window.electron.ipcRenderer.removeAllListeners('app:onlineCount')
-    }
-  }, [])
-
+  const [diagOpen, setDiagOpen] = useState(false)
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   useEffect(() => {
@@ -405,18 +395,6 @@ const Home: React.FC = () => {
       title="Главная"
       header={
         <>
-          {online != null && online > 0 && (
-            <span
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/60 px-2.5 text-xs text-muted-foreground tabular-nums"
-              title="Сколько человек сейчас запустили LAZEYKA (анонимно, за последние минуты)"
-            >
-              <span className="relative flex size-2">
-                <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-500/60" />
-                <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
-              </span>
-              {online.toLocaleString('ru-RU')} онлайн
-            </span>
-          )}
           <Button
             variant="outline"
             size="sm"
@@ -490,6 +468,14 @@ const Home: React.FC = () => {
           <div className="min-w-0 flex-1">
             <h2 className="text-xl font-bold leading-tight text-foreground">{hero.title}</h2>
             <p className="mt-1 text-[13px] text-muted-foreground">{heroText}</p>
+            <button
+              type="button"
+              onClick={() => setDiagOpen(true)}
+              className="mt-1.5 inline-flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-primary"
+            >
+              <Stethoscope className="size-3" />
+              Почему может не работать?
+            </button>
           </div>
           {incyOn && incyNode ? (
             <div className="flex shrink-0 gap-2">
@@ -631,9 +617,11 @@ const Home: React.FC = () => {
           ))}
         </div>
 
+        <DiagnosticsDialog open={diagOpen} onClose={() => setDiagOpen(false)} />
+
         {/* Версия, обновления, поддержка */}
         <div className="flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
-          {appVersion && <span className="px-2 tabular-nums">LAZEYKA v{appVersion}</span>}
+          {appVersion && <AppVersionButton className="px-2 tabular-nums">LAZEYKA v{appVersion}</AppVersionButton>}
           <button
             type="button"
             onClick={() => void openExternalUrl(SUPPORT_TELEGRAM_URL)}

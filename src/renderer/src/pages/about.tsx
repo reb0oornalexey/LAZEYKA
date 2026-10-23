@@ -24,6 +24,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Badge } from '@renderer/components/ui/badge'
 import BasePage from '@renderer/components/base/base-page'
+import UsersStats from '@renderer/components/users-stats'
 import { cn } from '@renderer/lib/utils'
 
 /**
@@ -348,6 +349,8 @@ const About: React.FC = () => {
   return (
     <BasePage title="Информация и руководство">
       <div className="px-4 pb-8 space-y-5 max-w-4xl mx-auto">
+        <UsersStats />
+
         {/* Заголовок */}
         <Card className="cyber-card border-primary/40 bg-gradient-to-br from-card via-card/90 to-primary/10 shadow-xl">
           <CardContent className="p-6 space-y-3">

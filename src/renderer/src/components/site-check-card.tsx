@@ -16,12 +16,29 @@ import {
 const VERDICT_LABEL: Record<SiteHostProbe['verdict'], { text: string; tone: 'ok' | 'warn' | 'bad' }> = {
   ok: { text: 'в порядке', tone: 'ok' },
   slow: { text: 'медленно', tone: 'warn' },
-  'server-error': { text: 'сервер молчит', tone: 'warn' },
+  'server-error': { text: 'ошибка сервера', tone: 'warn' },
   'dpi-blocked': { text: 'блокировка DPI', tone: 'bad' },
+  'tls-failed': { text: 'сервер не отвечает', tone: 'bad' },
+  'tcp16-blocked': { text: 'обрыв на 16 КБ', tone: 'bad' },
+  'isp-stub': { text: 'заглушка провайдера', tone: 'bad' },
   'tcp-blocked': { text: 'блокировка IP', tone: 'bad' },
-  'dns-blocked': { text: 'режет ваш DNS', tone: 'warn' },
+  'dns-blocked': { text: 'режет DNS', tone: 'warn' },
+  'dns-spoofed': { text: 'DNS подменён', tone: 'bad' },
   'dns-failed': { text: 'DNS не отвечает', tone: 'bad' }
 }
+
+/** Подпись итога: для DNS — кто именно режет. */
+function verdictLabel(p: SiteHostProbe): { text: string; tone: 'ok' | 'warn' | 'bad' } {
+  if (p.verdict === 'dns-blocked') {
+    if (p.dnsSource === 'hosts') return { text: 'блок в hosts', tone: 'warn' }
+    if (p.dnsSource === 'isp') return { text: 'режет DNS провайдера', tone: 'bad' }
+    return { text: 'режет DNS-фильтр', tone: 'warn' }
+  }
+  return VERDICT_LABEL[p.verdict]
+}
+
+/** Что Zapret умеет лечить: блокировку по имени, заглушку и замедление. */
+const ZAPRET_FIXABLE = new Set<SiteHostProbe['verdict']>(['dpi-blocked', 'isp-stub', 'slow'])
 
 function ms(v: number | null | undefined): string {
   return v == null ? '—' : `${v}`
@@ -50,11 +67,9 @@ const SiteCheckCard: React.FC = () => {
     }
   }
 
-  // Что Zapret может вылечить: всё проблемное, кроме того, что режет ваш
-  // DNS-фильтр (реклама/трекеры — им Zapret не поможет) и уже добавленного.
-  const fixable = (result?.probes ?? []).filter(
-    (p) => p.verdict !== 'ok' && p.verdict !== 'dns-blocked' && p.zapret === 'none'
-  )
+  // Что Zapret может вылечить (см. ZAPRET_FIXABLE) и чего ещё нет в списке. DNS,
+  // блок IP и обрыв на 16 КБ он не лечит.
+  const fixable = (result?.probes ?? []).filter((p) => ZAPRET_FIXABLE.has(p.verdict) && p.zapret === 'none')
   const dpi = fixable.filter((p) => p.verdict === 'dpi-blocked')
 
   const copy = async (text: string, what = 'Скопировано'): Promise<void> => {
@@ -71,7 +86,7 @@ const SiteCheckCard: React.FC = () => {
       'Домен | итог | DNS | TCP | TLS | ответ | VPN | Zapret',
       ...r.probes.map(
         (p) =>
-          `${p.host} | ${VERDICT_LABEL[p.verdict].text} | ${ms(p.dnsMs)} | ${ms(p.tcpMs)} | ${ms(p.tlsMs)} | ${ms(p.ttfbMs)} | ${p.vpnMs ?? '—'} | ${p.zapret}`
+          `${p.host} | ${verdictLabel(p).text} | ${ms(p.dnsMs)} | ${ms(p.tcpMs)} | ${ms(p.tlsMs)} | ${ms(p.ttfbMs)} | ${p.vpnMs ?? '—'} | ${p.zapret}`
       ),
       '',
       'Все домены страницы:',
@@ -187,8 +202,8 @@ const SiteCheckCard: React.FC = () => {
             </div>
             {fixable.length > 0 && (
               <p className="text-[10px] text-muted-foreground">
-                В Zapret попадут: {[...new Set(fixable.map((p) => p.baseDomain))].join(', ')}. Домены, которые режет ваш DNS
-                (реклама и аналитика), не добавляются — Zapret им не поможет.
+                В Zapret попадут: {[...new Set(fixable.map((p) => p.baseDomain))].join(', ')}. Проблемы DNS, блокировку IP и обрыв
+                на 16 КБ Zapret не лечит — такие домены не добавляются.
               </p>
             )}
 
@@ -210,7 +225,7 @@ const SiteCheckCard: React.FC = () => {
                     <span />
                   </div>
                   {result.probes.map((p) => {
-                    const v = VERDICT_LABEL[p.verdict]
+                    const v = verdictLabel(p)
                     return (
                       <div
                         key={p.host}
@@ -244,7 +259,7 @@ const SiteCheckCard: React.FC = () => {
                         <span className="text-muted-foreground">
                           {p.zapret === 'listed' ? 'в списке' : p.zapret === 'excluded' ? 'исключён' : 'нет'}
                         </span>
-                        {p.zapret === 'none' && p.verdict !== 'dns-blocked' ? (
+                        {p.zapret === 'none' && ZAPRET_FIXABLE.has(p.verdict) ? (
                           <button
                             type="button"
                             className="inline-flex size-6 items-center justify-center rounded-md text-primary hover:bg-primary/10 cursor-pointer"

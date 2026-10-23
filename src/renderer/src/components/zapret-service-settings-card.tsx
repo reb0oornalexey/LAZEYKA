@@ -25,6 +25,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
+import GamePortsEditor from '@renderer/components/game-ports-editor'
 import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
 import {
   zapretGetGameFilter,
@@ -63,10 +64,10 @@ interface Props {
 }
 
 const GAME_FILTER_OPTIONS: { value: GameFilterMode; label: string; title: string }[] = [
-  { value: 'off', label: 'Выкл', title: 'Не расширять диапазон портов 1024-65535' },
-  { value: 'all', label: 'TCP + UDP', title: 'Расширить фильтр на TCP и UDP порты 1024-65535' },
-  { value: 'tcp', label: 'TCP', title: 'Расширить фильтр только на TCP порты 1024-65535' },
-  { value: 'udp', label: 'UDP', title: 'Расширить фильтр только на UDP порты 1024-65535 (голос в играх/Discord)' }
+  { value: 'off', label: 'Выкл', title: 'Не расширять фильтр на игровые порты' },
+  { value: 'all', label: 'TCP + UDP', title: 'Расширить фильтр на игровые TCP и UDP порты' },
+  { value: 'tcp', label: 'TCP', title: 'Расширить фильтр только на игровые TCP порты' },
+  { value: 'udp', label: 'UDP', title: 'Расширить фильтр только на игровые UDP порты (голос в играх/Discord)' }
 ]
 
 const IPSET_FILTER_OPTIONS: { value: IpsetFilterMode; label: string; title: string }[] = [
@@ -472,8 +473,8 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
               Game Filter
             </div>
             <p className="mb-2 text-xs text-muted-foreground">
-              Расширяет фильтрацию на порты 1024-65535 — помогает с играми и голосом в Discord,
-              которые используют случайные порты.
+              Расширяет фильтрацию на игровые порты (по умолчанию все 1024-65535) — помогает с играми
+              и голосом в Discord, которые используют случайные порты. Ниже можно оставить только порты своих игр.
             </p>
             {gameFilter === null ? (
               <p className="text-sm text-muted-foreground">Не удалось прочитать настройку.</p>
@@ -498,6 +499,9 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
                   )
                 })}
               </div>
+            )}
+            {gameFilter !== null && (
+              <GamePortsEditor disabled={disabled} mode={gameFilter} onModeChange={setGameFilterState} />
             )}
           </div>
 

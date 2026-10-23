@@ -69,8 +69,12 @@ const CORES: CoreSpec[] = [
   {
     id: 'sing-box',
     exeName: 'sing-box.exe',
-    repo: 'SagerNet/sing-box',
-    matchAsset: (n) => /^sing-box-.*-windows-amd64\.zip$/i.test(n),
+    // sing-box-lx — сборка sing-box с AmneziaWG (обфускация WireGuard, без
+    // которой WARP в РФ не подключается), MASQUE и NaïveProxy. База та же,
+    // что у официального ядра; номер сборки — в суффиксе «-lx.N».
+    repo: 'Leadaxe/sing-box-lx',
+    matchAsset: (n) => /^sing-box-\d+\.\d+\.\d+-lx\.\d+-windows-amd64\.zip$/i.test(n),
+    allowPrerelease: true,
     currentPath: incyBinaryPath,
     validateArgs: (cfg) => ['check', '-c', cfg],
     versionArgs: ['version'],
@@ -116,6 +120,12 @@ function parseSemver(raw: string | undefined): [number, number, number] | null {
   return [Number(m[1]), Number(m[2]), Number(m[3])]
 }
 
+/** Номер сборки sing-box-lx («1.14.3-lx.23» → 23), у обычного ядра — −1. */
+function lxBuild(raw: string | undefined): number {
+  const m = raw?.match(/-lx\.(\d+)/i)
+  return m ? Number(m[1]) : -1
+}
+
 /** Classify the jump between two versions. Pre-releases are never auto-installed. */
 export function classifyUpdate(installed?: string, latest?: string): UpdateKind {
   if (!latest) return 'none'
@@ -128,6 +138,10 @@ export function classifyUpdate(installed?: string, latest?: string): UpdateKind 
   if (b[1] > a[1]) return 'minor'
   if (b[1] < a[1]) return 'none'
   if (b[2] > a[2]) return 'patch'
+  if (b[2] < a[2]) return 'none'
+  // Та же версия: более свежая сборка sing-box-lx (или переход с обычного
+  // ядра на lx) — это патч, ставится сам.
+  if (lxBuild(latest) > lxBuild(installed)) return 'patch'
   return 'none'
 }
 
@@ -166,8 +180,18 @@ export async function probeCoreVersion(spec: CoreSpec): Promise<string | undefin
   const bin = spec.currentPath()
   if (!existsSync(bin)) return undefined
   const { out } = await runCapture(bin, spec.versionArgs)
-  const m = out.match(/(\d+\.\d+\.\d+)/)
+  const m = out.match(/(\d+\.\d+\.\d+(?:-lx\.\d+)?)/)
   return m ? m[1] : undefined
+}
+
+/** Версия используемого ядра sing-box («1.14.3-lx.23»), если удалось прочитать. */
+export async function singBoxVersion(): Promise<string | undefined> {
+  return probeCoreVersion(CORES[0])
+}
+
+/** Это сборка sing-box-lx (с AmneziaWG)? */
+export function isLxVersion(v: string | undefined): boolean {
+  return !!v && /-lx\./i.test(v)
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +400,21 @@ export async function installCoreUpdate(
       success: false,
       message: `Не удалось заменить ${spec.exeName}: ${e instanceof Error ? e.message : String(e)}`
     }
+  }
+
+  // sing-box-lx грузит libcronet.dll (NaïveProxy) из своей папки — кладём
+  // библиотеку из того же архива, иначе версии разойдутся.
+  if (spec.id === 'sing-box') {
+    try {
+      const dll = extractExe(buf, 'libcronet.dll')
+      if (dll && dll.length > 1024 * 1024) {
+        const dllPath = path.join(dir, 'libcronet.dll')
+        if (existsSync(dllPath)) {
+          try { unlinkSync(dllPath) } catch { renameSync(dllPath, `${dllPath}.old-${Date.now()}`) }
+        }
+        writeFileSync(dllPath, dll)
+      }
+    } catch { /* без NaïveProxy ядро всё равно работает */ }
   }
 
   const installed = await probeCoreVersion(spec)

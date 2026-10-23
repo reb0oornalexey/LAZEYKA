@@ -227,14 +227,16 @@ const TelegramPage: React.FC = () => {
   }, [updateInfo])
 
   /** Установка из окна обновления: ошибку показывает само окно. */
-  const installUpdate = async (): Promise<void> => {
-    if (installingRef.current || !updateInfo?.assetUrl) return
+  const installUpdate = async (target?: { assetUrl: string; version: string }): Promise<void> => {
+    const assetUrl = target?.assetUrl ?? updateInfo?.assetUrl
+    const version = target?.version ?? updateInfo?.latest
+    if (installingRef.current || !assetUrl) return
     installingRef.current = true
     setInstalling(true)
     try {
-      const res = await tgwsInstallUpdate(updateInfo.assetUrl, updateInfo.latest)
-      toast.success('TgWsProxy обновлён', {
-        description: `Версия ${res.installedVersion ?? updateInfo.latest}`,
+      const res = await tgwsInstallUpdate(assetUrl, version)
+      toast.success(target ? 'Версия TgWsProxy установлена' : 'TgWsProxy обновлён', {
+        description: `Версия ${res.installedVersion ?? version}`,
         style: POWER_ON_TOAST_STYLE
       })
       const fresh = await tgwsCheckUpdate(true).catch(() => null)

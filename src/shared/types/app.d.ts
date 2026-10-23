@@ -3,6 +3,22 @@ interface AppVersion {
   changelog: string
 }
 
+/** Статистика пользователей от счётчика онлайна (все поля, кроме online, необязательны). */
+interface OnlineStats {
+  online: number
+  /** Когда получено (мс). */
+  at: number
+  /** Всего установок за всё время. */
+  installs?: number
+  active24h?: number
+  active7d?: number
+  active30d?: number
+  /** Рекорд одновременного онлайна. */
+  peakOnline?: number
+  /** Порядковый номер установки этого ПК (#N). */
+  num?: number
+}
+
 interface AppConfig {
   // ---- Migration marker
   configVersion?: number

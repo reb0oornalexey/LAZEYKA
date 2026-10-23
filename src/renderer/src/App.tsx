@@ -14,6 +14,7 @@ import { attachTgwsStore } from '@renderer/store/tgws-store'
 import { attachZapretStore } from '@renderer/store/zapret-store'
 import { attachZapretTestStore } from '@renderer/store/zapret-test-store'
 import { attachIncyStore } from '@renderer/store/incy-store'
+import { attachOnlineStore } from '@renderer/store/online-store'
 import { copyText, insertIntoField, isEditableField, readClipboardText } from '@renderer/utils/clipboard-field'
 
 const App: React.FC = () => {
@@ -28,12 +29,14 @@ const App: React.FC = () => {
     const d3 = attachZapretStore()
     const d4 = attachZapretTestStore()
     const d5 = attachIncyStore()
+    const d6 = attachOnlineStore()
     return () => {
       d1()
       d2()
       d3()
       d4()
       d5()
+      d6()
     }
   }, [])
 

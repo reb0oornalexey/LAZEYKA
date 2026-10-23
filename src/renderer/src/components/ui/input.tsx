@@ -12,9 +12,11 @@ type InputProps = React.ComponentProps<"input"> & {
   paste?: boolean
   /** Подпись кнопки (по умолчанию «Вставить»). */
   pasteLabel?: string
+  /** Классы обёртки (только при paste) — например, для flex-размеров в строке. */
+  wrapperClassName?: string
 }
 
-function Input({ className, type, paste, pasteLabel, ...props }: InputProps) {
+function Input({ className, type, paste, pasteLabel, wrapperClassName, ...props }: InputProps) {
   const ref = React.useRef<HTMLInputElement>(null)
   const input = (
     <input
@@ -33,7 +35,7 @@ function Input({ className, type, paste, pasteLabel, ...props }: InputProps) {
   )
   if (!paste) return input
   return (
-    <div className="relative min-w-0 flex-1 w-full">
+    <div className={cn("relative min-w-0 w-full", wrapperClassName)}>
       {input}
       <button
         type="button"

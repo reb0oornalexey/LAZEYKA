@@ -21,6 +21,12 @@ const META: Record<UpdatableComponent, { name: string; author: string; repo: str
   tgws: { name: 'TgWsProxy', author: 'Flowseal', repo: 'https://github.com/Flowseal/tg-ws-proxy' }
 }
 
+/** Конкретная версия для установки (откат или выбор из списка). */
+export interface InstallTarget {
+  assetUrl: string
+  version: string
+}
+
 /** Что окну нужно знать об обновлении — общее у Zapret и TgWsProxy. */
 export interface ComponentUpdateInfoLike {
   installed?: string
@@ -52,14 +58,25 @@ function NoteCard({
   note,
   isLatest,
   isNewer,
-  defaultOpen
+  defaultOpen,
+  isDowngrade,
+  busy,
+  componentName,
+  onInstallVersion
 }: {
   note: ComponentReleaseNote
   isLatest: boolean
   isNewer: boolean
   defaultOpen: boolean
+  /** Эта версия старее установленной. */
+  isDowngrade: boolean
+  /** Идёт установка — кнопки заблокированы. */
+  busy: boolean
+  componentName: string
+  onInstallVersion: (note: ComponentReleaseNote) => void
 }): React.ReactElement {
   const [open, setOpen] = useState(defaultOpen)
+  const [confirming, setConfirming] = useState(false)
   const date = formatDate(note.publishedAt)
   return (
     <div
@@ -101,6 +118,47 @@ function NoteCard({
       {open && (
         <div className="-mt-1 px-4 pb-4">
           <ReleaseBody body={note.body} />
+          {!note.installed && note.assetUrl && (
+            <div className="mt-3">
+              {confirming ? (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+                  <div className="font-semibold text-foreground">
+                    {isDowngrade ? `Откатить ${componentName} до v${note.version}?` : `Установить ${componentName} v${note.version}?`}
+                  </div>
+                  <p className="mt-1 text-muted-foreground">
+                    {componentName} ненадолго перезапустится. Настройки и списки сохранятся.
+                    {isDowngrade && ' Баннер обновления потом снова предложит новую версию — это нормально.'}
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => {
+                        setConfirming(false)
+                        onInstallVersion(note)
+                      }}
+                    >
+                      Да, установить
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>
+                      Отмена
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => (isDowngrade ? setConfirming(true) : onInstallVersion(note))}
+                  className="h-7 gap-1.5 text-xs"
+                >
+                  <Download className="size-3" />
+                  Установить эту версию
+                </Button>
+              )}
+            </div>
+          )}
           {note.url && (
             <button
               type="button"
@@ -120,8 +178,11 @@ interface Props {
   component: UpdatableComponent
   open: boolean
   info: ComponentUpdateInfoLike | null
-  /** Установка — та же, что раньше висела на кнопке «Обновить». Ошибку бросает наружу. */
-  onInstall: () => Promise<void>
+  /**
+   * Установка — та же, что раньше висела на кнопке «Обновить». Без аргумента —
+   * последняя версия; с аргументом — выбранная (откат на старую). Ошибку бросает наружу.
+   */
+  onInstall: (target?: InstallTarget) => Promise<void>
   /** «Позже» — не напоминать об этой версии. */
   onLater?: () => void
   onClose: () => void
@@ -209,12 +270,12 @@ export default function ComponentUpdateDialog({
   )
   const publishedAt = formatDate(info?.publishedAt ?? notes[0]?.publishedAt)
 
-  const handleInstall = async (): Promise<void> => {
+  const handleInstall = async (target?: InstallTarget): Promise<void> => {
     setInstalling(true)
     setError(null)
     setStep(null)
     try {
-      await onInstall()
+      await onInstall(target)
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -307,6 +368,12 @@ export default function ComponentUpdateDialog({
                     isLatest={i === 0}
                     isNewer={!installed || cmpVersion(n.version, installed) > 0}
                     defaultOpen={i === 0 || (!!installed && cmpVersion(n.version, installed) > 0 && i < 3)}
+                    isDowngrade={!!installed && cmpVersion(n.version, installed) < 0}
+                    busy={installing}
+                    componentName={meta.name}
+                    onInstallVersion={(note) =>
+                      note.assetUrl && void handleInstall({ assetUrl: note.assetUrl, version: note.version })
+                    }
                   />
                 ))}
                 {loading && (

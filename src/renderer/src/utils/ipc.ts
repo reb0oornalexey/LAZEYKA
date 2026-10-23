@@ -75,6 +75,8 @@ export interface ComponentReleaseNote {
   body: string
   publishedAt?: string
   url?: string
+  /** Архив для установки именно этой версии. */
+  assetUrl?: string
   installed: boolean
 }
 /** История релизов Zapret / TgWsProxy с GitHub автора. */
@@ -129,17 +131,21 @@ export interface StrategyTestReport {
   bundleVersion?: string
   results: Record<string, StrategyTestResult>
   bestStrategy?: string
+  partial?: boolean
+  totalStrategies?: number
 }
 export interface StrategyTestProgress {
-  phase: 'starting' | 'testing' | 'completed' | 'error' | 'idle'
+  phase: 'starting' | 'testing' | 'completed' | 'error' | 'idle' | 'stopped'
   current?: number
   total?: number
   strategy?: string
   report?: StrategyTestReport
   message?: string
 }
-export const zapretRunStrategyTest = (): Promise<StrategyTestReport> =>
-  invoke('zapret:runStrategyTest')
+export const zapretRunStrategyTest = (opts: { resume?: boolean } = {}): Promise<StrategyTestReport> =>
+  invoke('zapret:runStrategyTest', opts)
+export const zapretStopStrategyTest = (): Promise<boolean> => invoke('zapret:stopStrategyTest')
+export const zapretClearStrategyTestResults = (): Promise<void> => invoke('zapret:clearStrategyTestResults')
 export const zapretGetStrategyTestResults = (): Promise<StrategyTestReport | null> =>
   invoke('zapret:getStrategyTestResults')
 export const zapretIsStrategyTestRunning = (): Promise<boolean> =>
@@ -216,6 +222,16 @@ export interface IpsetFilterSnapshot {
 export const zapretGetGameFilter = (): Promise<GameFilterMode> => invoke('zapret:getGameFilter')
 export const zapretSetGameFilter = (mode: GameFilterMode): Promise<GameFilterMode> =>
   invoke('zapret:setGameFilter', mode)
+export interface GameFilterSettings {
+  mode: GameFilterMode
+  tcp: string
+  udp: string
+  rangesSupported: boolean
+  bundleVersion?: string
+}
+export const zapretGetGameFilterSettings = (): Promise<GameFilterSettings> => invoke('zapret:getGameFilterSettings')
+export const zapretSetGameFilterSettings = (next: { mode?: GameFilterMode; tcp?: string; udp?: string }): Promise<GameFilterSettings> =>
+  invoke('zapret:setGameFilterSettings', next)
 export const zapretGetIpsetFilter = (): Promise<IpsetFilterSnapshot> =>
   invoke('zapret:getIpsetFilter')
 export const zapretSetIpsetFilter = (mode: IpsetFilterMode): Promise<IpsetFilterSnapshot> =>
@@ -247,11 +263,11 @@ export const zapretSetActiveFake = (
 // ---- Zapret Diagnostics & Quick Fixes ---------------------------------------
 export interface DiagnosticItem {
   id: string
-  category: 'system' | 'network' | 'conflicts' | 'discord'
+  category: 'system' | 'network' | 'conflicts' | 'discord' | 'telegram'
   title: string
   status: 'ok' | 'warn' | 'error'
   message: string
-  fixAction?: 'enable_tcp_timestamps' | 'remove_conflicts' | 'clear_discord_cache' | 'update_hosts' | 'disable_proxy' | 'start_bfe'
+  fixAction?: 'enable_tcp_timestamps' | 'remove_conflicts' | 'clear_discord_cache' | 'update_hosts' | 'disable_proxy' | 'start_bfe' | 'start_wmi'
   fixLabel?: string
 }
 
@@ -754,9 +770,10 @@ export const incyPatchSettings = (
 ): Promise<{ settings: IncySettings; reapplied: boolean; hotApplied?: boolean }> =>
   invoke('incy:patchSettings', patch)
 export const incyImportInput = (
-  input: string
+  input: string,
+  fileName?: string
 ): Promise<{ addedCount: number; subscription: IncySubscription | null; nodes: IncyNode[] }> =>
-  invoke('incy:importInput', input)
+  invoke('incy:importInput', input, fileName)
 export const incyRefreshSubscription = (
   subscriptionId?: string
 ): Promise<{ subscription: IncySubscription; nodes: IncyNode[] }> =>
@@ -931,8 +948,28 @@ export const systemGetNetworkSpeed = (): Promise<{ rxKbps: number; txKbps: numbe
   invoke('system:getNetworkSpeed')
 
 // ---- WARP, Running Processes, Pickers & QR ----------------------------------
-export const incyGenerateWarpNode = (): Promise<{ node: IncyNode; allNodes: IncyNode[] }> =>
+export interface WarpPickResult {
+  ok: boolean
+  endpoint?: string
+  latencyMs?: number
+  tested: number
+  working: number
+  message: string
+  needsLx?: boolean
+  allNodes: IncyNode[]
+}
+export interface WarpCheckResult {
+  ok: boolean
+  ip?: string
+  loc?: string
+  warp?: string
+  latencyMs?: number
+  message: string
+}
+export const incyGenerateWarpNode = (): Promise<{ node: IncyNode; allNodes: IncyNode[]; pick: WarpPickResult }> =>
   invoke('incy:generateWarpNode')
+export const incyPickWarpEndpoint = (nodeId: string): Promise<WarpPickResult> => invoke('incy:pickWarpEndpoint', nodeId)
+export const incyCheckWarp = (nodeId: string): Promise<WarpCheckResult> => invoke('incy:checkWarp', nodeId)
 
 export interface RunningProcessInfo {
   name: string
@@ -955,6 +992,45 @@ export interface AppActivity {
   download: number
 }
 /** Какие приложения сейчас держат соединения и через что (null — туннель не поднят). */
+export interface HostTraffic {
+  host: string
+  connections: number
+  download: number
+  upload: number
+  route: string
+  lastSeen: number
+}
+export interface AppTraffic {
+  name: string
+  download: number
+  upload: number
+  downSpeed: number
+  upSpeed: number
+  open: number
+  lastSeen: number
+  firstSeen: number
+  route: string
+  hostCount: number
+  hosts?: HostTraffic[]
+}
+export interface LiveConnection {
+  id: string
+  process: string
+  host: string
+  port: number
+  network: string
+  route: string
+  rule: string
+  upload: number
+  download: number
+  start: number
+}
+/** Трафик по приложениям за сессию туннеля; hosts — только для приложения `withHostsOf`. */
+export const incyGetAppTraffic = (withHostsOf?: string): Promise<{ active: boolean; apps: AppTraffic[] }> =>
+  invoke('incy:getAppTraffic', withHostsOf)
+/** Живые соединения ядра (null — туннель не поднят). */
+export const incyGetConnections = (): Promise<LiveConnection[] | null> => invoke('incy:getConnections')
+export const incyCloseConnection = (id: string): Promise<boolean> => invoke('incy:closeConnection', id)
 export const incyGetAppActivity = (): Promise<AppActivity[] | null> => invoke('incy:appActivity')
 
 export interface ExitIp {
@@ -1007,8 +1083,11 @@ export interface BufferbloatResult {
 export const optimizerBufferbloat = (ip?: string): Promise<BufferbloatResult> => invoke('optimizer:bufferbloat', ip)
 
 /** Сколько людей сейчас в LAZEYKA (null — выключено или ещё нет данных). */
-export const appGetOnlineCount = (): Promise<{ online: number; at: number } | null> => invoke('app:getOnlineCount')
+export const appGetOnlineCount = (): Promise<OnlineStats | null> => invoke('app:getOnlineCount')
+export const appGetOnlineNum = (): Promise<number | null> => invoke('app:getOnlineNum')
 export const appOnlineCounterInfo = (): Promise<{ configured: boolean }> => invoke('app:onlineCounterInfo')
+/** Сбросить настройки к умолчаниям (тема, INCY, списки Zapret и ключи сохраняются). */
+export const appResetSettings = (): Promise<void> => invoke('app:resetSettings')
 export const appRefreshOnlineCount = (): Promise<void> => invoke('app:refreshOnlineCount')
 
 export interface SiteHostProbe {
@@ -1019,7 +1098,20 @@ export interface SiteHostProbe {
   tlsMs: number | null
   ttfbMs: number | null
   error?: string
-  verdict: 'ok' | 'dns-blocked' | 'dns-failed' | 'tcp-blocked' | 'dpi-blocked' | 'slow' | 'server-error'
+  verdict:
+    | 'ok'
+    | 'dns-blocked'
+    | 'dns-spoofed'
+    | 'dns-failed'
+    | 'tcp-blocked'
+    | 'dpi-blocked'
+    | 'tls-failed'
+    | 'tcp16-blocked'
+    | 'isp-stub'
+    | 'slow'
+    | 'server-error'
+  dnsSource?: 'hosts' | 'filter' | 'isp'
+  confidence?: 'high' | 'medium' | 'low'
   vpnMs?: number | null
   vpnError?: string
   zapret: 'listed' | 'excluded' | 'none'
@@ -1086,6 +1178,9 @@ export const systemGetRunningProcesses = (): Promise<RunningProcessInfo[]> =>
   invoke('system:getRunningProcesses')
 export const dialogPickExecutable = (): Promise<string | null> =>
   invoke('dialog:pickExecutable')
+/** Выбор .conf WireGuard / AmneziaWG: имя файла без расширения и его текст (null — отмена). */
+export const dialogPickWireGuardConf = (): Promise<{ name: string; text: string } | null> =>
+  invoke('dialog:pickWireGuardConf')
 export const dialogPickImageFile = (): Promise<string | null> =>
   invoke('dialog:pickImageFile')
 export const clipboardReadImage = (): Promise<string | null> =>

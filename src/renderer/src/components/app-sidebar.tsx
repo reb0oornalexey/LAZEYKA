@@ -21,8 +21,11 @@ import logoLight from '@renderer/assets/logo_white.png'
 import { useZapretStore } from '@renderer/store/zapret-store'
 import { useTgwsStore } from '@renderer/store/tgws-store'
 import { useIncyStore } from '@renderer/store/incy-store'
+import { useOnlineStore } from '@renderer/store/online-store'
+import { useAppConfig } from '@renderer/hooks/use-app-config'
 import { version } from '@renderer/utils/init'
-import { cn } from '@renderer/lib/utils'
+import { AppVersionButton } from '@renderer/components/changelog-dialog'
+import { cn, pluralRu } from '@renderer/lib/utils'
 
 type Service = 'zapret' | 'tgws' | 'incy' | 'exitlag' | null
 
@@ -101,6 +104,10 @@ const AppSidebar: React.FC = () => {
   // ExitLag «работает», только когда ядро подтвердило сессию с белым списком.
   const exitLagRunning = useIncyStore((s) => s.status.state === 'running' && Boolean(s.status.exitLagActive))
 
+  const { appConfig } = useAppConfig()
+  const online = useOnlineStore((st) => st.stats?.online ?? null)
+  const showOnline = appConfig?.onlineStats !== false && online != null && online > 0
+
   const isRunning = (service: Service): boolean =>
     service === 'zapret'
       ? zapretRunning
@@ -130,10 +137,29 @@ const AppSidebar: React.FC = () => {
         {!collapsed && (
           <div className="min-w-0 leading-tight">
             <div className="text-[13px] font-bold tracking-[0.16em] text-foreground">LAZEYKA</div>
-            {version && <div className="text-[10.5px] font-medium text-muted-foreground">v{version}</div>}
+            {version && (
+              <AppVersionButton className="app-nodrag block text-[10.5px] font-medium text-muted-foreground hover:text-foreground">
+                v{version}
+              </AppVersionButton>
+            )}
           </div>
         )}
       </div>
+
+      {showOnline && (
+        <div
+          title={`Сейчас онлайн: ${online!.toLocaleString('ru-RU')} ${pluralRu(online!, 'человек', 'человека', 'человек')}`}
+          className={cn(
+            'flex shrink-0 items-center gap-1.5 text-[11px] tabular-nums text-muted-foreground',
+            collapsed ? 'justify-center pb-1' : 'px-4 pb-1'
+          )}
+        >
+          <span className="relative flex size-2 shrink-0">
+            <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+          </span>
+          {collapsed ? <span>{online!.toLocaleString('ru-RU')}</span> : <span>{online!.toLocaleString('ru-RU')} онлайн</span>}
+        </div>
+      )}
 
       <nav className={cn('flex-1 overflow-y-auto overflow-x-hidden pb-2 no-scrollbar', collapsed ? 'px-2' : 'px-2.5')}>
         {groups.map((g, gi) => (

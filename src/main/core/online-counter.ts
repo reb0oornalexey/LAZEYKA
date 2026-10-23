@@ -3,7 +3,8 @@
  *
  * Раз в 5 минут (со случайным сдвигом) программа отправляет на свой
  * Cloudflare Worker (cloudflare/online-counter) анонимный случайный ID этой
- * установки и получает в ответ общее число. Ключей в программе нет — только
+ * установки и получает в ответ число онлайн и общую статистику (всего
+ * установок, активные за 24 ч / 7 / 30 дней, рекорд). Ключей в программе нет — только
  * публичный адрес. Выключается в настройках («Показывать, сколько людей
  * онлайн»): тогда не отправляется ничего.
  */
@@ -24,11 +25,34 @@ export const ONLINE_COUNTER_URL = 'https://lazeyka-online.reb0oorn-alexey.worker
 const INTERVAL_MS = 5 * 60 * 1000
 const JITTER_MS = 40 * 1000
 
-let lastOnline: { online: number; at: number } | null = null
+let lastOnline: OnlineStats | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 let zapretHintDone = false
 /** Подряд неудачных отметок — после сбоя повторяем через минуту, а не через 5. */
 let failures = 0
+
+function numFile(): string {
+  return path.join(dataDir(), 'online-num')
+}
+
+/** Номер установки, сохранённый с прошлых запусков (виден до первой отметки сессии). */
+function savedNum(): number | undefined {
+  try {
+    const n = Number(readFileSync(numFile(), 'utf-8').trim())
+    return Number.isSafeInteger(n) && n > 0 ? n : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function saveNum(n: number): void {
+  try {
+    mkdirSync(path.dirname(numFile()), { recursive: true })
+    writeFileSync(numFile(), String(n), 'utf-8')
+  } catch {
+    /* не критично */
+  }
+}
 
 function installId(): string {
   const file = path.join(dataDir(), 'online-id')
@@ -78,8 +102,13 @@ async function hintZapret(): Promise<void> {
   }
 }
 
+/** Неотрицательное целое число из ответа Worker или undefined (старый Worker этих полей не присылает). */
+function count(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : undefined
+}
+
 /** Запрос: сначала сетевой стек Chromium (как браузер), при ошибке — fetch Node. */
-async function postPing(url: string, body: string): Promise<{ online?: number } | null> {
+async function postPing(url: string, body: string): Promise<Record<string, unknown> | null> {
   const opts = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'User-Agent': 'LAZEYKA' },
@@ -88,10 +117,10 @@ async function postPing(url: string, body: string): Promise<{ online?: number } 
   try {
     const { net } = await import('electron')
     const res = await net.fetch(url, { ...opts, signal: AbortSignal.timeout(15_000) })
-    return (await res.json().catch(() => null)) as { online?: number } | null
+    return (await res.json().catch(() => null)) as Record<string, unknown> | null
   } catch {
     const res = await fetch(url, { ...opts, signal: AbortSignal.timeout(15_000) })
-    return (await res.json().catch(() => null)) as { online?: number } | null
+    return (await res.json().catch(() => null)) as Record<string, unknown> | null
   }
 }
 
@@ -105,8 +134,25 @@ async function ping(): Promise<boolean> {
   }
   try {
     const data = await postPing(`${ONLINE_COUNTER_URL.replace(/\/+$/, '')}/ping`, JSON.stringify({ id: installId() }))
-    if (data && typeof data.online === 'number') {
-      lastOnline = { online: data.online, at: Date.now() }
+    const online = count(data?.online)
+    if (data && online !== undefined) {
+      lastOnline = {
+        online,
+        at: Date.now(),
+        installs: count(data.installs),
+        active24h: count(data.active24h),
+        active7d: count(data.active7d),
+        active30d: count(data.active30d),
+        peakOnline: count(data.peakOnline),
+        num: ((): number | undefined => {
+          const n = count(data.num)
+          if (n && n > 0) {
+            saveNum(n)
+            return n
+          }
+          return savedNum()
+        })()
+      }
       broadcast()
       failures = 0
       return true
@@ -146,9 +192,14 @@ export function startOnlineCounter(): void {
 }
 
 /** Последнее известное число (null — выключено или ещё не получено). */
-export function getOnlineCount(): { online: number; at: number } | null {
+export function getOnlineCount(): OnlineStats | null {
   if (lastOnline && Date.now() - lastOnline.at > 20 * 60 * 1000) return null
   return lastOnline
+}
+
+/** Номер установки с прошлых запусков (для показа до первой отметки сессии). */
+export function getSavedInstallNum(): number | null {
+  return savedNum() ?? null
 }
 
 /** Сразу перепроверить (после смены настройки). */

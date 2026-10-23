@@ -12,6 +12,8 @@ interface ZapretTestStore {
   progress: StrategyTestProgress | null
   report: StrategyTestReport | null
   isRunning: boolean
+  /** Нажата «Остановить» — ждём окончания текущей стратегии. */
+  stopping: boolean
   set: (patch: Partial<ZapretTestStore>) => void
 }
 
@@ -19,6 +21,7 @@ export const useZapretTestStore = create<ZapretTestStore>((set) => ({
   progress: null,
   report: null,
   isRunning: false,
+  stopping: false,
   set: (patch) => set(patch)
 }))
 
@@ -34,8 +37,17 @@ export const attachZapretTestStore = (): (() => void) => {
     useZapretTestStore.getState().set({
       progress: p,
       isRunning,
-      report: p.report ?? useZapretTestStore.getState().report
+      ...(isRunning ? {} : { stopping: false }),
+      report: p.phase === 'idle' ? null : (p.report ?? useZapretTestStore.getState().report)
     })
+
+    if (p.phase === 'stopped' && p.report) {
+      const done = Object.keys(p.report.results).length
+      toast.info('Тест стратегий остановлен', {
+        description: `Проверено ${done}${p.report.totalStrategies ? ` из ${p.report.totalStrategies}` : ''}. Можно продолжить с этого места.`,
+        duration: 5000
+      })
+    }
 
     // Single global completion notification — appears on whichever tab
     // the user is currently looking at. Same vivid-green styling as the

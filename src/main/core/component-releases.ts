@@ -2,7 +2,7 @@
  * История версий компонентов (Zapret, TgWsProxy) — заметки авторов к релизам
  * с GitHub для окна обновления, как у самой LAZEYKA.
  */
-import { fetchGithubReleases } from '../utils/github-release'
+import { fetchGithubReleases, type GhAsset } from '../utils/github-release'
 import { getAppConfig } from '../config'
 import { tgwsCliPaths } from '../utils/dirs'
 
@@ -20,7 +20,23 @@ export interface ComponentReleaseNote {
   body: string
   publishedAt?: string
   url?: string
+  /** Архив, который ставит установщик компонента (для «Установить эту версию»). */
+  assetUrl?: string
   installed: boolean
+}
+
+/**
+ * Архив релиза — тот же выбор, что у установщиков: Zapret берёт
+ * zapret-discord-youtube*.zip (или любой .zip), TgWsProxy — архив исходников тега.
+ */
+function assetUrlFor(component: UpdatableComponent, tag: string, version: string, assets: GhAsset[] | undefined): string {
+  if (component === 'tgws') return `https://github.com/${REPOS.tgws}/archive/refs/tags/${tag}.zip`
+  const zip =
+    assets?.find((a) => /^zapret-discord-youtube.*\.zip$/i.test(a.name)) ?? assets?.find((a) => /\.zip$/i.test(a.name))
+  return (
+    zip?.browser_download_url ??
+    `https://github.com/${REPOS.zapret}/releases/download/${tag}/zapret-discord-youtube-${version}.zip`
+  )
 }
 
 function cmp(a: string, b: string): number {
@@ -68,6 +84,7 @@ export async function getComponentReleaseHistory(
             body: (r.body ?? '').replace(/\r\n/g, '\n').trim(),
             publishedAt: r.published_at,
             url: r.html_url,
+            assetUrl: assetUrlFor(component, tag, version, r.assets),
             installed: false
           }
         })

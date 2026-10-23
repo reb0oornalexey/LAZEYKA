@@ -176,6 +176,58 @@ export async function patchAppConfig(patch: Partial<AppConfig>): Promise<void> {
 }
 
 /**
+ * Сброс настроек LAZEYKA к умолчаниям. Сохраняются: тема, seed идентификатора
+ * устройства, адрес/порт/секрет прокси Telegram, выбранная стратегия Zapret и
+ * установленные версии Zapret/TgWsProxy (сами
+ * файлы остаются на диске, иначе обновления путались бы). Списки хостов и IPSet,
+ * подписки/узлы/профили INCY и анонимный ID онлайна лежат в отдельных файлах
+ * и этой функцией не затрагиваются. Работающие службы не останавливаются.
+ */
+export async function resetAppSettings(): Promise<void> {
+  const previous = writePromise
+  const current = await getAppConfig()
+  const prevAutoLaunch = current.autoLaunch
+  const prevDisableTray = current.disableTray
+  const prevHideTaskbarIcon = current.hideTaskbarIcon
+  const fresh = structuredClone(defaultConfig) as AppConfig
+  fresh.appTheme = current.appTheme
+  if (current.customTheme) fresh.customTheme = current.customTheme
+  if (current.deviceHwidSeed) fresh.deviceHwidSeed = current.deviceHwidSeed
+  if (current.lastBuildId) fresh.lastBuildId = current.lastBuildId
+  if (current.tgws?.secret) fresh.tgws = { ...fresh.tgws!, secret: current.tgws.secret }
+  if (current.tgws?.installedVersion) fresh.tgws = { ...fresh.tgws!, installedVersion: current.tgws.installedVersion }
+  if (current.zapret?.installedVersion) fresh.zapret = { ...fresh.zapret!, installedVersion: current.zapret.installedVersion }
+  // Выбранная стратегия и адрес прокси Telegram — без них после сброса
+  // Zapret не знал бы, что запускать, а ссылка в Telegram перестала бы работать.
+  if (current.zapret?.activeStrategy) fresh.zapret = { ...fresh.zapret!, activeStrategy: current.zapret.activeStrategy }
+  if (current.tgws?.host) fresh.tgws = { ...fresh.tgws!, host: current.tgws.host }
+  if (current.tgws?.port) fresh.tgws = { ...fresh.tgws!, port: current.tgws.port }
+  writePromise = (async () => {
+    await previous.catch(() => void 0)
+    await safeWriteConfig(stringifyYaml(fresh))
+    appConfig = fresh
+  })()
+  await writePromise
+  notifyConfigChanged()
+  // Побочные эффекты прежних значений: автозапуск, трей, значок на панели задач.
+  if (prevAutoLaunch) {
+    try { await disableAutoRun() } catch { /* noop */ }
+  }
+  if (prevDisableTray) {
+    try {
+      const tray = await import('../resolve/tray')
+      await tray.createTray()
+    } catch { /* noop */ }
+  }
+  if (prevDisableTray || prevHideTaskbarIcon) {
+    try {
+      const { applySkipTaskbar } = await import('../resolve/windowVisibility')
+      applySkipTaskbar()
+    } catch { /* noop */ }
+  }
+}
+
+/**
  * Synchronous config read, for the few call sites that cannot await — the GPU
  * flag before `app.whenReady`, the window `close` handler, the tray rebuild.
  *
