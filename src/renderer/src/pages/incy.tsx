@@ -152,9 +152,9 @@ function latencyDotClass(
   node: { latencyMs: number | null; latencyAt?: number },
   strong = false
 ): string {
-  const good = strong ? 'bg-emerald-500' : 'bg-emerald-400'
-  const mid = strong ? 'bg-amber-500' : 'bg-amber-400'
-  const bad = strong ? 'bg-rose-500' : 'bg-rose-400'
+  const good = strong ? 'bg-st-ok' : 'bg-st-ok'
+  const mid = strong ? 'bg-st-warn' : 'bg-st-warn'
+  const bad = strong ? 'bg-st-err' : 'bg-st-err'
   if (node.latencyMs === null) {
     return node.latencyAt ? bad : 'bg-muted-foreground/40'
   }
@@ -191,25 +191,25 @@ const LatencyBadge: React.FC<{
   const textClass =
     tier === 'good'
       ? strong
-        ? 'text-emerald-700 dark:text-emerald-500 bg-emerald-500/10'
-        : 'text-emerald-700 dark:text-emerald-400 bg-emerald-500/10'
+        ? 'text-st-ok-text bg-st-ok/10'
+        : 'text-st-ok-text bg-st-ok/10'
       : tier === 'mid'
       ? strong
-        ? 'text-amber-700 dark:text-amber-500 bg-amber-500/10'
-        : 'text-amber-700 dark:text-amber-400 bg-amber-500/10'
+        ? 'text-st-warn-text bg-st-warn/10'
+        : 'text-st-warn-text bg-st-warn/10'
       : tier === 'bad'
       ? strong
-        ? 'text-rose-700 dark:text-rose-500 bg-rose-500/10'
-        : 'text-rose-700 dark:text-rose-400 bg-rose-500/10'
+        ? 'text-st-err-text bg-st-err/10'
+        : 'text-st-err-text bg-st-err/10'
       : 'text-muted-foreground bg-muted/40'
 
   const fillClass =
     tier === 'good'
-      ? 'bg-emerald-500'
+      ? 'bg-st-ok'
       : tier === 'mid'
-      ? 'bg-amber-500'
+      ? 'bg-st-warn'
       : tier === 'bad'
-      ? 'bg-rose-500'
+      ? 'bg-st-err'
       : 'bg-muted-foreground/30'
 
   // 0 ms → full bar, 400 ms and worse → empty. Linear in between.
@@ -257,7 +257,7 @@ const LatencyBadge: React.FC<{
       className={cn(
         'text-[10px] font-mono px-1.5 py-0.5 rounded flex items-center gap-1',
         textClass,
-        info.unreachable && 'border border-rose-500/20'
+        info.unreachable && 'border border-st-err/20'
       )}
     >
       <span className={cn('h-1.5 w-1.5 rounded-full', latencyDotClass(node, strong))} />
@@ -282,7 +282,7 @@ const LatencyBadge: React.FC<{
 const NotWired: React.FC<{ reason: string; label?: string }> = ({ reason, label }) => (
   <span
     title={reason}
-    className="ml-2 inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-400 align-middle cursor-help"
+    className="ml-2 inline-flex items-center rounded-full border border-st-warn/40 bg-st-warn/10 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-st-warn-text align-middle cursor-help"
   >
     {label ?? 'не активна'}
   </span>
@@ -326,7 +326,7 @@ const TrafficSplitBar: React.FC<{ sent: number; received: number }> = ({ sent, r
   const sentPct = total > 0 ? (sent / total) * 100 : 50
   return (
     <div className="h-1.5 w-full rounded-full bg-muted/50 overflow-hidden flex">
-      <div className="h-full bg-emerald-500" style={{ width: `${sentPct}%` }} />
+      <div className="h-full bg-st-ok" style={{ width: `${sentPct}%` }} />
       <div className="h-full bg-primary flex-1" />
     </div>
   )
@@ -373,7 +373,7 @@ const StatsTab: React.FC<{
   return (
     <div className="space-y-4">
       {stats && !stats.trafficAvailable && (
-        <div className="flex items-start gap-2 p-3 rounded-xl border border-amber-500/40 bg-amber-500/10 text-[11px] text-amber-800 dark:text-amber-300">
+        <div className="flex items-start gap-2 p-3 rounded-xl border border-st-warn/40 bg-st-warn/10 text-[11px] text-st-warn-text">
           <HelpCircle className="h-3.5 w-3.5 mt-px shrink-0" />
           <span>
             Счётчик байтов недоступен для текущего подключения — этот режим работает через ядро
@@ -403,7 +403,7 @@ const StatsTab: React.FC<{
             <div className="flex items-start justify-between">
               <div>
                 <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Отправлено
+                  <span className="h-1.5 w-1.5 rounded-full bg-st-ok" /> Отправлено
                 </div>
                 <div className="text-lg font-bold font-mono">{formatBytes(stats?.sessionBytesSent ?? 0)}</div>
               </div>
@@ -440,7 +440,7 @@ const StatsTab: React.FC<{
             <div className="flex items-start justify-between">
               <div>
                 <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Отправлено
+                  <span className="h-1.5 w-1.5 rounded-full bg-st-ok" /> Отправлено
                 </div>
                 <div className="text-lg font-bold font-mono">{formatBytes(stats?.totalBytesSent ?? 0)}</div>
               </div>
@@ -821,7 +821,7 @@ const HwidCard: React.FC<{
       </div>
 
       {limitReached.length > 0 && (
-        <div className="p-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 text-[11px] leading-relaxed text-amber-700 dark:text-amber-200/90">
+        <div className="p-2.5 rounded-xl border border-st-warn/40 bg-st-warn/10 text-[11px] leading-relaxed text-st-warn-text">
           Лимит устройств исчерпан у подписки «{limitReached[0].title}». Удалите лишнее устройство
           в личном кабинете провайдера — иначе подписка перестанет обновляться.
         </div>
@@ -883,7 +883,7 @@ const GeoCategoriesCard: React.FC<{
   ]
 
   const dotClass = (t: 'direct' | 'proxy' | 'block'): string =>
-    t === 'direct' ? 'bg-emerald-500' : t === 'proxy' ? 'bg-primary' : 'bg-rose-500'
+    t === 'direct' ? 'bg-st-ok' : t === 'proxy' ? 'bg-primary' : 'bg-st-err'
 
   const offCount = catalog.filter((c) => !enabled(c.id)).length
   const shown = expanded ? catalog : catalog.filter((c) => c.essential || !enabled(c.id))
@@ -909,7 +909,7 @@ const GeoCategoriesCard: React.FC<{
 
       <CardContent className={cn('space-y-3', !geoOn && 'opacity-50 pointer-events-none')}>
         {geo?.missing && (
-          <div className="flex items-start gap-2 p-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10 text-[11px] text-amber-800 dark:text-amber-300">
+          <div className="flex items-start gap-2 p-2.5 rounded-lg border border-st-warn/40 bg-st-warn/10 text-[11px] text-st-warn-text">
             <HelpCircle className="h-3.5 w-3.5 mt-px shrink-0" />
             <span>
               Файлы баз пока не скачаны — правила ниже не применяются. Они загрузятся сами при
@@ -1045,8 +1045,8 @@ const RoutingProfiles: React.FC<{
     m === 'global'
       ? 'border-primary/40 text-primary bg-primary/10'
       : m === 'bypass-ru'
-      ? 'border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-500/10'
-      : 'border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-500/10'
+      ? 'border-st-warn/40 text-st-warn-text bg-st-warn/10'
+      : 'border-st-ok/40 text-st-ok-text bg-st-ok/10'
 
   const run = async (fn: () => Promise<unknown>): Promise<void> => {
     setBusy(true)
@@ -1169,7 +1169,7 @@ const RoutingProfiles: React.FC<{
         })}
 
         {!activeId && (
-          <p className="text-[11px] text-amber-700 dark:text-amber-300/90">
+          <p className="text-[11px] text-st-warn-text">
             Текущие настройки изменены вручную и не совпадают ни с одним профилем — сохраните их
             как новый, чтобы вернуться к ним позже.
           </p>
@@ -1878,7 +1878,7 @@ export default function IncyPage(): React.ReactElement {
         className={cn(
           'flex items-center justify-between p-3 rounded-xl border transition-all duration-200',
           isNodeActive
-            ? 'border-emerald-500/60 bg-emerald-500/10 shadow-sm'
+            ? 'border-st-ok/60 bg-st-ok/10 shadow-sm'
             : isNodeSelected
             ? 'border-primary/60 bg-primary/10'
             : 'border-border bg-card/40 hover:bg-card/70'
@@ -1896,8 +1896,8 @@ export default function IncyPage(): React.ReactElement {
                 variant="outline"
                 className={cn(
                   'text-[9px] px-1.5 py-0 font-mono uppercase',
-                  node.protocol === 'hysteria2' && 'border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-500/10',
-                  node.protocol === 'wireguard' && 'border-blue-500/40 text-blue-600 dark:text-blue-400 bg-blue-500/10'
+                  node.protocol === 'hysteria2' && 'border-st-warn/40 text-st-warn-text bg-st-warn/10',
+                  node.protocol === 'wireguard' && 'border-st-info/40 text-st-info-text bg-st-info/10'
                 )}
               >
                 {node.protocol === 'hysteria2' ? 'HYS2' : node.protocol === 'wireguard' ? 'WARP' : node.protocol}
@@ -1935,7 +1935,7 @@ export default function IncyPage(): React.ReactElement {
             }}
             className={cn(
               'text-xs h-7 min-w-[90px]',
-              isNodeActive && 'bg-emerald-500 hover:bg-emerald-600 text-white'
+              isNodeActive && 'bg-st-ok hover:bg-st-ok text-white'
             )}
           >
             {isNodeActive ? 'Активен' : 'Подключить'}
@@ -2021,9 +2021,9 @@ export default function IncyPage(): React.ReactElement {
             перестал работать». */}
         {settings?.perAppProxy &&
           settings.perAppMode !== 'bypass_only' && (
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-st-warn/40 bg-st-warn/10 px-3 py-2.5 text-xs">
               <div className="flex items-start gap-2 min-w-0">
-                <Gamepad2 className="size-4 text-amber-500 shrink-0 mt-0.5" />
+                <Gamepad2 className="size-4 text-st-warn-text shrink-0 mt-0.5" />
                 <div className="min-w-0">
                   <div className="font-semibold text-foreground">Включён режим ExitLag</div>
                   <div className="text-muted-foreground truncate">
@@ -2128,7 +2128,7 @@ export default function IncyPage(): React.ReactElement {
               className={cn(
                 'inline-flex items-center gap-2 text-xs font-mono font-semibold py-1 px-3 rounded-full border transition-all duration-300',
                 isConnected
-                  ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-700 dark:text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.25)]'
+                  ? 'bg-st-ok/15 border-st-ok/30 text-st-ok-text shadow-[0_0_15px_rgba(16,185,129,0.25)]'
                   : 'bg-card/60 border-border/60 text-muted-foreground'
               )}
             >
@@ -2149,8 +2149,8 @@ export default function IncyPage(): React.ReactElement {
         {activeTab === 'main' && (
           <div className="space-y-4 max-w-2xl mx-auto py-2">
             {(status.killSwitchActive || status.recovering) && status.state !== 'running' && (
-              <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
-                <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <div className="flex items-start gap-3 rounded-lg border border-st-warn/40 bg-st-warn/10 px-3 py-2.5">
+                <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-st-warn-text" />
                 <div className="min-w-0 flex-1 text-xs leading-relaxed">
                   <div className="font-semibold text-foreground">
                     {status.killSwitchActive ? 'VPN оборвался — Kill Switch держит трафик' : 'VPN оборвался'}
@@ -2188,7 +2188,7 @@ export default function IncyPage(): React.ReactElement {
                 <Card className={cn(
                   'border transition-all duration-300 shadow-md',
                   isConnected
-                    ? 'border-emerald-500/50 bg-gradient-to-r from-emerald-950/30 via-card/90 to-card/90'
+                    ? 'border-st-ok/50 bg-gradient-to-r from-st-ok/30 via-card/90 to-card/90'
                     : 'border-primary/30 bg-card/60'
                 )}>
                   <CardContent className="p-4 flex items-center justify-between gap-4">
@@ -2202,7 +2202,7 @@ export default function IncyPage(): React.ReactElement {
                         className={cn(
                           'h-12 w-12 rounded-full shrink-0 shadow-lg transition-all duration-200',
                           isConnected
-                            ? 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-emerald-500/30 ring-4 ring-emerald-500/20'
+                            ? 'bg-st-ok hover:bg-st-ok text-white shadow-st-ok/30 ring-4 ring-st-ok/20'
                             : 'bg-primary hover:bg-primary/90 text-white shadow-primary/30 ring-4 ring-primary/20'
                         )}
                       >
@@ -2218,7 +2218,7 @@ export default function IncyPage(): React.ReactElement {
                             variant={isConnected ? 'default' : 'secondary'}
                             className={cn(
                               'text-[10px] px-1.5 py-0 font-mono font-bold uppercase',
-                              isConnected && 'bg-emerald-500 text-white'
+                              isConnected && 'bg-st-ok text-white'
                             )}
                           >
                             {status.connectionMode.toUpperCase()}
@@ -2374,9 +2374,9 @@ export default function IncyPage(): React.ReactElement {
                         'w-36 h-36 rounded-full flex flex-col items-center justify-center gap-1.5 transition-all duration-300 shadow-2xl border-4 relative',
                         isBusy && 'cursor-wait border-primary/70 bg-primary/10 text-primary',
                         !isBusy && isConnected &&
-                          'bg-emerald-500/20 border-emerald-500 text-emerald-600 dark:text-emerald-400 shadow-emerald-500/25 hover:scale-105',
+                          'bg-st-ok/20 border-st-ok text-st-ok-text shadow-st-ok/25 hover:scale-105',
                         !isBusy && !isConnected && hasError &&
-                          'bg-rose-500/10 border-rose-500/60 text-rose-600 dark:text-rose-400 hover:scale-105',
+                          'bg-st-err/10 border-st-err/60 text-st-err-text hover:scale-105',
                         !isBusy && !isConnected && !hasError &&
                           'bg-card/80 border-primary/40 text-muted-foreground hover:border-primary hover:text-primary hover:scale-105'
                       )}
@@ -2409,8 +2409,8 @@ export default function IncyPage(): React.ReactElement {
                       className={cn(
                         'text-sm font-semibold',
                         isBusy && 'text-primary',
-                        !isBusy && isConnected && 'text-emerald-600 dark:text-emerald-400',
-                        !isBusy && !isConnected && hasError && 'text-rose-600 dark:text-rose-400',
+                        !isBusy && isConnected && 'text-st-ok-text',
+                        !isBusy && !isConnected && hasError && 'text-st-err-text',
                         !isBusy && !isConnected && !hasError && 'text-muted-foreground'
                       )}
                     >
@@ -2479,7 +2479,7 @@ export default function IncyPage(): React.ReactElement {
                   <CardContent className="p-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 min-w-0">
-                        <Star className="h-4 w-4 text-amber-700 dark:text-amber-400 fill-amber-400 shrink-0" />
+                        <Star className="h-4 w-4 text-st-warn-text fill-st-warn shrink-0" />
                         <div className="font-bold text-sm text-foreground truncate">
                           {subscription.title}
                         </div>
@@ -2510,7 +2510,7 @@ export default function IncyPage(): React.ReactElement {
                           title="Замерить пинг всех серверов"
                           className="h-7 w-7"
                         >
-                          <Activity className={cn('h-3.5 w-3.5', testingPings && 'animate-pulse text-amber-700 dark:text-amber-500')} />
+                          <Activity className={cn('h-3.5 w-3.5', testingPings && 'animate-pulse text-st-warn-text')} />
                         </Button>
                       </div>
                     </div>
@@ -2571,7 +2571,7 @@ export default function IncyPage(): React.ReactElement {
                             className="text-xs h-7 gap-1.5 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30"
                             onClick={() => window.open(subscription.premiumUrl, '_blank')}
                           >
-                            <Star className="h-3 w-3 text-amber-700 dark:text-amber-400" /> Продлить
+                            <Star className="h-3 w-3 text-st-warn-text" /> Продлить
                           </Button>
                         )}
                       </div>
@@ -2597,7 +2597,7 @@ export default function IncyPage(): React.ReactElement {
                           return (
                             <div
                               key={idx}
-                              className="flex items-start gap-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-200/90"
+                              className="flex items-start gap-2 text-[11px] leading-relaxed text-st-warn-text"
                             >
                               <span className="shrink-0">{emoji}</span>
                               <span>{cleanText || ann}</span>
@@ -2702,7 +2702,7 @@ export default function IncyPage(): React.ReactElement {
                   className={cn(
                     'flex items-center justify-between p-3.5 rounded-xl border cursor-pointer transition-all duration-200 hover:border-primary/60 shadow-sm',
                     isConnected
-                      ? 'border-emerald-500/60 bg-emerald-950/20'
+                      ? 'border-st-ok/60 bg-st-ok/20'
                       : 'border-primary/40 bg-card/60 hover:bg-card/90'
                   )}
                 >
@@ -2720,9 +2720,9 @@ export default function IncyPage(): React.ReactElement {
                           className={cn(
                             'text-[9px] px-1.5 py-0 font-mono uppercase',
                             activeOrSelectedNode.protocol === 'hysteria2'
-                              ? 'border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-500/10'
+                              ? 'border-st-warn/40 text-st-warn-text bg-st-warn/10'
                               : activeOrSelectedNode.protocol === 'wireguard'
-                              ? 'border-blue-500/40 text-blue-600 dark:text-blue-400 bg-blue-500/10'
+                              ? 'border-st-info/40 text-st-info-text bg-st-info/10'
                               : 'border-primary/40 text-primary bg-primary/10'
                           )}
                         >
@@ -3030,7 +3030,7 @@ export default function IncyPage(): React.ReactElement {
                             collapsed && '-rotate-90'
                           )}
                         />
-                        <Star className="h-4 w-4 text-amber-700 dark:text-amber-400 fill-amber-400 shrink-0" />
+                        <Star className="h-4 w-4 text-st-warn-text fill-st-warn shrink-0" />
                         <div className="font-bold text-sm text-foreground truncate">{sub.title}</div>
                         <Badge
                           variant="secondary"
@@ -3064,7 +3064,7 @@ export default function IncyPage(): React.ReactElement {
                           title="Замерить пинг всех серверов"
                           className="h-7 w-7"
                         >
-                          <Activity className={cn('h-3.5 w-3.5', testingPings && 'animate-pulse text-amber-700 dark:text-amber-500')} />
+                          <Activity className={cn('h-3.5 w-3.5', testingPings && 'animate-pulse text-st-warn-text')} />
                         </Button>
                         <Button
                           size="icon-sm"
@@ -3120,7 +3120,7 @@ export default function IncyPage(): React.ReactElement {
                           return (
                             <div
                               key={idx}
-                              className="flex items-start gap-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-200/90"
+                              className="flex items-start gap-2 text-[11px] leading-relaxed text-st-warn-text"
                             >
                               <span className="shrink-0">{emoji}</span>
                               <span>{cleanText || ann}</span>
@@ -3269,10 +3269,10 @@ export default function IncyPage(): React.ReactElement {
                                 'px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition cursor-pointer',
                                 rule.action === a
                                   ? a === 'direct'
-                                    ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
+                                    ? 'border-st-ok/50 bg-st-ok/15 text-st-ok-text'
                                     : a === 'proxy'
                                       ? 'border-primary/50 bg-primary/15 text-primary'
-                                      : 'border-rose-500/50 bg-rose-500/15 text-rose-700 dark:text-rose-400'
+                                      : 'border-st-err/50 bg-st-err/15 text-st-err-text'
                                   : 'border-border/50 text-muted-foreground hover:bg-foreground/[0.05]'
                               )}
                             >
@@ -3330,7 +3330,7 @@ export default function IncyPage(): React.ReactElement {
                 </div>
 
                 {isConnected && (
-                  <p className="text-[11px] text-amber-700 dark:text-amber-300/90 pt-1">
+                  <p className="text-[11px] text-st-warn-text pt-1">
                     Изменения применятся после переподключения.
                   </p>
                 )}

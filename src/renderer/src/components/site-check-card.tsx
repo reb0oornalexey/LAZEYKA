@@ -242,9 +242,9 @@ const SiteCheckCard: React.FC = () => {
                         </button>
                         <span
                           className={cn(
-                            v.tone === 'ok' && 'text-emerald-500',
-                            v.tone === 'warn' && 'text-amber-500',
-                            v.tone === 'bad' && 'text-rose-500 font-bold'
+                            v.tone === 'ok' && 'text-st-ok-text',
+                            v.tone === 'warn' && 'text-st-warn-text',
+                            v.tone === 'bad' && 'text-st-err-text font-bold'
                           )}
                         >
                           {v.text}
@@ -296,10 +296,10 @@ const SiteCheckCard: React.FC = () => {
                         {h.host}
                       </button>
                       <span className="text-right text-muted-foreground">{h.requests}</span>
-                      <span className={cn('text-right', h.maxMs > 3000 && 'text-amber-500')}>
+                      <span className={cn('text-right', h.maxMs > 3000 && 'text-st-warn-text')}>
                         {(h.maxMs / 1000).toFixed(1)} с
                       </span>
-                      <span className={cn((h.hanging || h.failed) && 'text-rose-500')}>
+                      <span className={cn((h.hanging || h.failed) && 'text-st-err-text')}>
                         {h.hanging ? `висит: ${h.hanging}` : h.failed ? `ошибок: ${h.failed}` : ''}
                       </span>
                     </div>

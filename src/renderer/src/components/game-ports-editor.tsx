@@ -189,7 +189,7 @@ const GamePortsEditor: React.FC<Props> = ({ disabled = false, mode, onModeChange
         </label>
       </div>
       {(!tcpValid || !udpValid) && (
-        <p className="text-[11px] text-rose-600 dark:text-rose-400">
+        <p className="text-[11px] text-st-err-text">
           Формат: 27015 или 27015-27050, через запятую, числа до 65535.
         </p>
       )}

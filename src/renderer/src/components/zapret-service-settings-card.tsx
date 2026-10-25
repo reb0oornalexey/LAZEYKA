@@ -413,11 +413,11 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
                   <span className="text-xs font-semibold text-foreground">Статус службы:</span>
                   {serviceStatus?.installed ? (
                     serviceStatus.running ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-st-ok/15 border border-st-ok/30 px-2.5 py-0.5 text-xs font-semibold text-st-ok-text">
                         <CheckCircle2 className="size-3" /> Работает (автозапуск)
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-yellow-500/15 border border-yellow-500/30 px-2.5 py-0.5 text-xs font-semibold text-yellow-400">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-st-warn/15 border border-st-warn/30 px-2.5 py-0.5 text-xs font-semibold text-st-warn-text">
                         <AlertTriangle className="size-3" /> Установлена (остановлена)
                       </span>
                     )
@@ -451,7 +451,7 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
                     variant="outline"
                     onClick={() => { void removeService() }}
                     disabled={disabled || !!busyService}
-                    className="h-8 text-xs text-rose-700 dark:text-rose-400 hover:text-rose-300 hover:border-rose-500/40 rounded-xl gap-1.5"
+                    className="h-8 text-xs text-st-err-text hover:text-st-err-text hover:border-st-err/40 rounded-xl gap-1.5"
                   >
                     {busyService === 'remove' ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
                     Удалить службу
@@ -651,17 +651,17 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-medium">Статус hosts:</span>
                   {hostsResult?.needsUpdate ? (
-                    <span className="inline-flex items-center gap-1 rounded bg-yellow-500/10 px-2 py-0.5 text-xs font-medium text-yellow-500">
+                    <span className="inline-flex items-center gap-1 rounded bg-st-warn/10 px-2 py-0.5 text-xs font-medium text-st-warn-text">
                       <AlertTriangle className="h-3 w-3" /> Требуется обновление
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-500">
+                    <span className="inline-flex items-center gap-1 rounded bg-st-ok/10 px-2 py-0.5 text-xs font-medium text-st-ok-text">
                       <ShieldCheck className="h-3 w-3" /> Актуален
                     </span>
                   )}
                 </div>
                 {hostsResult?.hasYoutubeEntries && (
-                  <div className="mt-1 text-[11px] text-yellow-500">
+                  <div className="mt-1 text-[11px] text-st-warn-text">
                     Найдены старые записи youtube.com (рекомендуется обновить).
                   </div>
                 )}
@@ -730,13 +730,13 @@ const ZapretServiceSettingsCard: React.FC<Props> = ({
                       className={cn(
                         'flex flex-col gap-2 rounded-md border p-2.5 sm:flex-row sm:items-center sm:justify-between',
                         isOk && 'border-border/50 bg-background/50',
-                        isWarn && 'border-yellow-500/30 bg-yellow-500/5',
+                        isWarn && 'border-st-warn/30 bg-st-warn/5',
                         isError && 'border-destructive/30 bg-destructive/5'
                       )}
                     >
                       <div className="flex items-start gap-2.5 min-w-0">
-                        {isOk && <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-500 mt-0.5" />}
-                        {isWarn && <AlertTriangle className="h-4 w-4 shrink-0 text-yellow-500 mt-0.5" />}
+                        {isOk && <CheckCircle2 className="h-4 w-4 shrink-0 text-st-ok-text mt-0.5" />}
+                        {isWarn && <AlertTriangle className="h-4 w-4 shrink-0 text-st-warn-text mt-0.5" />}
                         {isError && <AlertCircle className="h-4 w-4 shrink-0 text-destructive mt-0.5" />}
                         <div className="min-w-0">
                           <div className="text-xs font-medium text-foreground">{item.title}</div>

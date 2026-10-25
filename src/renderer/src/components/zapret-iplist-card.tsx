@@ -237,12 +237,12 @@ const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason })
                         className={cn(
                           'flex select-none items-start gap-2.5 rounded-xl border p-3 transition-all',
                           missing
-                            ? 'cursor-not-allowed border-amber-500/40 bg-amber-500/[0.04]'
+                            ? 'cursor-not-allowed border-st-warn/40 bg-st-warn/[0.04]'
                             : 'cursor-pointer',
                           checked
                             ? 'border-primary/60 bg-primary/10 '
                             : s.recommended && !missing
-                              ? 'border-amber-500/50 bg-amber-500/[0.06] hover:bg-amber-500/10'
+                              ? 'border-st-warn/50 bg-st-warn/[0.06] hover:bg-st-warn/10'
                               : !missing && 'border-border/70 bg-card/40 hover:bg-foreground/[0.04]',
                           // Авторский пак занимает всю ширину: он покрывает
                           // почти все наборы ниже, и ставить его в один ряд с
@@ -262,13 +262,13 @@ const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason })
                           <div className="flex items-center justify-between gap-2">
                             <span className="flex items-center gap-1.5 min-w-0">
                               {s.recommended && (
-                                <Star className="size-3.5 shrink-0 fill-amber-400 text-amber-500" />
+                                <Star className="size-3.5 shrink-0 fill-st-warn text-st-warn-text" />
                               )}
                               <span className="text-xs font-semibold text-foreground truncate">
                                 {s.name}
                               </span>
                               {s.recommended && (
-                                <span className="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                                <span className="shrink-0 rounded-full border border-st-warn/40 bg-st-warn/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-st-warn-text">
                                   от автора · рекомендуется
                                 </span>
                               )}
@@ -277,9 +277,9 @@ const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason })
                               className={cn(
                                 'shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-mono',
                                 missing
-                                  ? 'border-amber-500/50 bg-amber-500/15 text-amber-700 dark:text-amber-400'
+                                  ? 'border-st-warn/50 bg-st-warn/15 text-st-warn-text'
                                   : s.recommended
-                                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                                    ? 'border-st-warn/40 bg-st-warn/10 text-st-warn-text'
                                     : 'border-border/40 bg-foreground/[0.06] text-muted-foreground'
                               )}
                             >
@@ -290,7 +290,7 @@ const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason })
                             {s.description}
                           </p>
                           {missing && (
-                            <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+                            <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-relaxed text-st-warn-text">
                               <AlertTriangle className="mt-px size-3.5 shrink-0" />
                               <span>
                                 Файл пака не найден в этой сборке
@@ -378,7 +378,7 @@ const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason })
                   title={`Удалить текущие ${snapshot.total} записей и оставить только выбранное`}
                   className={cn(
                     confirmReplace &&
-                      'border-red-500/60 bg-red-500/10 text-red-400 hover:text-red-300 hover:bg-red-500/15'
+                      'border-st-err/60 bg-st-err/10 text-st-err-text hover:text-st-err-text hover:bg-st-err/15'
                   )}
                 >
                   {confirmReplace
@@ -403,7 +403,7 @@ const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason })
                     variant="ghost"
                     onClick={() => { void clearAll() }}
                     disabled={disabled || busy || snapshot.total === 0}
-                    className="text-red-400 hover:text-red-300"
+                    className="text-st-err-text hover:text-st-err-text"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                     Очистить

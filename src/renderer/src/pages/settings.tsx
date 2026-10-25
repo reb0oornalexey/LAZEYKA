@@ -41,12 +41,6 @@ import {
 import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
 import BasePage from '@renderer/components/base/base-page'
 
-const themes: AppTheme[] = ['light', 'dark']
-const themeLabels: Record<AppTheme, string> = {
-  light: 'Светлая',
-  dark: 'Тёмная'
-}
-
 const Settings: React.FC = () => {
   const { appConfig, patchAppConfig } = useAppConfig()
   const [dohProviders, setDohProviders] = useState<DohProvider[]>([])
@@ -288,30 +282,6 @@ const Settings: React.FC = () => {
   return (
     <BasePage title="Настройки">
       <div className="px-4 pb-6 space-y-4">
-        {/* Appearance */}
-        <Card className="cyber-card">
-          <CardHeader>
-            <CardTitle>Внешний вид</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div>
-              <Label className="text-sm">Тема</Label>
-              <div className="flex gap-2 mt-2">
-                {themes.map((theme) => (
-                  <Button
-                    key={theme}
-                    size="sm"
-                    variant={appConfig?.appTheme === theme ? 'default' : 'outline'}
-                    onClick={() => patchAppConfig({ appTheme: theme })}
-                  >
-                    {themeLabels[theme]}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
         {/* Encrypted DNS (DoH) */}
         <Card className="cyber-card">
           <CardHeader>
@@ -347,7 +317,7 @@ const Settings: React.FC = () => {
                             </span>
                           )}
                           {p.latencyMs !== null ? (
-                            <span className="text-[10px] font-mono text-emerald-700 dark:text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                            <span className="text-[10px] font-mono text-st-ok-text bg-st-ok/10 px-1.5 py-0.5 rounded">
                               {p.latencyMs} мс
                             </span>
                           ) : (
@@ -566,7 +536,7 @@ const Settings: React.FC = () => {
                             className={cn(
                               'text-[10px] px-1.5 py-0.5 rounded font-mono',
                               cat.enabled
-                                ? 'text-emerald-700 dark:text-emerald-500 bg-emerald-500/10'
+                                ? 'text-st-ok-text bg-st-ok/10'
                                 : 'text-muted-foreground bg-muted'
                             )}
                           >

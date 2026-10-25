@@ -22,6 +22,28 @@ files:
   - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  # Всё ниже — рабочие папки и файлы проекта, программе они не нужны.
+  # Без этих исключений в app.asar попадали scratch (гигабайты), копия
+  # resources (она и так кладётся отдельно через extraResources),
+  # github-release, скрины и логи — установщик раздувался до ~600 МБ.
+  - '!resources/**'
+  - '!scratch/**'
+  - '!incy scratch/**'
+  - '!github-release/**'
+  - '!Claude outputs/**'
+  - '!Скрины/**'
+  - '!docs/**'
+  - '!cloudflare/**'
+  - '!patches/**'
+  - '!build/**'
+  - '!dist/**'
+  - '!*.md'
+  - '!*.txt'
+  - '!*.bat'
+  - '!*.tsbuildinfo'
+  - '!lazeyka-report-*'
+  - '!incy-logs-*'
+  - '!{components.json,eslint.config.cjs,COPYRIGHT,LICENSE}'
 extraResources:
   - from: './resources/'
     to: ''

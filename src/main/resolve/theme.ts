@@ -7,7 +7,7 @@ import { mainWindow } from '..'
 
 let insertedCSSKeyMain: string | undefined
 
-export function setNativeTheme(theme: AppTheme): void {
+export function setNativeTheme(theme: AppTheme | 'system'): void {
   nativeTheme.themeSource = theme
 }
 
@@ -25,6 +25,11 @@ async function readTheme(theme: string): Promise<string> {
   const full = path.join(themesDir(), theme)
   if (!existsSync(full)) return ''
   return await readFile(full, 'utf-8')
+}
+
+/** Текст пользовательской темы для окна: оно ставит его в <head> ПОСЛЕ оформления, чтобы CSS мог его переопределить. */
+export async function readThemeCss(theme: string): Promise<string> {
+  return readTheme(path.basename(theme))
 }
 
 export async function applyTheme(theme: string): Promise<void> {

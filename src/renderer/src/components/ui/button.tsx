@@ -9,15 +9,16 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        default:
+          "bg-[color:var(--btn-primary-bg)] text-[color:var(--btn-primary-fg)] hover:bg-[color:var(--btn-primary-hover)] shadow-[inset_0_0_0_1px_var(--btn-primary-border)]",
         destructive:
-          "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/30 dark:focus-visible:ring-destructive/40",
+          "bg-[color:var(--btn-destructive-bg)] text-[color:var(--btn-destructive-fg)] hover:bg-[color:var(--btn-destructive-hover)] shadow-[inset_0_0_0_1px_var(--btn-destructive-border)] focus-visible:ring-destructive/30 dark:focus-visible:ring-destructive/40",
         outline:
-          "border border-border bg-card hover:bg-accent hover:border-primary/40 text-foreground",
+          "border border-[color:var(--btn-outline-border)] bg-[color:var(--btn-outline-bg)] text-[color:var(--btn-outline-fg)] hover:bg-[color:var(--btn-outline-hover)] hover:border-[color:var(--btn-outline-hover-border)]",
         secondary:
-          "bg-secondary text-secondary-foreground hover:bg-accent border border-border",
+          "bg-[color:var(--btn-secondary-bg)] text-[color:var(--btn-secondary-fg)] hover:bg-[color:var(--btn-secondary-hover)] border border-[color:var(--btn-secondary-border)]",
         ghost:
-          "hover:bg-accent text-foreground",
+          "bg-[color:var(--btn-ghost-bg)] text-[color:var(--btn-ghost-fg)] hover:bg-[color:var(--btn-ghost-hover)] shadow-[inset_0_0_0_1px_var(--btn-ghost-border)]",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

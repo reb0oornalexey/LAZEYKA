@@ -66,7 +66,7 @@ interface ModuleInfo {
 
 const MODULES: ModuleInfo[] = [
   {
-    icon: <Shield className="h-5 w-5 text-emerald-700 dark:text-emerald-400" />,
+    icon: <Shield className="h-5 w-5 text-st-ok-text" />,
     title: 'Zapret — обход блокировок без VPN',
     where: 'Вкладка «Zapret»',
     badge: 'Начните с этого',
@@ -156,7 +156,7 @@ const MODULES: ModuleInfo[] = [
       'Подключилось, но сайты не грузятся — переключите профиль на «Глобально». Не помогло — смените сервер. Совсем ничего — вкладка «Логи», последние строки скажут причину.'
   },
   {
-    icon: <Send className="h-5 w-5 text-sky-700 dark:text-sky-400" />,
+    icon: <Send className="h-5 w-5 text-st-info-text" />,
     title: 'Telegram WS Proxy — только для Telegram',
     where: 'Вкладка «Telegram»',
     badge: 'Без подписки',
@@ -198,7 +198,7 @@ const MODULES: ModuleInfo[] = [
     tip: 'Если ваша игра не распозналась, а пинг подрос — временно выключите Zapret на время матча.'
   },
   {
-    icon: <Lock className="h-5 w-5 text-emerald-700 dark:text-emerald-400" />,
+    icon: <Lock className="h-5 w-5 text-st-ok-text" />,
     title: 'Шифрованный DNS',
     where: 'Настройки → DNS',
     badge: 'Приватность',
@@ -218,7 +218,7 @@ const MODULES: ModuleInfo[] = [
     tip: 'Иногда одного шифрованного DNS достаточно, чтобы сайт открылся, — попробуйте до включения VPN.'
   },
   {
-    icon: <Bot className="h-5 w-5 text-amber-700 dark:text-amber-400" />,
+    icon: <Bot className="h-5 w-5 text-st-warn-text" />,
     title: 'Автообновление ядер и списков',
     where: 'Работает в фоне',
     badge: 'Автоматически',
@@ -375,17 +375,17 @@ const About: React.FC = () => {
         </Card>
 
         {/* С чего начать */}
-        <Card className="cyber-card border-emerald-500/30 bg-emerald-500/[0.04]">
+        <Card className="cyber-card border-st-ok/30 bg-st-ok/[0.04]">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <Rocket className="size-4 text-emerald-600 dark:text-emerald-400" />
+              <Rocket className="size-4 text-st-ok-text" />
               С чего начать
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2.5">
             {QUICK_START.map((s) => (
               <div key={s.step} className="flex items-start gap-3">
-                <span className="shrink-0 size-6 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-700 dark:text-emerald-400 text-[11px] font-bold flex items-center justify-center">
+                <span className="shrink-0 size-6 rounded-full bg-st-ok/15 border border-st-ok/40 text-st-ok-text text-[11px] font-bold flex items-center justify-center">
                   {s.step}
                 </span>
                 <div className="min-w-0">
@@ -395,7 +395,7 @@ const About: React.FC = () => {
               </div>
             ))}
             <div className="flex items-start gap-2 pt-2 border-t border-border/40 text-[11px] text-muted-foreground leading-relaxed">
-              <AlertTriangle className="size-3.5 mt-px shrink-0 text-amber-600 dark:text-amber-400" />
+              <AlertTriangle className="size-3.5 mt-px shrink-0 text-st-warn-text" />
               <span>
                 Включайте по одному способу за раз и после каждого проверяйте результат. Если
                 запустить всё сразу и что-то сломается, будет непонятно, что именно виновато.
@@ -484,7 +484,7 @@ const About: React.FC = () => {
                       )}
 
                       {mod.troubleshoot && (
-                        <div className="flex items-start gap-2 p-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.07] text-[11px] leading-relaxed text-amber-800 dark:text-amber-300">
+                        <div className="flex items-start gap-2 p-3 rounded-xl border border-st-warn/25 bg-st-warn/[0.07] text-[11px] leading-relaxed text-st-warn-text">
                           <AlertTriangle className="size-3.5 mt-px shrink-0" />
                           <span>
                             <span className="font-semibold">Если не помогло: </span>

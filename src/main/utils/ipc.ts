@@ -9,7 +9,16 @@ import { getAppTraffic, getConnections, closeConnection } from '../core/incy-tra
 import { extractServerIp, extractServerHost } from './server-ip'
 import { listRunningProcesses } from './process-helper'
 import { getAppConfig, patchAppConfig, resetAppSettings } from '../config'
-import { applyTheme, setNativeTheme } from '../resolve/theme'
+import { applyTheme, readThemeCss, setNativeTheme } from '../resolve/theme'
+import {
+  saveAppearance,
+  pickBackground,
+  exportThemeFile,
+  importThemeFile,
+  getSystemAppearance,
+  listBackgrounds,
+  removeBackground
+} from '../resolve/appearance'
 import {
   getTgwsStatus,
   startTgws,
@@ -293,8 +302,16 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('app:version', h(() => app.getVersion()))
 
   // ---- Theme --------------------------------------------------------------
-  ipcMain.handle('theme:setNative', h((theme) => setNativeTheme(theme as AppTheme)))
+  ipcMain.handle('theme:setNative', h((theme) => setNativeTheme(theme as AppTheme | 'system')))
   ipcMain.handle('theme:apply', h((file) => applyTheme(file as string)))
+  ipcMain.handle('theme:read', h((file) => readThemeCss(String(file))))
+  ipcMain.handle('appearance:save', h((value) => saveAppearance(value)))
+  ipcMain.handle('appearance:pickBackground', h(() => pickBackground()))
+  ipcMain.handle('appearance:listBackgrounds', h(() => listBackgrounds()))
+  ipcMain.handle('appearance:removeBackground', h((name) => removeBackground(String(name))))
+  ipcMain.handle('appearance:exportTheme', h((json, name) => exportThemeFile(String(json), String(name))))
+  ipcMain.handle('appearance:getSystem', h(() => getSystemAppearance()))
+  ipcMain.handle('appearance:importTheme', h(() => importThemeFile()))
 
   // ---- Utility ------------------------------------------------------------
   ipcMain.handle('shell:openTelegramLink', h((url) => openTelegramLink(url as string)))

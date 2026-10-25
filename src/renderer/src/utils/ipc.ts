@@ -19,9 +19,19 @@ export const patchAppConfig = (patch: Partial<AppConfig>): Promise<void> =>
 export const getAppVersion = (): Promise<string> => invoke('app:version')
 
 // ---- Theme ------------------------------------------------------------------
-export const setNativeTheme = (theme: AppTheme): Promise<void> =>
+export const setNativeTheme = (theme: AppTheme | 'system'): Promise<void> =>
   invoke('theme:setNative', theme)
 export const applyTheme = (file: string): Promise<void> => invoke('theme:apply', file)
+export const readThemeCss = (file: string): Promise<string> => invoke('theme:read', file)
+export const appearanceListBackgrounds = (): Promise<string[]> => invoke('appearance:listBackgrounds')
+export const appearanceRemoveBackground = (name: string): Promise<void> => invoke('appearance:removeBackground', name)
+export const appearanceSave = (value: AppearanceConfig): Promise<void> => invoke('appearance:save', value)
+export const appearancePickBackground = (): Promise<string | null> => invoke('appearance:pickBackground')
+export const appearanceExportTheme = (json: string, name: string): Promise<boolean> =>
+  invoke('appearance:exportTheme', json, name)
+export const appearanceGetSystem = (): Promise<{ dark: boolean; accent: string | null }> =>
+  invoke('appearance:getSystem')
+export const appearanceImportTheme = (): Promise<string | null> => invoke('appearance:importTheme')
 
 // ---- Utility ----------------------------------------------------------------
 export const openTelegramLink = (url: string): Promise<void> => invoke('shell:openTelegramLink', url)

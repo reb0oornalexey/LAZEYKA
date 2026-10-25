@@ -25,6 +25,7 @@ import { flushStats } from './core/incy-stats'
 import { registerDeepLinkScheme, findDeepLinkInArgv, handleDeepLink } from './core/deeplink'
 import { installIncyWatchers } from './core/incy-watchers'
 import { installAppUpdateWatcher } from './core/app-update-watcher'
+import { registerBackgroundScheme, registerBackgroundProtocol, initSystemAppearanceEvents } from './resolve/appearance'
 
 // Lock the userData / cache / log folder names.
 app.setName(is.dev ? 'lazeyka-dev' : 'lazeyka')
@@ -87,7 +88,12 @@ if (syncConfig.disableGPU) app.disableHardwareAcceleration()
 
 const initPromise = init()
 
+// Схема lazeyka-bg:// для картинки фона должна быть объявлена до готовности приложения.
+registerBackgroundScheme()
+
 app.whenReady().then(async () => {
+  registerBackgroundProtocol()
+  initSystemAppearanceEvents()
   electronApp.setAppUserModelId('com.lazeyka.app')
   appLog('info', `LAZEYKA запущен (v${app.getVersion()}, ${process.platform}-${process.arch})`)
 

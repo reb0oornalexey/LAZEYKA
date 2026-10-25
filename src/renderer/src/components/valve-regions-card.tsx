@@ -23,9 +23,9 @@ function cleanName(name: string): string {
 
 function tone(ms: number | null | undefined): string {
   if (ms == null) return 'text-muted-foreground'
-  if (ms < 50) return 'text-emerald-600 dark:text-emerald-400'
-  if (ms < 90) return 'text-amber-600 dark:text-amber-400'
-  return 'text-rose-600 dark:text-rose-400'
+  if (ms < 50) return 'text-st-ok-text'
+  if (ms < 90) return 'text-st-warn-text'
+  return 'text-st-err-text'
 }
 
 /**
@@ -152,14 +152,14 @@ const ValveRegionsCard: React.FC = () => {
         </div>
 
         {filters && (gameOk && ipsetOk ? (
-          <p className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400">
+          <p className="flex items-center gap-1.5 text-xs text-st-ok-text">
             <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
             Game Filter ({GAME_LABEL[filters.game]}) и IPset включены: Zapret обрабатывает игровой трафик Valve.
           </p>
         ) : (
-          <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-st-warn/40 bg-st-warn/10 px-3 py-2">
             <div className="min-w-0 space-y-1 text-xs">
-              <p className="flex items-center gap-1.5 font-semibold text-amber-700 dark:text-amber-400">
+              <p className="flex items-center gap-1.5 font-semibold text-st-warn-text">
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                 Чтобы это работало в игре, включите в настройках Zapret:
               </p>

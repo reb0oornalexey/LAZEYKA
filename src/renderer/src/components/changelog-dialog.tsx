@@ -148,7 +148,7 @@ export function ChangelogDialog({ open, onClose }: { open: boolean; onClose: () 
                 </div>
               )}
               {error && !loading && (
-                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-300">
+                <div className="rounded-xl border border-st-warn/30 bg-st-warn/10 px-4 py-3 text-xs text-st-warn-text">
                   {error}
                   <button
                     type="button"

@@ -55,6 +55,14 @@ export function themesDir(): string {
   return path.join(dataDir(), 'themes')
 }
 
+export function backgroundsDir(): string {
+  const dir = path.join(dataDir(), 'backgrounds')
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true })
+  }
+  return dir
+}
+
 export function appConfigPath(): string {
   return path.join(dataDir(), 'config.yaml')
 }

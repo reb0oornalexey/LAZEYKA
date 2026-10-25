@@ -145,11 +145,11 @@ const ZapretAutopilotCard: React.FC = () => {
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground">Статус соединения:</span>
                 {autopilot?.lastStatus === 'healthy' ? (
-                  <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-500 font-medium">
+                  <span className="inline-flex items-center gap-1 text-st-ok-text font-medium">
                     <CheckCircle2 className="h-3 w-3" /> Стабильно
                   </span>
                 ) : autopilot?.lastStatus === 'degraded' ? (
-                  <span className="inline-flex items-center gap-1 text-yellow-500 font-medium">
+                  <span className="inline-flex items-center gap-1 text-st-warn-text font-medium">
                     <AlertTriangle className="h-3 w-3" /> Деградация (подбор стратегии)
                   </span>
                 ) : (
@@ -236,9 +236,9 @@ const ZapretAutopilotCard: React.FC = () => {
                   {r.latencyMs !== null ? (
                     <span className={cn(
                       'rounded px-1.5 py-0.5 text-[10px] font-mono font-medium',
-                      r.latencyMs < 65 && 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-500',
-                      r.latencyMs >= 65 && r.latencyMs < 120 && 'bg-yellow-500/15 text-yellow-500',
-                      r.latencyMs >= 120 && 'bg-red-500/15 text-red-500'
+                      r.latencyMs < 65 && 'bg-st-ok/15 text-st-ok-text',
+                      r.latencyMs >= 65 && r.latencyMs < 120 && 'bg-st-warn/15 text-st-warn-text',
+                      r.latencyMs >= 120 && 'bg-st-err/15 text-st-err-text'
                     )}>
                       {r.latencyMs} мс
                     </span>

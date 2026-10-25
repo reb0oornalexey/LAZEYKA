@@ -45,7 +45,7 @@ function fmtDur(ms: number): string {
 function routeClass(route: string): string {
   if (route === 'VPN') return 'text-primary'
   if (route === 'напрямую') return 'text-muted-foreground'
-  return 'text-amber-600 dark:text-amber-400'
+  return 'text-st-warn-text'
 }
 
 const OWN = new Set(['xray.exe', 'sing-box.exe', 'python.exe', 'tgwsproxy_windows.exe'])
@@ -423,7 +423,7 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
       )}
 
       {active && leaks.length > 0 && (
-        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+        <div className="rounded-lg border border-st-warn/40 bg-st-warn/10 px-2.5 py-1.5 text-[11px] text-st-warn-text">
           Через VPN идут приложения не из списка: {leaks.map((l) => `${l.name} (${l.open})`).join(', ')}
         </div>
       )}
@@ -446,17 +446,17 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
         <div
           className={
             check.verdict === 'ok'
-              ? 'space-y-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-[11px]'
+              ? 'space-y-1 rounded-lg border border-st-ok/30 bg-st-ok/10 px-2.5 py-2 text-[11px]'
               : check.verdict === 'leak'
-                ? 'space-y-1 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-2 text-[11px]'
+                ? 'space-y-1 rounded-lg border border-st-err/40 bg-st-err/10 px-2.5 py-2 text-[11px]'
                 : 'space-y-1 rounded-lg border border-border/60 bg-card/60 px-2.5 py-2 text-[11px]'
           }
         >
           <div className="flex items-start gap-1.5 font-semibold">
             {check.verdict === 'ok' ? (
-              <CheckCircle2 className="mt-px size-3.5 shrink-0 text-emerald-500" />
+              <CheckCircle2 className="mt-px size-3.5 shrink-0 text-st-ok-text" />
             ) : (
-              <ShieldAlert className="mt-px size-3.5 shrink-0 text-amber-500" />
+              <ShieldAlert className="mt-px size-3.5 shrink-0 text-st-warn-text" />
             )}
             <span>{check.message}</span>
           </div>

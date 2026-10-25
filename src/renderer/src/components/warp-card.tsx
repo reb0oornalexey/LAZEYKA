@@ -117,7 +117,7 @@ export function WarpCard({ nodes, selectedNodeId, onNodes, onImportText, onPickF
     <Card className="cyber-card">
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-sm">
-          <Zap className="h-4 w-4 text-blue-500 fill-blue-500" />
+          <Zap className="h-4 w-4 text-st-info-text fill-st-info" />
           Cloudflare WARP
         </CardTitle>
       </CardHeader>

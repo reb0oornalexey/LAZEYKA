@@ -57,12 +57,12 @@ function StatTriple({
   const approx = stats?.method === 'estimate' ? '≈' : ''
   return (
     <span className="inline-flex items-baseline gap-2 font-mono">
-      <span className={cn('text-base font-black', highlight ? 'text-emerald-500' : 'text-foreground')}>
+      <span className={cn('text-base font-black', highlight ? 'text-st-ok-text' : 'text-foreground')}>
         {approx}
         {ping} мс
       </span>
       {stats && stats.jitterMs != null && (
-        <span className={cn('text-[10px]', stats.jitterMs > 8 ? 'text-amber-500' : 'text-muted-foreground')} title="Джиттер">
+        <span className={cn('text-[10px]', stats.jitterMs > 8 ? 'text-st-warn-text' : 'text-muted-foreground')} title="Джиттер">
           ±{stats.jitterMs}
         </span>
       )}
@@ -418,7 +418,7 @@ export default function OptimizerPage(): React.ReactElement {
                 {(gamePingResult.warnings ?? []).map((w) => (
                   <div
                     key={w}
-                    className="text-[10px] leading-relaxed rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 px-2.5 py-1.5"
+                    className="text-[10px] leading-relaxed rounded-lg border border-st-warn/30 bg-st-warn/10 text-st-warn-text px-2.5 py-1.5"
                   >
                     {w}
                   </div>
@@ -447,7 +447,7 @@ export default function OptimizerPage(): React.ReactElement {
                           className={cn(
                             'flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 rounded-xl border transition-all text-xs',
                             n.isBest
-                              ? 'border-emerald-500/50 bg-emerald-500/10 shadow-[0_0_15px_rgba(16,185,129,0.15)] ring-1 ring-emerald-500/30'
+                              ? 'border-st-ok/50 bg-st-ok/10 shadow-[0_0_15px_rgba(16,185,129,0.15)] ring-1 ring-st-ok/30'
                               : 'border-border/50 bg-card/60 hover:bg-card/90'
                           )}
                         >
@@ -458,12 +458,12 @@ export default function OptimizerPage(): React.ReactElement {
                                 {n.protocol}
                               </Badge>
                               {n.isBest && (
-                                <Badge className="text-[9px] px-1.5 py-0 bg-emerald-500 text-white font-bold"><Trophy className="h-2.5 w-2.5 mr-0.5 inline" />ЛУЧШИЙ</Badge>
+                                <Badge className="text-[9px] px-1.5 py-0 bg-st-ok text-white font-bold"><Trophy className="h-2.5 w-2.5 mr-0.5 inline" />ЛУЧШИЙ</Badge>
                               )}
                               {n.udpTransport === 'udp' ? (
                                 <Badge
                                   variant="outline"
-                                  className="text-[9px] px-1 py-0 text-emerald-600 dark:text-emerald-400 border-emerald-500/40"
+                                  className="text-[9px] px-1 py-0 text-st-ok-text border-st-ok/40"
                                   title="Пакеты игры идут по UDP напрямую — без задержек на повторную отправку"
                                 >
                                   нативный UDP
@@ -483,7 +483,7 @@ export default function OptimizerPage(): React.ReactElement {
                                 </Badge>
                               )}
                               {estimated && (
-                                <Badge variant="outline" className="text-[9px] px-1 py-0 text-amber-600 border-amber-500/40">
+                                <Badge variant="outline" className="text-[9px] px-1 py-0 text-st-warn-text border-st-warn/40">
                                   оценка
                                 </Badge>
                               )}
@@ -507,7 +507,7 @@ export default function OptimizerPage(): React.ReactElement {
                                 </span>
                               )}
                               {typeof n.savingMs === 'number' && n.savingMs > 0 && !gamePingResult.directViaTunnel && (
-                                <span className="text-emerald-500 font-bold">
+                                <span className="text-st-ok-text font-bold">
                                   ⚡ на {n.savingMs} мс быстрее прямого{estimated ? ' (оценка)' : ''}
                                 </span>
                               )}
@@ -586,7 +586,7 @@ export default function OptimizerPage(): React.ReactElement {
                     return (
                       <div
                         key={h.hop}
-                        className={cn('grid grid-cols-[2rem_1fr_4rem_4rem_4rem] gap-2', jump && 'text-amber-600 dark:text-amber-400 font-bold')}
+                        className={cn('grid grid-cols-[2rem_1fr_4rem_4rem_4rem] gap-2', jump && 'text-st-warn-text font-bold')}
                       >
                         <span className="text-muted-foreground">{h.hop}</span>
                         <span className="truncate">{h.ip ?? '* * *'}{h.isPrivate ? ' (дом)' : ''}</span>
@@ -614,7 +614,7 @@ export default function OptimizerPage(): React.ReactElement {
                     Оценка:{' '}
                     <b
                       className={cn(
-                        bloat.grade === 'A' || bloat.grade === 'B' ? 'text-emerald-500' : bloat.grade === 'unknown' ? '' : 'text-amber-500'
+                        bloat.grade === 'A' || bloat.grade === 'B' ? 'text-st-ok-text' : bloat.grade === 'unknown' ? '' : 'text-st-warn-text'
                       )}
                     >
                       {bloat.grade === 'unknown' ? '—' : bloat.grade}

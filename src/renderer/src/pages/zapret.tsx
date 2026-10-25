@@ -346,7 +346,7 @@ const Zapret: React.FC = () => {
                 onClick={stopTest}
                 disabled={isTestStopping}
                 title="Остановить после текущей стратегии — потом можно продолжить с этого места"
-                className="shrink-0 h-8 text-xs gap-1.5 rounded-xl cursor-pointer border-border/80 hover:border-rose-500/50 hover:text-rose-500"
+                className="shrink-0 h-8 text-xs gap-1.5 rounded-xl cursor-pointer border-border/80 hover:border-st-err/50 hover:text-st-err-text"
               >
                 {isTestStopping ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3.5" />}
                 <span>{isTestStopping ? 'Останавливаем…' : 'Остановить'}</span>
@@ -361,10 +361,10 @@ const Zapret: React.FC = () => {
                 </CardTitle>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {testReport ? (
-                    <span className="text-emerald-700 dark:text-emerald-400 font-semibold font-mono">
+                    <span className="text-st-ok-text font-semibold font-mono">
                       {Object.values(testReport.results).filter((r) => r.passed).length} / {testedCount} рабочих на вашем провайдере
                       {testPartial && (
-                        <span className="ml-1.5 font-normal text-amber-600 dark:text-amber-400">
+                        <span className="ml-1.5 font-normal text-st-warn-text">
                           (тест остановлен: проверено {testedCount}{testReport.totalStrategies ? ` из ${testReport.totalStrategies}` : ''})
                         </span>
                       )}
@@ -456,7 +456,7 @@ const Zapret: React.FC = () => {
                         </span>
                       )}
                       {isActive && (
-                        <span className="shrink-0 text-[10px] uppercase tracking-wide font-mono font-bold rounded-full px-2 py-0.5 bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30">
+                        <span className="shrink-0 text-[10px] uppercase tracking-wide font-mono font-bold rounded-full px-2 py-0.5 bg-st-ok/20 text-st-ok-text border border-st-ok/30">
                           активна
                         </span>
                       )}
@@ -466,12 +466,12 @@ const Zapret: React.FC = () => {
                     )}
                   </div>
                   {isFailed ? (
-                    <span className="shrink-0 inline-flex items-center gap-1 text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-500/20">
+                    <span className="shrink-0 inline-flex items-center gap-1 text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-st-err/10 text-st-err-text border border-st-err/20">
                       <XCircle className="size-3.5" />
                       {result?.okCount ?? 0}/{result?.totalCount ?? 0}
                     </span>
                   ) : isPassed ? (
-                    <span className="shrink-0 inline-flex items-center gap-1 text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
+                    <span className="shrink-0 inline-flex items-center gap-1 text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-st-ok/10 text-st-ok-text border border-st-ok/20">
                       <CheckCircle2 className="size-3.5" />
                       {result?.okCount ?? 0}/{result?.totalCount ?? 0}
                     </span>
@@ -484,9 +484,9 @@ const Zapret: React.FC = () => {
       </Card>
 
       {status.lastError && (
-        <Card className="border-rose-500/40 bg-rose-950/20 ">
+        <Card className="border-st-err/40 bg-st-err/20 ">
           <CardContent className="pt-4">
-            <p className="text-xs text-rose-700 dark:text-rose-400 font-mono">{status.lastError}</p>
+            <p className="text-xs text-st-err-text font-mono">{status.lastError}</p>
           </CardContent>
         </Card>
       )}

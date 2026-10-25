@@ -17,7 +17,8 @@ import logoDark from '@renderer/assets/logo.png'
 import logoLight from '@renderer/assets/logo_white.png'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
-import { useAppConfig } from '@renderer/hooks/use-app-config'
+import { useAppearanceFollow } from '@renderer/hooks/use-appearance-sync'
+import { AppBackground } from '@renderer/components/appearance/background-layer'
 import {
   appCheckUpdate,
   appInstallUpdate,
@@ -159,7 +160,7 @@ function ReleaseCard({
             </span>
           )}
           {note.installed && (
-            <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-emerald-500">
+            <span className="rounded-full border border-st-ok/40 bg-st-ok/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-st-ok-text">
               Установлена
             </span>
           )}
@@ -193,8 +194,8 @@ function ReleaseCard({
  * уведомлению, из трея и по кнопкам «Проверить обновления».
  */
 export default function UpdateWindow(): React.ReactElement {
-  const { appConfig } = useAppConfig()
-  const { setTheme, resolvedTheme } = useTheme()
+  const { resolvedTheme } = useTheme()
+  useAppearanceFollow()
   const logo = resolvedTheme === 'light' ? logoLight : logoDark
 
   const [info, setInfo] = useState<AppUpdateInfo | null>(null)
@@ -206,11 +207,6 @@ export default function UpdateWindow(): React.ReactElement {
   const [installing, setInstalling] = useState(false)
   const [progress, setProgress] = useState<AppUpdateProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const t = appConfig?.appTheme
-    if (t) setTheme(t)
-  }, [appConfig?.appTheme, setTheme])
 
   const loadInfo = useCallback(async (): Promise<void> => {
     try {
@@ -299,10 +295,12 @@ export default function UpdateWindow(): React.ReactElement {
   const percent = progress?.percent ?? null
 
   return (
-    <div className="relative flex h-screen flex-col overflow-hidden bg-background text-foreground select-none">
+    <div className="relative isolate flex h-screen flex-col overflow-hidden bg-[color:var(--app-canvas,var(--background))] text-foreground select-none">
+      {/* Обои из оформления (размытие и затемнение — как в главном окне). */}
+      <AppBackground />
       {/* Фоновое свечение в фирменном цвете. */}
       <div className="pointer-events-none absolute -top-40 left-1/2 h-80 w-[36rem] -translate-x-1/2 rounded-full bg-primary/25 blur-[110px]" />
-      <div className="pointer-events-none absolute -bottom-40 -right-20 h-72 w-72 rounded-full bg-emerald-500/10 blur-[100px]" />
+      <div className="pointer-events-none absolute -bottom-40 -right-20 h-72 w-72 rounded-full bg-st-ok/10 blur-[100px]" />
 
       {/* Заголовок окна: перетаскивание + закрыть. */}
       <div className="app-drag relative z-10 flex h-10 shrink-0 items-center justify-between pl-4 pr-1.5">
@@ -360,7 +358,7 @@ export default function UpdateWindow(): React.ReactElement {
                   </span>
                 </span>
               ) : (
-                <span className="text-emerald-500 font-medium">У вас последняя версия</span>
+                <span className="text-st-ok-text font-medium">У вас последняя версия</span>
               )}
               {publishedAt && <span>· {publishedAt}</span>}
               {hasUpdate && info?.assetSize ? <span>· {formatMb(info.assetSize)} МБ</span> : null}
@@ -394,7 +392,7 @@ export default function UpdateWindow(): React.ReactElement {
           )}
 
           {notesError && !loadingNotes && (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-300">
+            <div className="rounded-xl border border-st-warn/30 bg-st-warn/10 px-4 py-3 text-xs text-st-warn-text">
               {notesError}
               <button
                 type="button"
@@ -427,7 +425,7 @@ export default function UpdateWindow(): React.ReactElement {
             <div className="h-2 w-full overflow-hidden rounded-full bg-foreground/[0.08]">
               <div
                 className={cn(
-                  'h-full rounded-full bg-gradient-to-r from-primary to-emerald-500',
+                  'h-full rounded-full bg-gradient-to-r from-primary to-st-ok',
                   percent === null ? 'w-1/3 animate-pulse' : 'transition-[width] duration-300'
                 )}
                 style={percent === null ? undefined : { width: `${percent}%` }}

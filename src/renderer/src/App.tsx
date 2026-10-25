@@ -1,11 +1,13 @@
 import { useEffect } from 'react'
 import { useRoutes } from 'react-router-dom'
 import { toast } from 'sonner'
-import { useTheme } from 'next-themes'
 import './i18n'
 import routes from '@renderer/routes'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
-import { applyTheme, setNativeTheme } from '@renderer/utils/ipc'
+import { readThemeCss } from '@renderer/utils/ipc'
+import { setCustomThemeCss } from '@renderer/lib/appearance/apply'
+import { useAppearanceSync } from '@renderer/hooks/use-appearance-sync'
+import { AppBackground } from '@renderer/components/appearance/background-layer'
 import AppSidebar from '@renderer/components/app-sidebar'
 import WindowControls from '@renderer/components/window-controls'
 import { platform } from '@renderer/utils/init'
@@ -19,8 +21,8 @@ import { copyText, insertIntoField, isEditableField, readClipboardText } from '@
 
 const App: React.FC = () => {
   const { appConfig } = useAppConfig()
-  const { appTheme = 'dark', customTheme } = appConfig || {}
-  const { setTheme } = useTheme()
+  const { customTheme } = appConfig || {}
+  useAppearanceSync()
   const page = useRoutes(routes)
 
   useEffect(() => {
@@ -71,14 +73,14 @@ const App: React.FC = () => {
   }, [])
 
   useEffect(() => {
-    setNativeTheme(appTheme)
-    setTheme(appTheme)
-  }, [appTheme, setTheme])
-
-  useEffect(() => {
-    applyTheme(customTheme || 'default.css').catch(() => {
-      /* noop */
-    })
+    // Пользовательский CSS кладём в <head> после оформления — так он может его переопределить.
+    let alive = true
+    readThemeCss(customTheme || 'default.css')
+      .then((css) => alive && setCustomThemeCss(css))
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
   }, [customTheme])
 
   useEffect(() => {
@@ -120,9 +122,10 @@ const App: React.FC = () => {
   }, [])
 
   return (
-    // Меню + страница. Без фоновой картинки и размытия: сплошной фон темы
-    // ничего не стоит видеокарте.
-    <div className="relative flex w-full h-screen overflow-hidden bg-background text-foreground">
+    // Меню + страница. Фон — сплошной цвет темы; картинка/градиент (если выбраны)
+    // — один статичный слой под содержимым.
+    <div className="relative isolate flex w-full h-screen overflow-hidden bg-[color:var(--app-canvas,var(--background))] text-foreground">
+      <AppBackground />
       {platform === 'darwin' && (
         <div className="fixed top-0.5 -left-1 h-14.25 flex items-center pl-3 z-100 app-drag">
           <WindowControls />

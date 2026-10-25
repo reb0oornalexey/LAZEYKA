@@ -28,14 +28,23 @@ const Toaster = ({ ...props }: ToasterProps) => {
       }}
       style={
         {
-          "--normal-bg": "var(--popover)",
-          "--normal-text": "var(--popover-foreground)",
-          "--normal-border": "var(--border)",
+          // Цвета уведомлений берутся из токенов оформления (см. main.css).
+          "--normal-bg": "var(--toast-normal-bg)",
+          "--normal-text": "var(--toast-normal-fg)",
+          "--normal-border": "var(--toast-normal-border)",
           "--border-radius": "var(--radius)",
-          "--error-bg":
-            "radial-gradient(at 30% 45%, color-mix(in oklab, var(--gradient-start-power-off) 60%, transparent), color-mix(in oklab, var(--gradient-end-power-off) 60%, transparent)), var(--popover)",
-          "--error-border": "var(--stroke-power-off)",
-          "--error-text": "var(--foreground)",
+          "--success-bg": "var(--toast-success-bg)",
+          "--success-text": "var(--toast-success-fg)",
+          "--success-border": "var(--toast-success-border)",
+          "--info-bg": "var(--toast-info-bg)",
+          "--info-text": "var(--toast-info-fg)",
+          "--info-border": "var(--toast-info-border)",
+          "--warning-bg": "var(--toast-warning-bg)",
+          "--warning-text": "var(--toast-warning-fg)",
+          "--warning-border": "var(--toast-warning-border)",
+          "--error-bg": "var(--toast-error-bg)",
+          "--error-border": "var(--toast-error-border)",
+          "--error-text": "var(--toast-error-fg)",
         } as React.CSSProperties
       }
       {...props}

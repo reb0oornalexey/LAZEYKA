@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { Navigate } from 'react-router-dom'
 import Home from '@renderer/pages/home'
 import Telegram from '@renderer/pages/telegram'
@@ -10,6 +11,8 @@ import Settings from '@renderer/pages/settings'
 import About from '@renderer/pages/about'
 import Support from '@renderer/pages/support'
 
+const Appearance = lazy(() => import('@renderer/pages/appearance'))
+
 const routes = [
   { path: '/', element: <Navigate to="/home" replace /> },
   { path: '/home', element: <Home /> },
@@ -20,6 +23,14 @@ const routes = [
   { path: '/optimizer', element: <Optimizer /> },
   { path: '/logs', element: <Logs /> },
   { path: '/settings', element: <Settings /> },
+  {
+    path: '/appearance',
+    element: (
+      <Suspense fallback={null}>
+        <Appearance />
+      </Suspense>
+    )
+  },
   { path: '/about', element: <About /> },
   { path: '/support', element: <Support /> }
 ]

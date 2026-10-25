@@ -24,11 +24,11 @@ function redact(text: string): string {
 }
 
 const sourceColor: Record<CoreSource, string> = {
-  tgws: 'text-sky-700 dark:text-sky-400 font-semibold',
+  tgws: 'text-st-info-text font-semibold',
   zapret: 'text-indigo-400 font-semibold',
   app: 'text-muted-foreground',
-  incy: 'text-emerald-600 dark:text-emerald-400 font-semibold',
-  exitlag: 'text-amber-600 dark:text-amber-400 font-semibold'
+  incy: 'text-st-ok-text font-semibold',
+  exitlag: 'text-st-warn-text font-semibold'
 }
 
 const sourceLabels: Record<'all' | CoreSource, string> = {
@@ -192,7 +192,7 @@ const Logs: React.FC = () => {
             type="button"
             title="Скопировать отчёт для поддержки"
             aria-label="Скопировать отчёт для поддержки"
-            className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-emerald-700 dark:hover:text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+            className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-st-ok-text dark:hover:text-st-ok-text hover:bg-st-ok/10 transition-colors"
             onClick={() => { void handleGenerateReport() }}
             disabled={generatingReport}
           >
@@ -202,7 +202,7 @@ const Logs: React.FC = () => {
             type="button"
             title="Сохранить отчёт в файл"
             aria-label="Сохранить отчёт в файл"
-            className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-sky-700 dark:hover:text-sky-400 hover:bg-sky-500/10 transition-colors"
+            className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-st-info-text dark:hover:text-st-info-text hover:bg-st-info/10 transition-colors"
             onClick={() => { void handleSaveReport() }}
             disabled={generatingReport}
           >
@@ -212,7 +212,7 @@ const Logs: React.FC = () => {
             type="button"
             title="Очистить логи"
             aria-label="Очистить логи"
-            className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-rose-700 dark:hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+            className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-st-err-text dark:hover:text-st-err-text hover:bg-st-err/10 transition-colors"
             onClick={() => {
               clearLogs()
               setLogs([])
@@ -286,9 +286,9 @@ const Logs: React.FC = () => {
                 <span
                   className={cn(
                     'shrink-0 text-[11px] font-bold uppercase',
-                    log.type === 'error' && 'text-rose-700 dark:text-rose-400',
-                    log.type === 'warn' && 'text-amber-700 dark:text-amber-400',
-                    log.type === 'info' && 'text-emerald-700/80 dark:text-emerald-400/80'
+                    log.type === 'error' && 'text-st-err-text',
+                    log.type === 'warn' && 'text-st-warn-text',
+                    log.type === 'info' && 'text-st-ok-text/80'
                   )}
                 >
                   {log.type}

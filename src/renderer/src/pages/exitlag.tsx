@@ -257,19 +257,19 @@ export default function ExitLagPage(): React.ReactElement {
                     КИЛЛЕР-ФИЧА
                   </Badge>
                   {exitLagRunning && appCount === 0 ? (
-                    <Badge className="text-[10px] px-2 py-0 bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-semibold">
+                    <Badge className="text-[10px] px-2 py-0 bg-st-warn/15 text-st-warn-text border border-st-warn/30 font-semibold">
                       РАБОТАЕТ · СПИСОК ПУСТ — VPN НИГДЕ
                     </Badge>
                   ) : exitLagRunning ? (
-                    <Badge className="text-[10px] px-2 py-0 bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-semibold">
+                    <Badge className="text-[10px] px-2 py-0 bg-st-ok/20 text-st-ok-text border border-st-ok/30 font-semibold">
                       РАБОТАЕТ ({status.exitLagApps?.length ?? appCount} {appWord})
                     </Badge>
                   ) : isPerAppEnabled && appCount === 0 ? (
-                    <Badge className="text-[10px] px-2 py-0 bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-semibold">
+                    <Badge className="text-[10px] px-2 py-0 bg-st-warn/15 text-st-warn-text border border-st-warn/30 font-semibold">
                       ДОБАВЬТЕ ПРИЛОЖЕНИЯ
                     </Badge>
                   ) : isPerAppEnabled && settings?.perAppMode === 'bypass_only' ? (
-                    <Badge className="text-[10px] px-2 py-0 bg-sky-500/15 text-sky-600 dark:text-sky-400 border border-sky-500/30 font-semibold">
+                    <Badge className="text-[10px] px-2 py-0 bg-st-info/15 text-st-info-text border border-st-info/30 font-semibold">
                       РЕЖИМ ИСКЛЮЧЕНИЙ
                     </Badge>
                   ) : isPerAppEnabled && (isConnected || status.state === 'connecting') ? (
@@ -286,12 +286,12 @@ export default function ExitLagPage(): React.ReactElement {
                       className="cursor-pointer"
                       title="Переподключить туннель в режиме ExitLag"
                     >
-                      <Badge className="text-[10px] px-2 py-0 bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-semibold">
+                      <Badge className="text-[10px] px-2 py-0 bg-st-warn/15 text-st-warn-text border border-st-warn/30 font-semibold">
                         ВКЛЮЧЁН · ПРИМЕНЯЕТСЯ… (нажмите, если завис)
                       </Badge>
                     </button>
                   ) : isPerAppEnabled ? (
-                    <Badge className="text-[10px] px-2 py-0 bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-semibold">
+                    <Badge className="text-[10px] px-2 py-0 bg-st-warn/15 text-st-warn-text border border-st-warn/30 font-semibold">
                       ВКЛЮЧЁН · ТУННЕЛЬ ОСТАНОВЛЕН
                     </Badge>
                   ) : (
@@ -329,7 +329,7 @@ export default function ExitLagPage(): React.ReactElement {
                 <div className="min-w-0">
                   <div className="text-xs font-semibold text-foreground flex items-center gap-1.5 truncate">
                     <span>Туннель INCY:</span>
-                    <span className={isConnected ? 'text-emerald-500 font-bold' : 'text-muted-foreground'}>
+                    <span className={isConnected ? 'text-st-ok-text font-bold' : 'text-muted-foreground'}>
                       {exitLagRunning ? 'Подключен и фильтрует' : isConnected ? 'Подключен (обычный VPN)' : 'Остановлен'}
                     </span>
                     {activeNode && isConnected && (
@@ -429,7 +429,7 @@ export default function ExitLagPage(): React.ReactElement {
                   )}
                 >
                   <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                    <ShieldCheck className="h-3.5 w-3.5 text-sky-500 shrink-0" />
+                    <ShieldCheck className="h-3.5 w-3.5 text-st-info-text shrink-0" />
                     Все, кроме выбранных (исключения)
                   </div>
                   <div className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
@@ -688,7 +688,7 @@ export default function ExitLagPage(): React.ReactElement {
                           className={cn(
                             'flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer',
                             isAlreadyAdded
-                              ? 'border-emerald-500/40 bg-emerald-500/10'
+                              ? 'border-st-ok/40 bg-st-ok/10'
                               : 'border-border/50 bg-card/40 hover:bg-primary/10 hover:border-primary/50'
                           )}
                         >
@@ -696,7 +696,7 @@ export default function ExitLagPage(): React.ReactElement {
                             <div className="text-xs font-mono font-semibold text-foreground flex items-center gap-1.5">
                               {p.name}
                               {isAlreadyAdded && (
-                                <Badge variant="secondary" className="text-[9px] px-1 py-0 bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+                                <Badge variant="secondary" className="text-[9px] px-1 py-0 bg-st-ok/20 text-st-ok-text">
                                   в списке
                                 </Badge>
                               )}

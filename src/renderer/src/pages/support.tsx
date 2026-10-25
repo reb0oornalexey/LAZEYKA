@@ -31,17 +31,17 @@ import { SUPPORT_TELEGRAM_URL } from '@renderer/lib/utils'
 
 const FEEDBACK_KINDS: { icon: React.ReactNode; title: string; text: string }[] = [
   {
-    icon: <Bug className="size-4 text-rose-500" />,
+    icon: <Bug className="size-4 text-st-err-text" />,
     title: 'Что-то не работает',
     text: 'Опишите, что делали и что получилось вместо ожидаемого. Приложите логи со вкладки «Логи» — по ним причина видна почти всегда.'
   },
   {
-    icon: <Lightbulb className="size-4 text-amber-500" />,
+    icon: <Lightbulb className="size-4 text-st-warn-text" />,
     title: 'Есть идея',
     text: 'Расскажите, какой задачи вам не хватает в приложении. Предложения читаются все.'
   },
   {
-    icon: <MessageSquare className="size-4 text-sky-500" />,
+    icon: <MessageSquare className="size-4 text-st-info-text" />,
     title: 'Просто вопрос',
     text: 'Не разобрались с настройкой или не поняли, что выбрать — спрашивайте, это нормально.'
   }
@@ -160,7 +160,7 @@ const Support: React.FC = () => {
         <Card className="cyber-card">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <Heart className="size-4 text-rose-700 dark:text-rose-500 fill-rose-500/20" />
+              <Heart className="size-4 text-st-err-text fill-st-err/20" />
               Поддержать развитие проекта
             </CardTitle>
           </CardHeader>
@@ -174,7 +174,7 @@ const Support: React.FC = () => {
               <button
                 type="button"
                 onClick={() => openExternalUrl('https://www.donationalerts.com/r/reb0oorn')}
-                className="group cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-amber-500/15 via-orange-500/15 to-red-500/15 text-amber-700 dark:text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/60 shadow-[0_0_12px_rgba(245,158,11,0.15)] hover:shadow-[0_0_18px_rgba(245,158,11,0.3)] transition-all duration-200 active:scale-95"
+                className="group cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-st-warn/15 via-orange-500/15 to-st-err/15 text-st-warn-text hover:text-st-warn-text border border-st-warn/30 hover:border-st-warn/60 shadow-[0_0_12px_rgba(245,158,11,0.15)] hover:shadow-[0_0_18px_rgba(245,158,11,0.3)] transition-all duration-200 active:scale-95"
               >
                 <Coins className="size-4 group-hover:scale-110 transition-transform" />
                 <span>DonationAlerts</span>
@@ -184,7 +184,7 @@ const Support: React.FC = () => {
               <button
                 type="button"
                 onClick={() => openExternalUrl('https://t.me/send?start=IVCka2D1cl42')}
-                className="group cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-sky-500/15 via-blue-500/15 to-indigo-500/15 text-sky-700 dark:text-sky-400 hover:text-sky-300 border border-sky-500/30 hover:border-sky-500/60 shadow-[0_0_12px_rgba(14,165,233,0.15)] hover:shadow-[0_0_18px_rgba(14,165,233,0.3)] transition-all duration-200 active:scale-95"
+                className="group cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-st-info/15 via-st-info/15 to-indigo-500/15 text-st-info-text hover:text-st-info-text border border-st-info/30 hover:border-st-info/60 shadow-[0_0_12px_rgba(14,165,233,0.15)] hover:shadow-[0_0_18px_rgba(14,165,233,0.3)] transition-all duration-200 active:scale-95"
               >
                 <Send className="size-4 group-hover:scale-110 transition-transform" />
                 <span>CryptoBot в Telegram</span>

@@ -5,6 +5,7 @@ import React, { forwardRef, useImperativeHandle, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
+import { PageHeader } from '@renderer/components/app-chrome'
 
 // Вкладки бокового меню — у них нет стрелки «назад». Раньше здесь был список
 // из старой программы (/profiles, /proxies…), и стрелка появлялась у одних
@@ -18,6 +19,7 @@ const sidebarPaths = new Set([
   '/optimizer',
   '/logs',
   '/settings',
+  '/appearance',
   '/about',
   '/support'
 ])
@@ -43,32 +45,33 @@ const BasePage = forwardRef<HTMLDivElement, Props>((props, ref) => {
 
   return (
     <div ref={contentRef} className="w-full h-full">
-      <div className="sticky top-0 z-40 h-14.25 w-full bg-background border-b border-border">
-        <div className="app-drag pl-6 pr-2 pt-3 pb-2 flex justify-between h-14.25">
-          <div className="title h-full text-lg font-bold leading-8 flex items-center gap-1.5 text-foreground">
-            {(isSubPage || props.showBackButton) && (
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                className="app-nodrag rounded-xl cursor-pointer hover:bg-foreground/[0.06]"
-                onClick={() => navigate(-1)}
-              >
-                <ChevronLeft className="size-4.5" />
-              </Button>
-            )}
-            {props.title}
-          </div>
-          <div className="header flex gap-1.5 h-full items-center app-nodrag">
+      <PageHeader
+        className="sticky top-0"
+        back={
+          (isSubPage || props.showBackButton) && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              className="app-nodrag rounded-xl cursor-pointer hover:bg-foreground/[0.06]"
+              onClick={() => navigate(-1)}
+            >
+              <ChevronLeft className="size-4.5" />
+            </Button>
+          )
+        }
+        title={props.title}
+        right={
+          <>
             {props.header}
             {!isMac && <WindowControls />}
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
       {/* pt-3 — первая карточка не прилипает к шапке; плавное появление при
           переходе между вкладками (tw-animate-css). */}
       <div
         className={cn(
-          'content h-[calc(100vh-57px)] overflow-y-auto custom-scrollbar pt-3 animate-in fade-in slide-in-from-bottom-1 duration-300',
+          'content h-[calc(100vh-(var(--spacing)*14.25))] overflow-y-auto custom-scrollbar pt-3 animate-in fade-in slide-in-from-bottom-1 duration-300',
           props.contentClassName
         )}
       >

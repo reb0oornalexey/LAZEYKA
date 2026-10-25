@@ -69,11 +69,11 @@ const SwitcherCard: React.FC<SwitcherCardProps> = ({
         'flex flex-col gap-3.5',
         onClick && 'cursor-pointer hover:-translate-y-0.5',
         on &&
-          'border-emerald-500/40 bg-gradient-to-br from-emerald-500/15 via-emerald-100/40 to-card/95 dark:via-emerald-950/20 shadow-[0_8px_30px_rgba(0,0,0,0.08),0_0_20px_-3px_rgba(16,185,129,0.2)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.5),0_0_20px_-3px_rgba(16,185,129,0.25)]',
+          'border-st-ok/40 bg-gradient-to-br from-st-ok/15 via-st-ok/40 to-card/95 shadow-[0_8px_30px_rgba(0,0,0,0.08),0_0_20px_-3px_rgba(16,185,129,0.2)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.5),0_0_20px_-3px_rgba(16,185,129,0.25)]',
         !on && !errored &&
           'cyber-card cyber-card-hover',
         errored &&
-          'border-rose-500/40 bg-gradient-to-br from-rose-500/15 via-rose-100/40 to-card/95 dark:via-rose-950/20 shadow-[0_0_20px_-3px_rgba(244,63,94,0.25)]',
+          'border-st-err/40 bg-gradient-to-br from-st-err/15 via-st-err/40 to-card/95 shadow-[0_0_20px_-3px_rgba(244,63,94,0.25)]',
         className
       )}
     >
@@ -81,9 +81,9 @@ const SwitcherCard: React.FC<SwitcherCardProps> = ({
         <div
           className={cn(
             'size-11 rounded-xl flex items-center justify-center shrink-0 transition-all duration-300',
-            on && 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.3)]',
+            on && 'bg-st-ok/20 text-st-ok-text border border-st-ok/30 shadow-[0_0_12px_rgba(16,185,129,0.3)]',
             !on && !errored && 'bg-foreground/[0.06] text-muted-foreground border border-border/60',
-            errored && 'bg-rose-500/20 text-rose-600 dark:text-rose-400 border border-rose-500/30'
+            errored && 'bg-st-err/20 text-st-err-text border border-st-err/30'
           )}
         >
           <Icon className="size-5.5" />
@@ -122,9 +122,9 @@ const SwitcherCard: React.FC<SwitcherCardProps> = ({
           {transitioning && <Loader2 className="size-3 animate-spin text-primary" />}
           <div className={cn(
             'size-2 rounded-full',
-            on ? 'bg-primary' : errored ? 'bg-rose-500 dark:bg-rose-400' : 'bg-muted-foreground/40'
+            on ? 'bg-primary' : errored ? 'bg-st-err' : 'bg-muted-foreground/40'
           )} />
-          <span className={on ? 'text-emerald-600 dark:text-emerald-400' : errored ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground'}>
+          <span className={on ? 'text-st-ok-text' : errored ? 'text-st-err-text' : 'text-muted-foreground'}>
             {stateText[status.state]}
           </span>
         </div>
@@ -136,7 +136,7 @@ const SwitcherCard: React.FC<SwitcherCardProps> = ({
       </div>
 
       {errored && status.lastError && (
-        <div className="text-[11px] text-rose-300 bg-rose-950/40 border border-rose-500/30 rounded-lg px-2.5 py-1.5 truncate">
+        <div className="text-[11px] text-st-err-text bg-st-err/40 border border-st-err/30 rounded-lg px-2.5 py-1.5 truncate">
           {status.lastError}
         </div>
       )}

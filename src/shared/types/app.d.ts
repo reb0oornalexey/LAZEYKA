@@ -30,6 +30,8 @@ interface AppConfig {
   // ---- Appearance & locale
   appTheme: AppTheme
   customTheme?: string
+  /** Оформление: пресеты, правки цветов, фон. См. appearance.d.ts. */
+  appearance?: AppearanceConfig
   disableTray?: boolean
   hideTaskbarIcon?: boolean
   autoLaunch?: boolean

@@ -354,7 +354,7 @@ const TelegramPage: React.FC = () => {
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
             <div>
               <CardTitle className="text-base font-bold flex items-center gap-2">
-                <TelegramIcon className="size-5 text-sky-700 dark:text-sky-400" />
+                <TelegramIcon className="size-5 text-st-info-text" />
                 <span>Ссылка для подключения Telegram</span>
               </CardTitle>
               <p className="text-xs text-muted-foreground mt-0.5">
@@ -403,7 +403,7 @@ const TelegramPage: React.FC = () => {
               <Button
                 size="icon-sm"
                 variant="outline"
-                className="rounded-xl cursor-pointer hover:border-sky-500/50 hover:text-sky-700 dark:hover:text-sky-400 transition-colors"
+                className="rounded-xl cursor-pointer hover:border-st-info/50 hover:text-st-info-text dark:hover:text-st-info-text transition-colors"
                 onClick={() => link && openTelegramLink(link).catch(() => void 0)}
                 title="Открыть в Telegram"
               >
@@ -571,9 +571,9 @@ const TelegramPage: React.FC = () => {
                     key={d.dc}
                     className={cn(
                       'rounded-xl border p-3 flex flex-col justify-between transition-all duration-200 bg-card/60 ',
-                      isGood && 'border-emerald-500/30 hover:border-emerald-500/50 shadow-[0_0_15px_-4px_rgba(16,185,129,0.15)]',
-                      isMedium && 'border-amber-500/30 hover:border-amber-500/50',
-                      isBad && 'border-rose-500/30 hover:border-rose-500/50',
+                      isGood && 'border-st-ok/30 hover:border-st-ok/50 shadow-[0_0_15px_-4px_rgba(16,185,129,0.15)]',
+                      isMedium && 'border-st-warn/30 hover:border-st-warn/50',
+                      isBad && 'border-st-err/30 hover:border-st-err/50',
                       d.latencyMs === null && 'border-border/60'
                     )}
                   >
@@ -583,9 +583,9 @@ const TelegramPage: React.FC = () => {
                         {d.latencyMs !== null ? (
                           <span className={cn(
                             'rounded-full px-2 py-0.5 text-[10px] font-mono font-bold border',
-                            isGood && 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30',
-                            isMedium && 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/30',
-                            isBad && 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border-rose-500/30'
+                            isGood && 'bg-st-ok/15 text-st-ok-text border-st-ok/30',
+                            isMedium && 'bg-st-warn/15 text-st-warn-text border-st-warn/30',
+                            isBad && 'bg-st-err/15 text-st-err-text border-st-err/30'
                           )}>
                             {d.latencyMs} мс
                           </span>
@@ -747,8 +747,8 @@ const TelegramPage: React.FC = () => {
                       className={cn(
                         'rounded-lg border px-2.5 py-1.5 text-[11px]',
                         c.ok
-                          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                          : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300'
+                          ? 'border-st-ok/30 bg-st-ok/10 text-st-ok-text'
+                          : 'border-st-err/30 bg-st-err/10 text-st-err-text'
                       )}
                     >
                       <span className="font-mono font-semibold">{c.domain}</span> — {c.ok ? `работает, ${c.ms} мс. ` : ''}
@@ -789,9 +789,9 @@ const TelegramPage: React.FC = () => {
         </Card>
 
         {status.lastError && (
-          <Card className="border-rose-500/40 bg-rose-950/20 ">
+          <Card className="border-st-err/40 bg-st-err/20 ">
             <CardContent className="pt-4">
-              <p className="text-xs text-rose-700 dark:text-rose-400 font-mono">{status.lastError}</p>
+              <p className="text-xs text-st-err-text font-mono">{status.lastError}</p>
             </CardContent>
           </Card>
         )}

@@ -5,6 +5,7 @@ import { deepMerge } from '../utils/merge'
 import { defaultConfig, CONFIG_VERSION } from '../utils/template'
 import { readFileSync, existsSync } from 'fs'
 import { enableAutoRun, disableAutoRun } from '../sys/autoRun'
+import { sanitizeAppearance } from '../resolve/appearance'
 
 let appConfig: AppConfig | undefined
 let writePromise: Promise<void> = Promise.resolve()
@@ -84,8 +85,17 @@ export async function getAppConfig(force = false): Promise<AppConfig> {
     appConfig = { ...appConfig, appTheme: 'dark' }
   }
 
-  // Update lastBuildId and configVersion without wiping user customizations
+  // Оформление: проверяем сохранённое; у старых конфигов поля нет — строим из appTheme.
   let needsSave = false
+  {
+    const hadAppearance = Boolean(appConfig.appearance)
+    const checked = sanitizeAppearance(appConfig.appearance, appConfig.appTheme)
+    appConfig.appearance = checked
+    if (appConfig.appTheme !== checked.mode) appConfig.appTheme = checked.mode
+    if (!hadAppearance) needsSave = true
+  }
+
+  // Update lastBuildId and configVersion without wiping user customizations
   if (persistedBuildId !== __BUILD_ID__) {
     appConfig.lastBuildId = __BUILD_ID__
     needsSave = true
@@ -191,6 +201,7 @@ export async function resetAppSettings(): Promise<void> {
   const prevHideTaskbarIcon = current.hideTaskbarIcon
   const fresh = structuredClone(defaultConfig) as AppConfig
   fresh.appTheme = current.appTheme
+  if (current.appearance) fresh.appearance = current.appearance
   if (current.customTheme) fresh.customTheme = current.customTheme
   if (current.deviceHwidSeed) fresh.deviceHwidSeed = current.deviceHwidSeed
   if (current.lastBuildId) fresh.lastBuildId = current.lastBuildId

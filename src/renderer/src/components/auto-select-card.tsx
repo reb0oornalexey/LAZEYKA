@@ -74,7 +74,7 @@ export default function AutoSelectCard({ settings, nodes, onPatch, className }: 
               className={cn(
                 'text-[9px] px-1.5 py-0 font-mono',
                 anyOn
-                  ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                  ? 'bg-st-ok/20 text-st-ok-text border border-st-ok/30'
                   : 'bg-muted text-muted-foreground'
               )}
             >
@@ -183,7 +183,7 @@ export default function AutoSelectCard({ settings, nodes, onPatch, className }: 
                   >
                     <span className="truncate">
                       {n.name}
-                      {reason && <span className="ml-1.5 text-[9px] text-amber-600">({reason})</span>}
+                      {reason && <span className="ml-1.5 text-[9px] text-st-warn-text">({reason})</span>}
                     </span>
                     <input
                       type="checkbox"

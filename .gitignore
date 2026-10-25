@@ -21,3 +21,6 @@ latest.yml
 
 # PyInstaller intermediates
 .pyi-build/
+
+# Тексты релизов живут в GitHub Releases, в репозиторий не кладём
+release-notes-v*.md

@@ -122,8 +122,8 @@ export function DiagnosticsDialog({ open, onClose }: { open: boolean; onClose: (
                   className={cn(
                     'rounded-xl border px-4 py-2.5 text-xs font-medium',
                     problems === 0
-                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
-                      : 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                      ? 'border-st-ok/30 bg-st-ok/10 text-st-ok-text'
+                      : 'border-st-warn/30 bg-st-warn/10 text-st-warn-text'
                   )}
                 >
                   {problems === 0
@@ -138,13 +138,13 @@ export function DiagnosticsDialog({ open, onClose }: { open: boolean; onClose: (
                   className={cn(
                     'flex flex-col gap-2 rounded-lg border p-2.5 sm:flex-row sm:items-center sm:justify-between',
                     item.status === 'ok' && 'border-border/50 bg-background/50',
-                    item.status === 'warn' && 'border-yellow-500/30 bg-yellow-500/5',
+                    item.status === 'warn' && 'border-st-warn/30 bg-st-warn/5',
                     item.status === 'error' && 'border-destructive/30 bg-destructive/5'
                   )}
                 >
                   <div className="flex min-w-0 items-start gap-2.5">
-                    {item.status === 'ok' && <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-500" />}
-                    {item.status === 'warn' && <AlertTriangle className="mt-0.5 size-4 shrink-0 text-yellow-500" />}
+                    {item.status === 'ok' && <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-st-ok-text" />}
+                    {item.status === 'warn' && <AlertTriangle className="mt-0.5 size-4 shrink-0 text-st-warn-text" />}
                     {item.status === 'error' && <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />}
                     <div className="min-w-0 select-text">
                       <div className="text-xs font-medium text-foreground">{item.title}</div>

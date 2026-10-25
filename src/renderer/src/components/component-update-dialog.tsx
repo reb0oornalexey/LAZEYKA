@@ -105,7 +105,7 @@ function NoteCard({
             </span>
           )}
           {note.installed && (
-            <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-emerald-500">
+            <span className="rounded-full border border-st-ok/40 bg-st-ok/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-st-ok-text">
               Установлена
             </span>
           )}
@@ -121,7 +121,7 @@ function NoteCard({
           {!note.installed && note.assetUrl && (
             <div className="mt-3">
               {confirming ? (
-                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+                <div className="rounded-lg border border-st-warn/30 bg-st-warn/10 p-3 text-xs">
                   <div className="font-semibold text-foreground">
                     {isDowngrade ? `Откатить ${componentName} до v${note.version}?` : `Установить ${componentName} v${note.version}?`}
                   </div>
@@ -336,7 +336,7 @@ export default function ComponentUpdateDialog({
                       </span>
                     </span>
                   ) : (
-                    <span className="font-medium text-emerald-500">У вас последняя версия</span>
+                    <span className="font-medium text-st-ok-text">У вас последняя версия</span>
                   )}
                   {publishedAt && <span>· {publishedAt}</span>}
                   {hasUpdate && newerCount > 1 && <span>· новых версий: {newerCount}</span>}
@@ -382,7 +382,7 @@ export default function ComponentUpdateDialog({
                   </div>
                 )}
                 {notesError && !loading && (
-                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-300">
+                  <div className="rounded-xl border border-st-warn/30 bg-st-warn/10 px-4 py-3 text-xs text-st-warn-text">
                     {notesError}
                     <button
                       type="button"
@@ -411,7 +411,7 @@ export default function ComponentUpdateDialog({
               {installing && (
                 <div className="mb-3 space-y-1.5">
                   <div className="h-2 w-full overflow-hidden rounded-full bg-foreground/[0.08]">
-                    <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-primary to-emerald-500" />
+                    <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-primary to-st-ok" />
                   </div>
                   <div className="truncate font-mono text-[11px] text-muted-foreground">
                     {step ?? `Скачиваю и проверяю ${meta.name}…`}

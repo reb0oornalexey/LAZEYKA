@@ -12,7 +12,8 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Gamepad2,
-  Target
+  Target,
+  Palette
 } from 'lucide-react'
 import ZapretIcon from '@renderer/components/zapret-icon'
 import TelegramIcon from '@renderer/components/telegram-icon'
@@ -24,6 +25,7 @@ import { useIncyStore } from '@renderer/store/incy-store'
 import { useOnlineStore } from '@renderer/store/online-store'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
 import { version } from '@renderer/utils/init'
+import { NavItem, BrandText } from '@renderer/components/app-chrome'
 import { AppVersionButton } from '@renderer/components/changelog-dialog'
 import { cn, pluralRu } from '@renderer/lib/utils'
 
@@ -58,10 +60,11 @@ const groups: { title: string | null; items: NavItem[] }[] = [
   {
     title: 'Система',
     items: [
-      { key: 'logs', path: '/logs', icon: ScrollText, label: 'Логи', service: null },
       { key: 'settings', path: '/settings', icon: SettingsIcon, label: 'Настройки', service: null },
+      { key: 'appearance', path: '/appearance', icon: Palette, label: 'Оформление', service: null },
       { key: 'about', path: '/about', icon: InfoIcon, label: 'Информация', service: null },
-      { key: 'support', path: '/support', icon: LifeBuoy, label: 'Поддержка', service: null }
+      { key: 'support', path: '/support', icon: LifeBuoy, label: 'Поддержка', service: null },
+      { key: 'logs', path: '/logs', icon: ScrollText, label: 'Логи', service: null }
     ]
   }
 ]
@@ -123,11 +126,11 @@ const AppSidebar: React.FC = () => {
     <aside
       className={cn(
         'relative z-20 flex h-full shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-out',
-        collapsed ? 'w-[60px]' : 'w-[212px]'
+        collapsed ? 'w-[60px]' : 'w-[var(--sidebar-width,212px)]'
       )}
     >
       {/* Логотип + версия; зона перетаскивания окна. */}
-      <div className={cn('app-drag flex h-[57px] shrink-0 items-center gap-2.5', collapsed ? 'justify-center' : 'px-4')}>
+      <div className={cn('app-drag flex h-14.25 shrink-0 items-center gap-2.5', collapsed ? 'justify-center' : 'px-4')}>
         <img
           src={logoSrc}
           alt="LAZEYKA"
@@ -135,14 +138,15 @@ const AppSidebar: React.FC = () => {
           className="size-8 shrink-0 select-none rounded-lg object-cover"
         />
         {!collapsed && (
-          <div className="min-w-0 leading-tight">
-            <div className="text-[13px] font-bold tracking-[0.16em] text-foreground">LAZEYKA</div>
-            {version && (
-              <AppVersionButton className="app-nodrag block text-[10.5px] font-medium text-muted-foreground hover:text-foreground">
-                v{version}
-              </AppVersionButton>
-            )}
-          </div>
+          <BrandText
+            version={
+              version && (
+                <AppVersionButton className="app-nodrag block text-[10.5px] font-medium text-muted-foreground hover:text-foreground">
+                  v{version}
+                </AppVersionButton>
+              )
+            }
+          />
         )}
       </div>
 
@@ -155,7 +159,7 @@ const AppSidebar: React.FC = () => {
           )}
         >
           <span className="relative flex size-2 shrink-0">
-            <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+            <span className="relative inline-flex size-2 rounded-full bg-st-ok" />
           </span>
           {collapsed ? <span>{online!.toLocaleString('ru-RU')}</span> : <span>{online!.toLocaleString('ru-RU')} онлайн</span>}
         </div>
@@ -179,36 +183,16 @@ const AppSidebar: React.FC = () => {
                 const running = isRunning(item.service)
                 const label = t(`sider.${item.key}`, { defaultValue: item.label })
                 return (
-                  <button
+                  <NavItem
                     key={item.key}
-                    type="button"
+                    icon={Icon}
+                    label={label}
+                    active={active}
+                    collapsed={collapsed}
+                    running={running}
                     title={collapsed ? label : undefined}
                     onClick={() => navigate(item.path)}
-                    className={cn(
-                      'group relative flex w-full cursor-pointer items-center rounded-lg text-[13px] font-medium transition-colors',
-                      collapsed ? 'h-10 justify-center' : 'h-9 gap-2.5 px-2.5',
-                      active
-                        ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                        : 'text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground'
-                    )}
-                  >
-                    {active && (
-                      <span
-                        className={cn(
-                          'absolute top-2 bottom-2 w-[3px] rounded-r-full bg-primary',
-                          collapsed ? '-left-2' : '-left-2.5'
-                        )}
-                      />
-                    )}
-                    <Icon className={cn('size-[18px] shrink-0', active && 'text-primary')} />
-                    {!collapsed && <span className="truncate">{label}</span>}
-                    {running &&
-                      (collapsed ? (
-                        <span className="absolute top-1.5 right-1.5 size-2 rounded-full bg-primary ring-2 ring-sidebar" />
-                      ) : (
-                        <span className="ml-auto size-2 shrink-0 rounded-full bg-primary shadow-[0_0_0_3px_color-mix(in_oklab,var(--primary)_18%,transparent)]" />
-                      ))}
-                  </button>
+                  />
                 )
               })}
             </div>

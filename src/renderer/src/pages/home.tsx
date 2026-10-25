@@ -112,7 +112,7 @@ function ServiceCard({
               tone === 'on'
                 ? 'text-primary'
                 : tone === 'busy'
-                  ? 'text-amber-600 dark:text-amber-400'
+                  ? 'text-st-warn-text'
                   : tone === 'error'
                     ? 'text-destructive'
                     : 'text-muted-foreground'
@@ -449,7 +449,7 @@ const Home: React.FC = () => {
             hero.tone === 'on'
               ? 'border-primary/30 bg-gradient-to-br from-primary/[0.13] via-card to-card'
               : hero.tone === 'part'
-                ? 'border-amber-500/30 bg-gradient-to-br from-amber-500/[0.10] via-card to-card'
+                ? 'border-st-warn/30 bg-gradient-to-br from-st-warn/[0.10] via-card to-card'
                 : 'border-border bg-card'
           )}
         >
@@ -459,7 +459,7 @@ const Home: React.FC = () => {
               hero.tone === 'on'
                 ? 'bg-primary/15 text-primary'
                 : hero.tone === 'part'
-                  ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                  ? 'bg-st-warn/15 text-st-warn-text'
                   : 'bg-secondary text-muted-foreground'
             )}
           >
