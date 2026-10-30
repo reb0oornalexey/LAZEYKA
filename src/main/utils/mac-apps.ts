@@ -107,6 +107,17 @@ export async function collectRunningMacApps(): Promise<MacAppEntry[]> {
   return groupProcessPaths(out.split('\n'))
 }
 
+/** Имена запущенных процессов (последний компонент пути, нижний регистр) — `ps -axo comm=`. */
+export async function listRunningProcessNames(): Promise<string[]> {
+  const out = await run('/bin/ps', ['-axo', 'comm='])
+  const names = new Set<string>()
+  for (const line of out.split('\n')) {
+    const base = path.posix.basename(line.trim())
+    if (base) names.add(base.toLowerCase())
+  }
+  return [...names]
+}
+
 function filesIn(dir: string): string[] {
   try {
     return readdirSync(dir, { withFileTypes: true })

@@ -3,7 +3,7 @@ import { Gamepad2, Loader2, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { cn } from '@renderer/lib/utils'
-import { isMacPlatform } from '@renderer/utils/per-app'
+import { appLabel, isMacPlatform } from '@renderer/utils/per-app'
 import { systemScanInstalledGames, type InstalledGame } from '@renderer/utils/ipc'
 
 interface Props {
@@ -105,9 +105,9 @@ const InstalledGamesModal: React.FC<Props> = ({ open, onClose, existing, onAdd }
                           on ? 'border-primary/60 bg-primary/15 text-primary' : 'border-border/60 text-muted-foreground hover:border-primary/40',
                           added && 'cursor-default opacity-70'
                         )}
-                        title={i === 0 ? 'Главный процесс игры' : 'Дополнительный процесс'}
+                        title={isMacPlatform ? exe : i === 0 ? 'Главный процесс игры' : 'Дополнительный процесс'}
                       >
-                        {exe}
+                        {appLabel(exe)}
                         {added ? ' · в списке' : ''}
                       </button>
                     )
