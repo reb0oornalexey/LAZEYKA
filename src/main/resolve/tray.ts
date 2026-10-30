@@ -161,13 +161,13 @@ export async function createTray(): Promise<void> {
           { label: 'Остановить', enabled: zapret.state === 'running', click: () => { stopZapret().catch(() => void 0) } }
         ]
       }]),
-      ...(isMac ? [] : [{
+      {
         label: `Telegram: ${tgws.state === 'running' ? 'Запущен' : tgws.state === 'starting' ? 'Запуск...' : 'Остановлен'}`,
         submenu: [
           { label: 'Запустить', enabled: tgws.state !== 'running' && tgws.state !== 'starting', click: () => { startTgws().catch(() => void 0) } },
           { label: 'Остановить', enabled: tgws.state === 'running', click: () => { stopTgws().catch(() => void 0) } }
         ]
-      }]),
+      },
       ...(strategyMenuItems.length > 0
         ? [
             {

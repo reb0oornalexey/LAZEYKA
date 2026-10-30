@@ -678,7 +678,6 @@ const Settings: React.FC = () => {
                 onCheckedChange={(v) => patchAppConfig({ silentStart: v })}
               />
             </div>
-            {!isMac && (
             <div className="flex items-center justify-between">
               <Label className="text-sm">Автозапуск Telegram</Label>
               <Switch
@@ -688,7 +687,6 @@ const Settings: React.FC = () => {
                 }
               />
             </div>
-            )}
             {!isMac && (
             <div className="flex items-center justify-between">
               <Label className="text-sm">Автозапуск Zapret</Label>

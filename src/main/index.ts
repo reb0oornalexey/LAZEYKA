@@ -150,7 +150,7 @@ app.whenReady().then(async () => {
   void pruneOldLogs(appConfig.maxLogDays ?? 7)
   appLog('info', `Логи пишутся в ${currentLogFilePath()}`)
 
-  if (process.platform !== 'darwin' && appConfig.tgws?.autoStart) {
+  if (appConfig.tgws?.autoStart) {
     appLog('info', 'Автозапуск Telegram WS — старт')
     startTgws().catch((e) => {
       appLog('error', `Автозапуск Telegram WS упал: ${e}`)

@@ -205,8 +205,7 @@ const Home: React.FC = () => {
   const [zapretSessionDismissed, setZapretSessionDismissed] = useState(false)
   const [tgwsSessionDismissed, setTgwsSessionDismissed] = useState(false)
   useEffect(() => {
-    if (isMac) return
-    zapretCheckUpdate(false).then(setZapretUpdate).catch(() => setZapretUpdate(null))
+    if (!isMac) zapretCheckUpdate(false).then(setZapretUpdate).catch(() => setZapretUpdate(null))
     tgwsCheckUpdate(false).then(setTgwsUpdate).catch(() => setTgwsUpdate(null))
   }, [isMac])
   const showZapretBanner =
@@ -279,10 +278,10 @@ const Home: React.FC = () => {
   const incyBusy = pending.incy !== undefined || incy.state === 'connecting'
   const toneOf = (on: boolean, busy: boolean, err: boolean): Tone => (busy ? 'busy' : on ? 'on' : err ? 'error' : 'off')
 
-  const totalServices = isMac ? 1 : 3
-  const runningCount = (isMac ? [incyOn] : [tgwsOn, zapretOn, incyOn]).filter(Boolean).length
+  const totalServices = isMac ? 2 : 3
+  const runningCount = (isMac ? [tgwsOn, incyOn] : [tgwsOn, zapretOn, incyOn]).filter(Boolean).length
   const startedAts = [
-    !isMac && tgwsOn ? tgws.startedAt : undefined,
+    tgwsOn ? tgws.startedAt : undefined,
     !isMac && zapretOn ? zapret.startedAt : undefined,
     incyOn ? incy.connectedAt : undefined
   ].filter((x): x is number => typeof x === 'number')
@@ -371,7 +370,7 @@ const Home: React.FC = () => {
     try {
       const tasks: Promise<void>[] = []
       if (!isMac && !zapretOn && zapretStrategy && !isZapretTesting) tasks.push(toggleZapret(true))
-      if (!isMac && !tgwsOn) tasks.push(toggleTgws(true))
+      if (!tgwsOn) tasks.push(toggleTgws(true))
       if (!incyOn && nodes.length > 0) tasks.push(toggleIncy(true))
       await Promise.allSettled(tasks)
     } finally {
@@ -386,11 +385,11 @@ const Home: React.FC = () => {
       : runningCount > 0
         ? { tone: 'part' as const, title: 'Работает частично', icon: <ShieldAlert className="size-6" /> }
         : { tone: 'off' as const, title: 'Всё выключено', icon: <ShieldOff className="size-6" /> }
-  const onNames = [!isMac && zapretOn && 'Zapret', !isMac && tgwsOn && 'Telegram', incyOn && 'VPN'].filter(Boolean) as string[]
-  const offNames = [!isMac && !zapretOn && 'Zapret', !isMac && !tgwsOn && 'Telegram', !incyOn && 'VPN'].filter(Boolean) as string[]
+  const onNames = [!isMac && zapretOn && 'Zapret', tgwsOn && 'Telegram', incyOn && 'VPN'].filter(Boolean) as string[]
+  const offNames = [!isMac && !zapretOn && 'Zapret', !tgwsOn && 'Telegram', !incyOn && 'VPN'].filter(Boolean) as string[]
   const heroText =
     runningCount === totalServices
-      ? `${isMac ? 'VPN включён' : 'Zapret, Telegram и VPN включены'}${since ? ` · ${formatUptime(now - since)} без перерыва` : ''}`
+      ? `${isMac ? 'Telegram и VPN включены' : 'Zapret, Telegram и VPN включены'}${since ? ` · ${formatUptime(now - since)} без перерыва` : ''}`
       : runningCount > 0
         ? `Работает: ${onNames.join(', ')} · выключено: ${offNames.join(', ')}`
         : 'Включите нужные службы переключателями ниже или всё сразу.'
@@ -508,7 +507,7 @@ const Home: React.FC = () => {
         </div>
 
         {/* Службы */}
-        <div className={cn('grid grid-cols-1 gap-3.5', !isMac && 'md:grid-cols-3')}>
+        <div className={cn('grid grid-cols-1 gap-3.5', isMac ? 'md:grid-cols-2' : 'md:grid-cols-3')}>
           {!isMac && (
           <ServiceCard
             icon={<ZapretIcon className="size-5" />}
@@ -540,7 +539,6 @@ const Home: React.FC = () => {
             onOpen={() => navigate('/zapret')}
           />
           )}
-          {!isMac && (
           <ServiceCard
             icon={<TelegramIcon className="size-5" />}
             title="Telegram"
@@ -563,7 +561,6 @@ const Home: React.FC = () => {
             note={tgws.state === 'error' ? tgws.lastError : undefined}
             onOpen={() => navigate('/telegram')}
           />
-          )}
           <ServiceCard
             icon={<Globe className="size-5" />}
             title="INCY VPN"
