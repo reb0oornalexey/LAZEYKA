@@ -281,7 +281,7 @@ export async function ensureMacServiceReady(): Promise<void> {
 
 // ---- Установка и удаление ---------------------------------------------------------
 
-function runElevated(shellCommand: string): Promise<{ ok: boolean; cancelled: boolean; error: string }> {
+export function runElevated(shellCommand: string): Promise<{ ok: boolean; cancelled: boolean; error: string }> {
   return new Promise((resolve) => {
     // Пароль вводится в системное окно и до нас не доходит.
     execFile(

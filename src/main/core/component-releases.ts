@@ -5,6 +5,7 @@
 import { fetchGithubReleases, type GhAsset } from '../utils/github-release'
 import { getAppConfig } from '../config'
 import { tgwsCliPaths } from '../utils/dirs'
+import { ZAPRET_MAC_ASSET, ZAPRET_MAC_REPO, currentMacVersion } from './zapret-mac-updater'
 
 export type UpdatableComponent = 'zapret' | 'tgws'
 
@@ -31,6 +32,13 @@ export interface ComponentReleaseNote {
  */
 function assetUrlFor(component: UpdatableComponent, tag: string, version: string, assets: GhAsset[] | undefined): string {
   if (component === 'tgws') return `https://github.com/${REPOS.tgws}/archive/refs/tags/${tag}.zip`
+  // macOS: Zapret берётся из репозитория Mac-порта, архив один и тот же по имени.
+  if (process.platform === 'darwin') {
+    return (
+      assets?.find((a) => a.name === ZAPRET_MAC_ASSET)?.browser_download_url ??
+      `https://github.com/${ZAPRET_MAC_REPO}/releases/download/${tag}/${ZAPRET_MAC_ASSET}`
+    )
+  }
   const zip =
     assets?.find((a) => /^zapret-discord-youtube.*\.zip$/i.test(a.name)) ?? assets?.find((a) => /\.zip$/i.test(a.name))
   return (
@@ -52,6 +60,7 @@ function cmp(a: string, b: string): number {
 async function installedOf(component: UpdatableComponent): Promise<string | undefined> {
   const cfg = await getAppConfig()
   if (component === 'tgws') return tgwsCliPaths()?.version || cfg.tgws?.installedVersion || undefined
+  if (process.platform === 'darwin') return currentMacVersion() || cfg.zapret?.installedVersion || undefined
   return cfg.zapret?.installedVersion || undefined
 }
 
@@ -63,9 +72,8 @@ export async function getComponentReleaseHistory(
   page = 1,
   perPage = 6
 ): Promise<ComponentReleaseNote[]> {
-  // macOS: история Windows-сборок Zapret на Mac не нужна; TgWsProxy (Flowseal) работает и там.
-  if (process.platform === 'darwin' && component !== 'tgws') return []
-  const repo = REPOS[component]
+  // macOS: история Zapret — релизы Mac-порта Flowseal.
+  const repo = process.platform === 'darwin' && component === 'zapret' ? ZAPRET_MAC_REPO : REPOS[component]
   if (!repo) throw new Error(`Неизвестный компонент: ${component}`)
   const key = `${component}:${page}:${perPage}`
   const installed = await installedOf(component)

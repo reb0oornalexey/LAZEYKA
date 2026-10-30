@@ -96,6 +96,8 @@ import {
 } from '../core/incy-geo-updater'
 import { checkCoreUpdates, installCoreUpdate } from '../core/incy-core-updater'
 import { macServiceState, installMacService, uninstallMacService } from '../core/incy-mac-service'
+import { zapretMacServiceState, installZapretMacService, uninstallZapretMacService } from '../core/zapret-mac-service'
+import { afterZapretMacInstall } from '../core/zapret-mac'
 import { GEO_CATEGORY_CATALOG } from '../core/incy-xray'
 import {
   exportIncyBackup,
@@ -542,6 +544,21 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('macService:uninstall', h(async () => {
     if (getIncyStatus().state === 'running') await disconnectIncy()
     return uninstallMacService()
+  }))
+  // ---- macOS: служба Zapret (root-движок utunws; пароль — только при установке) ----
+  ipcMain.handle('zapretMac:getState', h(() => zapretMacServiceState()))
+  ipcMain.handle('zapretMac:install', h(async () => {
+    // Установка останавливает службу: работающий Zapret снимаем и после успеха поднимаем снова.
+    const wasRunning = getZapretStatus().state === 'running'
+    if (wasRunning) await stopZapret().catch(() => void 0)
+    const res = await installZapretMacService()
+    if (res.ok) await afterZapretMacInstall()
+    if (wasRunning) startZapret().catch(() => void 0)
+    return res
+  }))
+  ipcMain.handle('zapretMac:uninstall', h(async () => {
+    if (getZapretStatus().state === 'running') await stopZapret().catch(() => void 0)
+    return uninstallZapretMacService()
   }))
   ipcMain.handle('incy:disconnect', h(() => disconnectIncy()))
   ipcMain.handle('incy:selectNode', h((id) => selectIncyNode(String(id))))

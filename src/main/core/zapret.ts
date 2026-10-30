@@ -10,6 +10,7 @@ import { logToFile } from '../utils/file-logger'
 import { getGameFilterVars, getZapretWindowsServiceStatus } from './zapret-service-settings'
 import { createConsoleDecoder, decodeConsole } from '../utils/console-decode'
 import { mergeLazeykaIpset, addHostsToZapretUserList } from './zapret-iplist'
+import { adoptRunningZapretMac, listMacStrategies, startZapretMac, stopZapretMac, type ZapretMacHost } from './zapret-mac'
 
 export interface StrategyDescriptor {
   file: string
@@ -61,6 +62,8 @@ export function getZapretStatus(): CoreStatus {
  * if the bundle isn't present yet.
  */
 export function listStrategies(): StrategyDescriptor[] {
+  // macOS: стратегии из сборки Flowseal для Mac (file — идентификатор вида general-alt3).
+  if (process.platform === 'darwin') return listMacStrategies()
   const dir = zapretBundleDir()
   if (!existsSync(dir)) return []
   const out: StrategyDescriptor[] = []
@@ -372,13 +375,24 @@ export function withZapretLock<T>(fn: () => Promise<T>): Promise<T> {
   return withLock(fn)
 }
 
+/** macOS: что нужно zapret-mac.ts от этого модуля (статус, журнал, домены DPI). */
+const macHost: ZapretMacHost = {
+  setStatus,
+  log,
+  ensureHosts: () => ensureLazeykaHosts(zapretBundleDir())
+}
+
 export function startZapret(): Promise<void> {
-  // macOS: Zapret (winws/WinDivert) здесь не работает — порт через utunws в отдельном этапе.
-  if (process.platform === 'darwin') return Promise.reject(new Error('Zapret пока не поддерживается на macOS'))
+  // macOS: движок utunws в root-службе, управление — zapret-mac.ts.
+  if (process.platform === 'darwin') return withLock(() => startZapretMac(macHost))
   return withLock(() => startZapretImpl())
 }
+/** macOS: подхватить службу Zapret, оставшуюся работать от прошлого запуска. */
+export function adoptRunningZapret(): Promise<boolean> {
+  return adoptRunningZapretMac(macHost)
+}
 export function stopZapret(): Promise<void> {
-  if (process.platform === 'darwin') return Promise.resolve()
+  if (process.platform === 'darwin') return withLock(() => stopZapretMac(macHost))
   return withLock(() => stopZapretImpl())
 }
 
@@ -769,6 +783,8 @@ async function stopZapretImpl(): Promise<void> {
 }
 
 export async function restartZapret(): Promise<void> {
+  // macOS: запуск уже перезапускает движок службы целиком (без цикла остановки).
+  if (process.platform === 'darwin') return startZapret()
   await stopZapret()
   await new Promise((r) => setTimeout(r, 500))
   await startZapret()

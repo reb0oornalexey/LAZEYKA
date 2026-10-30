@@ -106,8 +106,7 @@ export async function createTray(): Promise<void> {
       currentIconOn = anyRunning
     }
 
-    const isMac = process.platform === 'darwin'
-    const availableStrategies = isMac ? [] : listStrategies()
+    const availableStrategies = listStrategies()
     const strategyMenuItems = availableStrategies.slice(0, 10).map((s) => ({
       label: s.title,
       type: 'radio' as const,
@@ -154,13 +153,13 @@ export async function createTray(): Promise<void> {
           { label: 'Отключить', enabled: incy.state === 'running', click: () => { disconnectIncy().catch(() => void 0) } }
         ]
       },
-      ...(isMac ? [] : [{
+      {
         label: `Zapret: ${zapret.state === 'running' ? 'Запущен' : zapret.state === 'starting' ? 'Запуск...' : 'Остановлен'}`,
         submenu: [
           { label: 'Запустить', enabled: zapret.state !== 'running' && zapret.state !== 'starting', click: () => { startZapret().catch(() => void 0) } },
           { label: 'Остановить', enabled: zapret.state === 'running', click: () => { stopZapret().catch(() => void 0) } }
         ]
-      }]),
+      },
       {
         label: `Telegram: ${tgws.state === 'running' ? 'Запущен' : tgws.state === 'starting' ? 'Запуск...' : 'Остановлен'}`,
         submenu: [
