@@ -41,6 +41,7 @@ import {
 import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
 import BasePage from '@renderer/components/base/base-page'
 import { platform } from '@renderer/utils/init'
+import MacServiceCard from '@renderer/components/mac-service-card'
 
 // На macOS часть переключателей относится к Windows (панель задач, Zapret, Telegram-прокси).
 const isMac = platform === 'darwin'
@@ -657,6 +658,9 @@ const Settings: React.FC = () => {
             </div>
           </CardContent>
         </Card>
+
+        {/* Служба macOS (TUN) — карточка сама скрыта вне macOS */}
+        <MacServiceCard />
 
         {/* Launch */}
         <Card className="cyber-card">

@@ -10,6 +10,7 @@ import { useAppearanceSync } from '@renderer/hooks/use-appearance-sync'
 import { AppBackground } from '@renderer/components/appearance/background-layer'
 import AppSidebar from '@renderer/components/app-sidebar'
 import WindowControls from '@renderer/components/window-controls'
+import MacServiceDialog from '@renderer/components/mac-service-dialog'
 import { platform } from '@renderer/utils/init'
 import { attachLogsStore } from '@renderer/store/logs-store'
 import { attachTgwsStore } from '@renderer/store/tgws-store'
@@ -133,6 +134,7 @@ const App: React.FC = () => {
       )}
       <AppSidebar />
       <div className="relative z-10 main min-w-0 grow h-full overflow-y-auto">{page}</div>
+      <MacServiceDialog />
     </div>
   )
 }

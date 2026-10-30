@@ -821,6 +821,38 @@ export const incyGetStatus = (): Promise<IncyStatus> => invoke('incy:getStatus')
 export const incyConnect = (id?: string): Promise<IncyStatus> => invoke('incy:connect', id)
 export const incyDisconnect = (): Promise<IncyStatus> => invoke('incy:disconnect')
 export const incySelectNode = (id: string): Promise<IncyStatus> => invoke('incy:selectNode', id)
+
+// ---- macOS: служба LAZEYKA (root-демон) для режима TUN ---------------------------
+export type MacServiceStateId =
+  | 'unsupported'
+  | 'not_installed'
+  | 'not_paired'
+  | 'needs_update'
+  | 'not_running'
+  | 'ready'
+export interface MacServiceInfo {
+  state: MacServiceStateId
+  installed: boolean
+  paired: boolean
+  serviceVersion?: string
+  bundledVersion?: string
+  detail?: string
+}
+export interface MacServiceResult {
+  ok: boolean
+  cancelled?: boolean
+  message: string
+  info: MacServiceInfo
+}
+/** Событие из main: нужна служба или её пора обновить. */
+export interface MacServiceNotice {
+  reason: 'required' | 'update'
+  state: MacServiceStateId
+  message: string
+}
+export const macServiceGetState = (): Promise<MacServiceInfo> => invoke('macService:getState')
+export const macServiceInstall = (): Promise<MacServiceResult> => invoke('macService:install')
+export const macServiceUninstall = (): Promise<MacServiceResult> => invoke('macService:uninstall')
 export const incySetConnectionMode = (mode: 'tun' | 'system_proxy' | 'only_proxy'): Promise<IncyStatus> =>
   invoke('incy:setConnectionMode', mode)
 export const incySetRoutingMode = (mode: 'bypass-ru' | 'global' | 'direct'): Promise<IncyStatus> =>
