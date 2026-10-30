@@ -17,6 +17,7 @@ import logoDark from '@renderer/assets/logo.png'
 import logoLight from '@renderer/assets/logo_white.png'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
+import { platform } from '@renderer/utils/init'
 import { useAppearanceFollow } from '@renderer/hooks/use-appearance-sync'
 import { AppBackground } from '@renderer/components/appearance/background-layer'
 import {
@@ -276,6 +277,8 @@ export default function UpdateWindow(): React.ReactElement {
     setProgress(null)
     try {
       await appInstallUpdate(info.assetUrl, info.latest)
+      // macOS: установщика нет — загрузка .dmg открылась в браузере, окно остаётся.
+      if (platform === 'darwin') setInstalling(false)
     } catch (e) {
       setInstalling(false)
       const msg = e instanceof Error ? e.message : String(e)
@@ -501,7 +504,7 @@ export default function UpdateWindow(): React.ReactElement {
                   ) : (
                     <>
                       <Download className="mr-2 size-4" />
-                      Обновить до {latestVersion}
+                      {platform === 'darwin' ? `Скачать ${latestVersion}` : `Обновить до ${latestVersion}`}
                     </>
                   )}
                 </Button>
@@ -514,8 +517,9 @@ export default function UpdateWindow(): React.ReactElement {
 
         {hasUpdate && !installing && (
           <p className="mt-3 text-[10.5px] leading-relaxed text-muted-foreground">
-            LAZEYKA закроется на 5–10 секунд и запустится снова. Все настройки, узлы и списки сохраняются.
-            «Позже» — напомним при следующем запуске.
+            {platform === 'darwin'
+              ? 'Образ .dmg откроется в браузере: скачайте его и перетащите LAZEYKA в «Программы» поверх старой версии. Настройки сохранятся. «Позже» — напомним при следующем запуске.'
+              : 'LAZEYKA закроется на 5–10 секунд и запустится снова. Все настройки, узлы и списки сохраняются. «Позже» — напомним при следующем запуске.'}
           </p>
         )}
       </div>

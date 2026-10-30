@@ -9,6 +9,7 @@ import { AppVersionButton } from '@renderer/components/changelog-dialog'
 import ZapretIcon from '@renderer/components/zapret-icon'
 import TelegramIcon from '@renderer/components/telegram-icon'
 import LiveTrafficMonitor from '@renderer/components/live-traffic-monitor'
+import { platform } from '@renderer/utils/init'
 import { useTgwsStore } from '@renderer/store/tgws-store'
 import { useZapretStore } from '@renderer/store/zapret-store'
 import { useZapretTestStore } from '@renderer/store/zapret-test-store'
@@ -176,6 +177,8 @@ const UpdateNotice: React.FC<UpdateNoticeProps> = ({ title, subtitle, onDetails,
 )
 
 const Home: React.FC = () => {
+  // На macOS Zapret и Telegram-прокси пока недоступны — показываем только INCY.
+  const isMac = platform === 'darwin'
   const navigate = useNavigate()
   const tgws = useTgwsStore((s) => s.status)
   const zapret = useZapretStore((s) => s.status)
@@ -202,9 +205,10 @@ const Home: React.FC = () => {
   const [zapretSessionDismissed, setZapretSessionDismissed] = useState(false)
   const [tgwsSessionDismissed, setTgwsSessionDismissed] = useState(false)
   useEffect(() => {
+    if (isMac) return
     zapretCheckUpdate(false).then(setZapretUpdate).catch(() => setZapretUpdate(null))
     tgwsCheckUpdate(false).then(setTgwsUpdate).catch(() => setTgwsUpdate(null))
-  }, [])
+  }, [isMac])
   const showZapretBanner =
     !!zapretUpdate && zapretUpdate.hasUpdate && !zapretUpdate.dismissed && !!zapretUpdate.assetUrl && !zapretSessionDismissed
   const showTgwsBanner =
@@ -275,10 +279,11 @@ const Home: React.FC = () => {
   const incyBusy = pending.incy !== undefined || incy.state === 'connecting'
   const toneOf = (on: boolean, busy: boolean, err: boolean): Tone => (busy ? 'busy' : on ? 'on' : err ? 'error' : 'off')
 
-  const runningCount = [tgwsOn, zapretOn, incyOn].filter(Boolean).length
+  const totalServices = isMac ? 1 : 3
+  const runningCount = (isMac ? [incyOn] : [tgwsOn, zapretOn, incyOn]).filter(Boolean).length
   const startedAts = [
-    tgwsOn ? tgws.startedAt : undefined,
-    zapretOn ? zapret.startedAt : undefined,
+    !isMac && tgwsOn ? tgws.startedAt : undefined,
+    !isMac && zapretOn ? zapret.startedAt : undefined,
     incyOn ? incy.connectedAt : undefined
   ].filter((x): x is number => typeof x === 'number')
   const since = startedAts.length ? Math.min(...startedAts) : null
@@ -365,8 +370,8 @@ const Home: React.FC = () => {
     setStartingAll(true)
     try {
       const tasks: Promise<void>[] = []
-      if (!zapretOn && zapretStrategy && !isZapretTesting) tasks.push(toggleZapret(true))
-      if (!tgwsOn) tasks.push(toggleTgws(true))
+      if (!isMac && !zapretOn && zapretStrategy && !isZapretTesting) tasks.push(toggleZapret(true))
+      if (!isMac && !tgwsOn) tasks.push(toggleTgws(true))
       if (!incyOn && nodes.length > 0) tasks.push(toggleIncy(true))
       await Promise.allSettled(tasks)
     } finally {
@@ -376,16 +381,16 @@ const Home: React.FC = () => {
 
   // ---- Шапка статуса ----
   const hero =
-    runningCount === 3
+    runningCount === totalServices
       ? { tone: 'on' as const, title: 'Защита работает', icon: <ShieldCheck className="size-6" /> }
       : runningCount > 0
         ? { tone: 'part' as const, title: 'Работает частично', icon: <ShieldAlert className="size-6" /> }
         : { tone: 'off' as const, title: 'Всё выключено', icon: <ShieldOff className="size-6" /> }
-  const onNames = [zapretOn && 'Zapret', tgwsOn && 'Telegram', incyOn && 'VPN'].filter(Boolean) as string[]
-  const offNames = [!zapretOn && 'Zapret', !tgwsOn && 'Telegram', !incyOn && 'VPN'].filter(Boolean) as string[]
+  const onNames = [!isMac && zapretOn && 'Zapret', !isMac && tgwsOn && 'Telegram', incyOn && 'VPN'].filter(Boolean) as string[]
+  const offNames = [!isMac && !zapretOn && 'Zapret', !isMac && !tgwsOn && 'Telegram', !incyOn && 'VPN'].filter(Boolean) as string[]
   const heroText =
-    runningCount === 3
-      ? `Zapret, Telegram и VPN включены${since ? ` · ${formatUptime(now - since)} без перерыва` : ''}`
+    runningCount === totalServices
+      ? `${isMac ? 'VPN включён' : 'Zapret, Telegram и VPN включены'}${since ? ` · ${formatUptime(now - since)} без перерыва` : ''}`
       : runningCount > 0
         ? `Работает: ${onNames.join(', ')} · выключено: ${offNames.join(', ')}`
         : 'Включите нужные службы переключателями ниже или всё сразу.'
@@ -468,6 +473,7 @@ const Home: React.FC = () => {
           <div className="min-w-0 flex-1">
             <h2 className="text-xl font-bold leading-tight text-foreground">{hero.title}</h2>
             <p className="mt-1 text-[13px] text-muted-foreground">{heroText}</p>
+            {!isMac && (
             <button
               type="button"
               onClick={() => setDiagOpen(true)}
@@ -476,6 +482,7 @@ const Home: React.FC = () => {
               <Stethoscope className="size-3" />
               Почему может не работать?
             </button>
+            )}
           </div>
           {incyOn && incyNode ? (
             <div className="flex shrink-0 gap-2">
@@ -492,7 +499,7 @@ const Home: React.FC = () => {
                 </div>
               )}
             </div>
-          ) : runningCount < 3 ? (
+          ) : runningCount < totalServices ? (
             <Button onClick={() => void handleStartAll()} disabled={startingAll} className="shrink-0">
               {startingAll ? <Loader2 className="size-4 animate-spin" /> : <Power className="size-4" />}
               Включить всё
@@ -501,7 +508,8 @@ const Home: React.FC = () => {
         </div>
 
         {/* Службы */}
-        <div className="grid grid-cols-1 gap-3.5 md:grid-cols-3">
+        <div className={cn('grid grid-cols-1 gap-3.5', !isMac && 'md:grid-cols-3')}>
+          {!isMac && (
           <ServiceCard
             icon={<ZapretIcon className="size-5" />}
             title="Zapret"
@@ -531,6 +539,8 @@ const Home: React.FC = () => {
             }
             onOpen={() => navigate('/zapret')}
           />
+          )}
+          {!isMac && (
           <ServiceCard
             icon={<TelegramIcon className="size-5" />}
             title="Telegram"
@@ -553,6 +563,7 @@ const Home: React.FC = () => {
             note={tgws.state === 'error' ? tgws.lastError : undefined}
             onOpen={() => navigate('/telegram')}
           />
+          )}
           <ServiceCard
             icon={<Globe className="size-5" />}
             title="INCY VPN"

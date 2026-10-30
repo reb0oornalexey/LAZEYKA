@@ -40,6 +40,10 @@ import {
 } from '@renderer/utils/ipc'
 import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
 import BasePage from '@renderer/components/base/base-page'
+import { platform } from '@renderer/utils/init'
+
+// На macOS часть переключателей относится к Windows (панель задач, Zapret, Telegram-прокси).
+const isMac = platform === 'darwin'
 
 const Settings: React.FC = () => {
   const { appConfig, patchAppConfig } = useAppConfig()
@@ -661,7 +665,7 @@ const Settings: React.FC = () => {
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center justify-between">
-              <Label className="text-sm">Запускать при входе в Windows</Label>
+              <Label className="text-sm">{isMac ? 'Запускать при входе в систему' : 'Запускать при входе в Windows'}</Label>
               <Switch
                 checked={appConfig?.autoLaunch ?? false}
                 onCheckedChange={(v) => patchAppConfig({ autoLaunch: v })}
@@ -674,6 +678,7 @@ const Settings: React.FC = () => {
                 onCheckedChange={(v) => patchAppConfig({ silentStart: v })}
               />
             </div>
+            {!isMac && (
             <div className="flex items-center justify-between">
               <Label className="text-sm">Автозапуск Telegram</Label>
               <Switch
@@ -683,6 +688,8 @@ const Settings: React.FC = () => {
                 }
               />
             </div>
+            )}
+            {!isMac && (
             <div className="flex items-center justify-between">
               <Label className="text-sm">Автозапуск Zapret</Label>
               <Switch
@@ -692,6 +699,7 @@ const Settings: React.FC = () => {
                 }
               />
             </div>
+            )}
             <div className="flex items-center justify-between">
               <div className="flex flex-col">
                 <Label className="text-sm">Проверять обновления LAZEYKA</Label>
@@ -767,6 +775,7 @@ const Settings: React.FC = () => {
                 onCheckedChange={(v) => patchAppConfig({ disableTray: !v })}
               />
             </div>
+            {!isMac && (
             <div className="flex items-center justify-between">
               <div className="flex flex-col">
                 <Label className="text-sm">Убрать иконку с панели задач</Label>
@@ -779,6 +788,7 @@ const Settings: React.FC = () => {
                 onCheckedChange={(v) => patchAppConfig({ hideTaskbarIcon: v })}
               />
             </div>
+            )}
           </CardContent>
         </Card>
 

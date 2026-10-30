@@ -10,16 +10,29 @@ import Logs from '@renderer/pages/logs'
 import Settings from '@renderer/pages/settings'
 import About from '@renderer/pages/about'
 import Support from '@renderer/pages/support'
+import MacSoon from '@renderer/components/mac-soon'
 
 const Appearance = lazy(() => import('@renderer/pages/appearance'))
 
 const routes = [
   { path: '/', element: <Navigate to="/home" replace /> },
   { path: '/home', element: <Home /> },
-  { path: '/telegram', element: <Telegram /> },
-  { path: '/zapret', element: <Zapret /> },
+  { path: '/telegram', element: (
+      <MacSoon title="Telegram">
+        <Telegram />
+      </MacSoon>
+    ) },
+  { path: '/zapret', element: (
+      <MacSoon title="Zapret">
+        <Zapret />
+      </MacSoon>
+    ) },
   { path: '/incy', element: <Incy /> },
-  { path: '/exitlag', element: <ExitLag /> },
+  { path: '/exitlag', element: (
+      <MacSoon title="ExitLag">
+        <ExitLag />
+      </MacSoon>
+    ) },
   { path: '/optimizer', element: <Optimizer /> },
   { path: '/logs', element: <Logs /> },
   { path: '/settings', element: <Settings /> },
