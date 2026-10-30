@@ -50,7 +50,16 @@ jobs:
         run: pnpm exec electron-vite build
 
       - name: Упаковка (.dmg + .zip, подпись ad-hoc)
-        run: pnpm exec electron-builder --mac --${{ matrix.arch }} --publish never
+        # Тестовые сборки (не релиз) — с номером сборки в имени файла, чтобы тестер
+        # не открыл по ошибке старый .dmg из «Загрузок». В релиз уходит обычное имя
+        # LAZEYKA_<arch>.dmg — по нему приложение находит обновление.
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            pnpm exec electron-builder --mac --${{ matrix.arch }} --publish never
+          else
+            pnpm exec electron-builder --mac --${{ matrix.arch }} --publish never \
+              -c.mac.artifactName='${productName}_${arch}-build${{ github.run_number }}.${ext}'
+          fi
 
       - name: Проверка архитектуры и подписи
         run: |
@@ -73,7 +82,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LAZEYKA-mac-${{ matrix.arch }}
+          name: LAZEYKA-mac-${{ matrix.arch }}-build${{ github.run_number }}
           path: |
             dist/*.dmg
             dist/*.zip

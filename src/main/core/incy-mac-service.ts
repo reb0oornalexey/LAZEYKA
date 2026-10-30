@@ -458,9 +458,29 @@ async function tailLog(lines: number): Promise<string[] | null> {
  * вызовет хук post_start. Отдельный /admin/start не нужен — apply на
  * остановленном ядре и есть запуск (а start — это откат к last-good).
  */
+/**
+ * Ядро внутри lxd всегда открывает файл кэша (демон подключает свой журнал, а
+ * это включает cache-file), и по умолчанию путь относительный — `cache.db`.
+ * На macOS у службы рабочий каталог `/` (системный том только для чтения),
+ * поэтому apply падал с «open cache.db: read-only file system». Путь задаём
+ * сами — в каталоге состояния службы, единственном, которым она владеет.
+ */
+function withDaemonCacheFile(configJson: string): string {
+  try {
+    const cfg = JSON.parse(configJson) as { experimental?: Record<string, unknown> }
+    cfg.experimental = cfg.experimental ?? {}
+    const prev = (cfg.experimental.cache_file as Record<string, unknown> | undefined) ?? {}
+    cfg.experimental.cache_file = { ...prev, enabled: true, path: `${STATE_DIR}/cache.db` }
+    return JSON.stringify(cfg, null, 2)
+  } catch {
+    return configJson
+  }
+}
+
 export async function applyCoreViaDaemon(configJson: string, log: (line: string) => void): Promise<void> {
   const target = requireTarget()
   logBaseline = await tailLog(80)
+  configJson = withDaemonCacheFile(configJson)
   const res = await pinnedRequest(target, 'POST', 'apply', configJson, 90_000).catch((e: Error) => {
     throw new Error(`служба не отвечает: ${e.message}`)
   })
