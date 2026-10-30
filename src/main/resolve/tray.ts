@@ -20,6 +20,13 @@ let currentIconOn: boolean | null = null
  * falls back to .png if the .ico is missing or rejected by the OS.
  */
 function loadTrayImage(on: boolean): Electron.NativeImage {
+  if (process.platform === 'darwin') {
+    // macOS: .ico не читается — берём PNG и уменьшаем до высоты строки меню (18 px).
+    const png = iconPath(on, true)
+    const img = nativeImage.createFromPath(png)
+    if (img.isEmpty()) return nativeImage.createEmpty()
+    return img.resize({ width: 18, height: 18, quality: 'best' })
+  }
   const ico = iconPath(on)
   let image = nativeImage.createFromPath(ico)
   if (image.isEmpty()) {
@@ -50,17 +57,17 @@ export async function refreshTray(): Promise<void> {
  * If none of the candidates exist we log a warning so the silent
  * "tray icon doesn't appear" failure mode is at least diagnosable.
  */
-function iconPath(on: boolean): string {
+function iconPath(on: boolean, pngOnly = false): string {
   const ico = on ? 'icon_on.ico' : 'icon_off.ico'
   const png = on ? 'icon_on.png' : 'icon_off.png'
   const candidates: string[] = []
   if (process.resourcesPath) {
-    candidates.push(join(process.resourcesPath, ico))
+    if (!pngOnly) candidates.push(join(process.resourcesPath, ico))
     candidates.push(join(process.resourcesPath, png))
   }
-  candidates.push(resolve(app.getAppPath(), 'resources', ico))
+  if (!pngOnly) candidates.push(resolve(app.getAppPath(), 'resources', ico))
   candidates.push(resolve(app.getAppPath(), 'resources', png))
-  candidates.push(resolve(__dirname, '../../resources', ico))
+  if (!pngOnly) candidates.push(resolve(__dirname, '../../resources', ico))
   candidates.push(resolve(__dirname, '../../resources', png))
 
   for (const c of candidates) {
@@ -99,7 +106,8 @@ export async function createTray(): Promise<void> {
       currentIconOn = anyRunning
     }
 
-    const availableStrategies = listStrategies()
+    const isMac = process.platform === 'darwin'
+    const availableStrategies = isMac ? [] : listStrategies()
     const strategyMenuItems = availableStrategies.slice(0, 10).map((s) => ({
       label: s.title,
       type: 'radio' as const,
@@ -146,20 +154,20 @@ export async function createTray(): Promise<void> {
           { label: 'Отключить', enabled: incy.state === 'running', click: () => { disconnectIncy().catch(() => void 0) } }
         ]
       },
-      {
+      ...(isMac ? [] : [{
         label: `Zapret: ${zapret.state === 'running' ? 'Запущен' : zapret.state === 'starting' ? 'Запуск...' : 'Остановлен'}`,
         submenu: [
           { label: 'Запустить', enabled: zapret.state !== 'running' && zapret.state !== 'starting', click: () => { startZapret().catch(() => void 0) } },
           { label: 'Остановить', enabled: zapret.state === 'running', click: () => { stopZapret().catch(() => void 0) } }
         ]
-      },
-      {
+      }]),
+      ...(isMac ? [] : [{
         label: `Telegram: ${tgws.state === 'running' ? 'Запущен' : tgws.state === 'starting' ? 'Запуск...' : 'Остановлен'}`,
         submenu: [
           { label: 'Запустить', enabled: tgws.state !== 'running' && tgws.state !== 'starting', click: () => { startTgws().catch(() => void 0) } },
           { label: 'Остановить', enabled: tgws.state === 'running', click: () => { stopTgws().catch(() => void 0) } }
         ]
-      },
+      }]),
       ...(strategyMenuItems.length > 0
         ? [
             {
@@ -203,4 +211,4 @@ export function destroyTray(): void {
  * hidden window and no way to restore it. */
 export function isTrayActive(): boolean {
   return tray !== null && !tray.isDestroyed()
-}
+}

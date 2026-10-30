@@ -175,14 +175,20 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
   // Pick the per-machine NSIS installer artifact. electron-builder.yml writes
   // it as `LAZEYKA_x64.exe`; we accept any `LAZEYKA*.exe` to survive minor
   // naming changes.
+  // macOS: образ диска `LAZEYKA_arm64.dmg` / `LAZEYKA_x64.dmg` под архитектуру Mac.
   const assets = release.assets ?? []
-  const installerAsset =
-    assets.find((a) => /^LAZEYKA_x64\.exe$/i.test(a.name)) ??
-    assets.find((a) => /^LAZEYKA.*\.exe$/i.test(a.name) && !/portable/i.test(a.name))
+  const isMac = process.platform === 'darwin'
+  const macAssetName = `LAZEYKA_${process.arch === 'arm64' ? 'arm64' : 'x64'}.dmg`
+  const installerAsset = isMac
+    ? assets.find((a) => a.name.toLowerCase() === macAssetName.toLowerCase())
+    : (assets.find((a) => /^LAZEYKA_x64\.exe$/i.test(a.name)) ??
+      assets.find((a) => /^LAZEYKA.*\.exe$/i.test(a.name) && !/portable/i.test(a.name)))
 
+  const fallbackAssetName = isMac ? macAssetName : 'LAZEYKA_x64.exe'
   const assetDownloadUrl =
     installerAsset?.browser_download_url ??
-    (tag ? `https://github.com/${REPO}/releases/download/${tag}/LAZEYKA_x64.exe` : undefined)
+    // На macOS ссылку не выдумываем: пока CI не выложил .dmg, обновления для Mac «нет».
+    (tag && !isMac ? `https://github.com/${REPO}/releases/download/${tag}/${fallbackAssetName}` : undefined)
   // Контрольная сумма из API GitHub («sha256:…»), если релиз её отдаёт.
   const digest = (installerAsset as { digest?: string } | undefined)?.digest
   if (assetDownloadUrl && typeof digest === 'string' && /^sha256:[0-9a-f]{64}$/i.test(digest)) {
@@ -198,7 +204,7 @@ export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
     latest,
     hasUpdate,
     tag,
-    assetName: installerAsset?.name ?? 'LAZEYKA_x64.exe',
+    assetName: installerAsset?.name ?? fallbackAssetName,
     assetUrl: assetDownloadUrl,
     assetSize: installerAsset?.size,
     releaseUrl: release.html_url ?? (tag ? `https://github.com/${REPO}/releases/tag/${tag}` : undefined),
@@ -433,6 +439,20 @@ export async function installAppUpdate(
   expectedVersion?: string
 ): Promise<{ scheduled: true }> {
   if (!assetUrl) throw new Error('Пустая ссылка на установщик')
+  if (process.platform === 'darwin') {
+    // macOS: без Apple Developer ID автозамена .app невозможна — открываем
+    // загрузку .dmg в браузере, дальше пользователь перетаскивает приложение сам.
+    if (!assetUrl.toLowerCase().startsWith(`https://github.com/${REPO.toLowerCase()}/releases/download/`)) {
+      throw new Error('Ссылка на образ не из официальных релизов LAZEYKA')
+    }
+    await shell.openExternal(assetUrl)
+    if (expectedVersion) {
+      try {
+        await patchAppConfig({ dismissedAppUpdateTag: undefined, dismissedAppUpdateUntil: undefined })
+      } catch { /* noop */ }
+    }
+    return { scheduled: true }
+  }
   if (process.platform !== 'win32') {
     throw new Error('Авто-обновление поддерживается только на Windows')
   }
