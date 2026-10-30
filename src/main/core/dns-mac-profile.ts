@@ -59,6 +59,8 @@ ${addrs.map((a) => `          <string>${xml(a)}</string>`).join('\n')}
       <string>${stableUuid(`dns-settings:${slug}`)}</string>
       <key>PayloadVersion</key>
       <integer>1</integer>
+      <key>ProhibitDisablement</key>
+      <false/>
     </dict>
   </array>
   <key>PayloadDescription</key>
@@ -69,6 +71,10 @@ ${addrs.map((a) => `          <string>${xml(a)}</string>`).join('\n')}
   <string>io.github.reb0oornalexey.lazeyka.dns.${slug}</string>
   <key>PayloadRemovalDisallowed</key>
   <false/>
+  <!-- Настройки DNS бывают только системными: без System macOS ставит профиль
+       в область пользователя и отвечает «Ошибка установки». -->
+  <key>PayloadScope</key>
+  <string>System</string>
   <key>PayloadType</key>
   <string>Configuration</string>
   <key>PayloadUUID</key>
