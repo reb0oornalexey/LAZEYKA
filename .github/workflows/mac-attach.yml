@@ -1,0 +1,41 @@
+name: mac-attach
+
+# Разовая загрузка проверенной тестером сборки Mac в уже выпущенный релиз.
+# Берёт .dmg из указанного прогона build-mac (без пересборки), переименовывает
+# в LAZEYKA_<arch>.dmg — по этим именам приложение находит обновление — и
+# докладывает в релиз. Запускается при изменении этого файла в ветке macos-port.
+
+on:
+  push:
+    branches: [macos-port]
+    paths: ['.github/workflows/mac-attach.yml']
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  RUN_ID: '41126626603'   # build-mac #13 — её проверил тестер
+  TAG: 'v1.2.5'
+
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: LAZEYKA-mac-*
+          path: art
+      - name: Переименование
+        run: |
+          set -e
+          find art -type f | sort
+          cp art/LAZEYKA-mac-arm64-*/LAZEYKA_arm64-build*.dmg LAZEYKA_arm64.dmg
+          cp art/LAZEYKA-mac-x64-*/LAZEYKA_x64-build*.dmg LAZEYKA_x64.dmg
+          ls -la LAZEYKA_*.dmg
+      - name: Загрузка в релиз
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$TAG" LAZEYKA_arm64.dmg LAZEYKA_x64.dmg --clobber --repo "$GITHUB_REPOSITORY"
