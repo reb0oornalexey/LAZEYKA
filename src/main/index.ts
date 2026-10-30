@@ -442,6 +442,8 @@ export async function createWindow(appConfig?: AppConfig): Promise<void> {
     frame: false,
     fullscreenable: false,
     titleBarStyle: 'hidden',
+    // macOS: родные кнопки окна над шапкой меню (под них в app-sidebar есть отступ).
+    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 14, y: 12 } } : {}),
     autoHideMenuBar: true,
     backgroundMaterial: process.platform === 'win32' ? 'mica' : undefined,
     skipTaskbar: initialSkipTaskbar,

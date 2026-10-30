@@ -51,6 +51,7 @@ export function openUpdateSplash(): void {
       center: true,
       frame: false,
       titleBarStyle: 'hidden',
+      ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 14, y: 14 } } : {}),
       title: 'Обновление LAZEYKA',
       icon,
       fullscreenable: false,
