@@ -1,4 +1,4 @@
-import { exec } from 'node:child_process'
+import { exec, execFile } from 'node:child_process'
 
 export interface RunningProcessInfo {
   name: string
@@ -10,6 +10,7 @@ export interface RunningProcessInfo {
  * Uses `tasklist /V` with UTF-8 codepage to capture human-readable window titles.
  */
 export function listRunningProcesses(): Promise<RunningProcessInfo[]> {
+  if (process.platform === 'darwin') return listRunningProcessesDarwin()
   return new Promise((resolve) => {
     exec(
       'chcp 65001 >nul && tasklist /V /FO CSV /NH',
@@ -92,5 +93,42 @@ export function listRunningProcesses(): Promise<RunningProcessInfo[]> {
         resolve(result)
       }
     )
+  })
+}
+
+/**
+ * macOS: запущенные приложения (.app) через `ps -axo comm=`.
+ * Берём только процессы из `X.app/Contents/MacOS/…` — системные демоны и
+ * вспомогательные процессы в список для пользователя не попадают.
+ */
+function listRunningProcessesDarwin(): Promise<RunningProcessInfo[]> {
+  return new Promise((resolve) => {
+    execFile('/bin/ps', ['-axo', 'comm='], { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
+      if (err || !stdout) return resolve([])
+      const map = new Map<string, RunningProcessInfo>()
+      for (const line of stdout.split('\n')) {
+        const m = /\/([^/]+)\.app\/Contents\/MacOS\/[^/]+$/.exec(line.trim())
+        if (!m) continue
+        const name = m[1]
+        if (!map.has(name.toLowerCase())) map.set(name.toLowerCase(), { name })
+      }
+      resolve(Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })))
+    })
+  })
+}
+
+/** Запущен ли процесс с таким именем образа (`pgrep -x`) — macOS; на других платформах false. */
+export function isProcessRunningByName(name: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (process.platform !== 'darwin') return resolve(false)
+    execFile('/usr/bin/pgrep', ['-x', name], (err) => resolve(!err))
+  })
+}
+
+/** Завершить процессы по имени образа (`pkill -x`) — macOS; на других платформах no-op. */
+export function killProcessByName(name: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (process.platform !== 'darwin') return resolve()
+    execFile('/usr/bin/pkill', ['-x', name], () => resolve())
   })
 }

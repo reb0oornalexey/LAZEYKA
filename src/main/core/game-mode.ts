@@ -179,6 +179,8 @@ export async function runGameModeWatcherCycle(): Promise<void> {
  * saved state at boot so the restore doesn't rewrite the config it just read.
  */
 export function setGameModeWatcher(enabled: boolean, persist = true): void {
+  // macOS: игровой режим работает через Zapret и tasklist — пока не поддерживается.
+  if (process.platform === 'darwin') return
   if (timer) {
     clearInterval(timer)
     timer = null

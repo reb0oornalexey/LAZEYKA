@@ -15,7 +15,7 @@ import { startZapret, stopZapret } from './core/zapret'
 import { disconnectIncy, loadIncySettings, connectIncyNode } from './core/incy-engine'
 import { restoreAutopilotFromConfig } from './core/zapret-autopilot'
 import { restoreGameModeFromConfig } from './core/game-mode'
-import { clearWindowsSystemProxy, clearWindowsSystemProxySync } from './utils/system-proxy'
+import { clearSystemProxy, clearSystemProxySync } from './utils/system-proxy'
 import { appLog } from './utils/app-logger'
 import { killRegisteredChildrenSync } from './utils/child-registry'
 import { enableAutoRun, disableAutoRun } from './sys/autoRun'
@@ -150,14 +150,14 @@ app.whenReady().then(async () => {
   void pruneOldLogs(appConfig.maxLogDays ?? 7)
   appLog('info', `Логи пишутся в ${currentLogFilePath()}`)
 
-  if (appConfig.tgws?.autoStart) {
+  if (process.platform !== 'darwin' && appConfig.tgws?.autoStart) {
     appLog('info', 'Автозапуск Telegram WS — старт')
     startTgws().catch((e) => {
       appLog('error', `Автозапуск Telegram WS упал: ${e}`)
       showError('TG WS start failed', `${e}`)
     })
   }
-  if (appConfig.zapret?.autoStart) {
+  if (process.platform !== 'darwin' && appConfig.zapret?.autoStart) {
     appLog('info', 'Автозапуск Zapret — старт')
     startZapret().catch((e) => {
       appLog('error', `Автозапуск Zapret упал: ${e}`)
@@ -174,7 +174,7 @@ app.whenReady().then(async () => {
     })
   } else {
     // If not running INCY, ensure Windows system proxy is disabled so internet is never blocked
-    clearWindowsSystemProxy().catch(() => void 0)
+    clearSystemProxy().catch(() => void 0)
   }
 
   // Synchronise Windows auto-launch with the saved config — keeps the toggle
@@ -323,6 +323,15 @@ let isQuitting = false
  * errors (services that aren't loaded, processes that no longer exist, etc.).
  */
 function syncKillChildren(): void {
+  if (process.platform === 'darwin') {
+    // macOS: свои дочерние процессы по PID из реестра + возврат системного прокси.
+    // Zapret/WinDivert здесь нет (порт — отдельный этап).
+    try {
+      killRegisteredChildrenSync()
+      clearSystemProxySync()
+    } catch { /* noop */ }
+    return
+  }
   if (process.platform !== 'win32') return
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -348,7 +357,7 @@ function syncKillChildren(): void {
 
     // 3) Системный прокси, который включала LAZEYKA, возвращаем как было
     //    (чужой прокси пользователя больше не выключается).
-    clearWindowsSystemProxySync()
+    clearSystemProxySync()
   } catch { /* noop */ }
 }
 
@@ -534,4 +543,4 @@ export async function triggerMainWindow(): Promise<void> {
   } else {
     await showMainWindow()
   }
-}
+}

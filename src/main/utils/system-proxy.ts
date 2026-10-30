@@ -145,3 +145,231 @@ export function clearWindowsSystemProxySync(): void {
     unlinkSync(ownedFile())
   } catch { /* best effort */ }
 }
+
+// ---------------------------------------------------------------------------
+// macOS: networksetup
+// ---------------------------------------------------------------------------
+
+/** Состояние одного прокси (web / secure web / socks) сетевой службы. */
+interface DarwinProxyState {
+  enabled: boolean
+  server: string
+  port: number
+}
+
+interface DarwinServiceSaved {
+  service: string
+  web: DarwinProxyState
+  secure: DarwinProxyState
+  socks: DarwinProxyState
+  bypass: string[]
+}
+
+/** Что сохраняем в ownedFile на macOS (на Windows там SavedProxy). */
+interface SavedDarwinProxy {
+  darwin: DarwinServiceSaved[]
+}
+
+const NETWORKSETUP = '/usr/sbin/networksetup'
+
+/** Исключения, которые добавляем всегда: локальная сеть не должна идти через прокси. */
+const DARWIN_BASE_BYPASS = ['*.local', '169.254/16', '127.0.0.1', 'localhost', '10.0.0.0/8', '192.168.0.0/16']
+
+/** Включённые сетевые службы: первая строка — пояснение, `*` в начале — служба отключена. */
+function parseServiceList(out: string): string[] {
+  return out
+    .split(/\r?\n/)
+    .slice(1)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('*'))
+}
+
+function parseProxyState(out: string): DarwinProxyState {
+  const get = (key: string): string => new RegExp(`^${key}:\\s*(.*)$`, 'im').exec(out)?.[1]?.trim() ?? ''
+  return {
+    enabled: /^yes$/i.test(get('Enabled')),
+    server: get('Server'),
+    port: Number(get('Port')) || 0
+  }
+}
+
+function parseBypass(out: string): string[] {
+  if (/there aren't any bypass domains/i.test(out)) return []
+  return out
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+}
+
+function nsSync(args: string[], timeout = 3000): string | null {
+  try {
+    const r = spawnSync(NETWORKSETUP, args, { timeout, encoding: 'utf8' })
+    return r.status === 0 ? String(r.stdout ?? '') : null
+  } catch {
+    return null
+  }
+}
+
+async function nsAsync(args: string[]): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(NETWORKSETUP, args, { timeout: 5000 })
+    return String(stdout)
+  } catch {
+    return null
+  }
+}
+
+function readSavedDarwin(): SavedDarwinProxy | null {
+  try {
+    if (!existsSync(ownedFile())) return null
+    const j = JSON.parse(readFileSync(ownedFile(), 'utf-8')) as Partial<SavedDarwinProxy>
+    return Array.isArray(j.darwin) ? (j as SavedDarwinProxy) : null
+  } catch {
+    return null
+  }
+}
+
+function snapshotDarwinService(service: string): DarwinServiceSaved {
+  const web = parseProxyState(nsSync(['-getwebproxy', service]) ?? '')
+  const secure = parseProxyState(nsSync(['-getsecurewebproxy', service]) ?? '')
+  const socks = parseProxyState(nsSync(['-getsocksfirewallproxy', service]) ?? '')
+  const bypass = parseBypass(nsSync(['-getproxybypassdomains', service]) ?? '')
+  return { service, web, secure, socks, bypass }
+}
+
+/** Прокси, указывающий на наш порт на этой машине (наш прежний, возвращать нельзя). */
+function isOwnDarwinProxy(p: DarwinProxyState, port: number): boolean {
+  return p.enabled && /^(127\.0\.0\.1|localhost)$/i.test(p.server) && p.port === port
+}
+
+/** Команды, которые выставляют наш прокси на одной службе. */
+function darwinSetCommands(service: string, port: number, bypass: string[]): string[][] {
+  const p = String(port)
+  return [
+    ['-setwebproxy', service, '127.0.0.1', p],
+    ['-setsecurewebproxy', service, '127.0.0.1', p],
+    ['-setsocksfirewallproxy', service, '127.0.0.1', p],
+    ['-setproxybypassdomains', service, ...bypass],
+    ['-setwebproxystate', service, 'on'],
+    ['-setsecurewebproxystate', service, 'on'],
+    ['-setsocksfirewallproxystate', service, 'on']
+  ]
+}
+
+/** Команды возврата прежнего состояния службы. Наш собственный (loopback:port) прокси не возвращаем. */
+function darwinRestoreCommands(sv: DarwinServiceSaved, ourPort: number): string[][] {
+  const cmds: string[][] = []
+  const one = (st: DarwinProxyState, setCmd: string, stateCmd: string): void => {
+    if (st.enabled && st.server && st.port > 0 && !isOwnDarwinProxy(st, ourPort)) {
+      cmds.push([setCmd, sv.service, st.server, String(st.port)])
+      cmds.push([stateCmd, sv.service, 'on'])
+    } else {
+      cmds.push([stateCmd, sv.service, 'off'])
+    }
+  }
+  one(sv.web, '-setwebproxy', '-setwebproxystate')
+  one(sv.secure, '-setsecurewebproxy', '-setsecurewebproxystate')
+  one(sv.socks, '-setsocksfirewallproxy', '-setsocksfirewallproxystate')
+  // «Empty» — служебное значение networksetup для пустого списка исключений.
+  cmds.push(['-setproxybypassdomains', sv.service, ...(sv.bypass.length > 0 ? sv.bypass : ['Empty'])])
+  return cmds
+}
+
+async function setDarwinSystemProxy(port: number, bypassDomains: string[]): Promise<void> {
+  try {
+    const listed = await nsAsync(['-listallnetworkservices'])
+    if (listed == null) return
+    const services = parseServiceList(listed)
+    if (services.length === 0) return
+    // Запоминаем чужие настройки один раз — до первого включения нашего прокси.
+    if (!existsSync(ownedFile())) {
+      const saved: SavedDarwinProxy = { darwin: services.map(snapshotDarwinService) }
+      mkdirSync(path.dirname(ownedFile()), { recursive: true })
+      writeFileSync(ownedFile(), JSON.stringify(saved), 'utf-8')
+    }
+    const bypass = [...new Set([...bypassDomains.map((d) => d.trim()).filter(Boolean), ...DARWIN_BASE_BYPASS])]
+    for (const service of services) {
+      for (const args of darwinSetCommands(service, port, bypass)) await nsAsync(args)
+    }
+  } catch { /* best effort */ }
+}
+
+/** Прокси включён на нашем порту у какой-либо службы, но записи о владении нет. */
+function darwinStaleOwnServices(): string[] {
+  const listed = nsSync(['-listallnetworkservices'])
+  if (listed == null) return []
+  const port = lazeykaProxyPort()
+  return parseServiceList(listed).filter(
+    (svc) =>
+      isOwnDarwinProxy(parseProxyState(nsSync(['-getwebproxy', svc]) ?? ''), port) ||
+      isOwnDarwinProxy(parseProxyState(nsSync(['-getsocksfirewallproxy', svc]) ?? ''), port)
+  )
+}
+
+function darwinOffCommands(service: string): string[][] {
+  return [
+    ['-setwebproxystate', service, 'off'],
+    ['-setsecurewebproxystate', service, 'off'],
+    ['-setsocksfirewallproxystate', service, 'off']
+  ]
+}
+
+async function clearDarwinSystemProxy(): Promise<void> {
+  try {
+    const saved = readSavedDarwin()
+    const port = lazeykaProxyPort()
+    if (!saved) {
+      for (const svc of darwinStaleOwnServices()) {
+        for (const args of darwinOffCommands(svc)) await nsAsync(args)
+      }
+      return
+    }
+    // Службы, которые пропали с момента сохранения, пропускаем: команда на них упадёт.
+    const listed = await nsAsync(['-listallnetworkservices'])
+    const alive = new Set(listed ? parseServiceList(listed) : saved.darwin.map((s) => s.service))
+    for (const sv of saved.darwin) {
+      if (!alive.has(sv.service)) continue
+      for (const args of darwinRestoreCommands(sv, port)) await nsAsync(args)
+    }
+    try { unlinkSync(ownedFile()) } catch { /* noop */ }
+  } catch { /* best effort */ }
+}
+
+function clearDarwinSystemProxySync(): void {
+  try {
+    const saved = readSavedDarwin()
+    const port = lazeykaProxyPort()
+    if (!saved) {
+      for (const svc of darwinStaleOwnServices()) {
+        for (const args of darwinOffCommands(svc)) nsSync(args, 2000)
+      }
+      return
+    }
+    const listed = nsSync(['-listallnetworkservices'], 2000)
+    const alive = new Set(listed ? parseServiceList(listed) : saved.darwin.map((s) => s.service))
+    for (const sv of saved.darwin) {
+      if (!alive.has(sv.service)) continue
+      for (const args of darwinRestoreCommands(sv, port)) nsSync(args, 2000)
+    }
+    unlinkSync(ownedFile())
+  } catch { /* best effort */ }
+}
+
+// ---------------------------------------------------------------------------
+// Нейтральные точки входа: диспетчер по платформе
+// ---------------------------------------------------------------------------
+
+export async function setSystemProxy(port = 20808, bypassDomains: string[] = []): Promise<void> {
+  if (process.platform === 'darwin') return setDarwinSystemProxy(port, bypassDomains)
+  return setWindowsSystemProxy(port, bypassDomains)
+}
+
+export async function clearSystemProxy(): Promise<void> {
+  if (process.platform === 'darwin') return clearDarwinSystemProxy()
+  return clearWindowsSystemProxy()
+}
+
+export function clearSystemProxySync(): void {
+  if (process.platform === 'darwin') return clearDarwinSystemProxySync()
+  clearWindowsSystemProxySync()
+}

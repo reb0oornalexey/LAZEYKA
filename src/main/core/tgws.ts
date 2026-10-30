@@ -325,6 +325,8 @@ function withLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 export function startTgws(): Promise<void> {
+  // macOS: встроенный Windows-Python недоступен — порт TgWsProxy в отдельном этапе.
+  if (process.platform === 'darwin') return Promise.reject(new Error('Telegram-прокси пока не поддерживается на macOS'))
   return withLock(() => startTgwsImpl())
 }
 export function stopTgws(): Promise<void> {

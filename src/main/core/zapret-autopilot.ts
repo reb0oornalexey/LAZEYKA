@@ -168,6 +168,8 @@ export function setAutopilotEnabled(
   intervalMinutes = DEFAULT_INTERVAL_MINUTES,
   persist = true
 ): void {
+  // macOS: автопилот управляет Zapret, которого на Mac пока нет.
+  if (process.platform === 'darwin') return
   if (autopilotTimer) {
     clearInterval(autopilotTimer)
     autopilotTimer = null

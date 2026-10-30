@@ -35,6 +35,20 @@ let cached: string | null = null
  */
 function readMachineGuid(): Promise<string | null> {
   return new Promise((resolve) => {
+    if (process.platform === 'darwin') {
+      // macOS: IOPlatformUUID — аппаратный UUID, стабилен между переустановками.
+      execFile(
+        '/usr/sbin/ioreg',
+        ['-rd1', '-c', 'IOPlatformExpertDevice'],
+        { timeout: 4000 },
+        (err, stdout) => {
+          if (err || !stdout) return resolve(null)
+          const m = String(stdout).match(/"IOPlatformUUID"\s*=\s*"([0-9a-f-]{36})"/i)
+          resolve(m ? m[1] : null)
+        }
+      )
+      return
+    }
     if (process.platform !== 'win32') return resolve(null)
     execFile(
       'reg',

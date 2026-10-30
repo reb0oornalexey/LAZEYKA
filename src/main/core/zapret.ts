@@ -373,14 +373,18 @@ export function withZapretLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 export function startZapret(): Promise<void> {
+  // macOS: Zapret (winws/WinDivert) здесь не работает — порт через utunws в отдельном этапе.
+  if (process.platform === 'darwin') return Promise.reject(new Error('Zapret пока не поддерживается на macOS'))
   return withLock(() => startZapretImpl())
 }
 export function stopZapret(): Promise<void> {
+  if (process.platform === 'darwin') return Promise.resolve()
   return withLock(() => stopZapretImpl())
 }
 
 /** Kill any orphan winws.exe instances by image name. */
 export function killWinws(): Promise<void> {
+  if (process.platform === 'darwin') return Promise.resolve()
   return new Promise((resolve) => {
     const p = spawn('taskkill.exe', ['/F', '/IM', 'winws.exe'], { windowsHide: true })
     p.on('exit', () => resolve())
@@ -512,6 +516,7 @@ export function ensureWinDivertReady(): void {
 
 /** Returns true if at least one winws.exe is running. */
 export function isWinwsRunning(): Promise<boolean> {
+  if (process.platform === 'darwin') return Promise.resolve(false)
   return new Promise((resolve) => {
     const p = spawn('tasklist.exe', ['/FI', 'IMAGENAME eq winws.exe', '/NH'], { windowsHide: true })
     let out = ''

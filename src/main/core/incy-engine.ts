@@ -10,6 +10,7 @@ import { domainToASCII } from 'node:url'
 import { ChildProcess, spawn } from 'node:child_process'
 import { BrowserWindow } from 'electron'
 import {
+  binName,
   dataDir,
   incyBinaryPath,
   incyRuntimeDir,
@@ -34,7 +35,7 @@ import {
 import { getHwidHeaders } from './incy-hwid'
 import { showSystemNotification } from '../utils/notifications'
 import { getAllBypassDomains } from './split-tunneling'
-import { setWindowsSystemProxy, clearWindowsSystemProxy } from '../utils/system-proxy'
+import { setSystemProxy, clearSystemProxy } from '../utils/system-proxy'
 import { logToFile } from '../utils/file-logger'
 import { registerChild, unregisterChild } from '../utils/child-registry'
 import { getAppConfig } from '../config'
@@ -3433,7 +3434,7 @@ function onCoreDied(reason: string): void {
   // порт, и браузер не пойдёт в интернет мимо VPN.
   const keepProxy = Boolean(droppedNode) && s.killSwitch && lastSession?.mode === 'system_proxy'
   broadcastStatus({ state: 'stopped', activeNodeId: null })
-  if (!keepProxy) clearWindowsSystemProxy().catch(() => void 0)
+  if (!keepProxy) clearSystemProxy().catch(() => void 0)
   if (droppedNode) handleTunnelDrop(droppedNode, reason)
 }
 
@@ -4080,7 +4081,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // иначе ушли бы в текущий туннель и мерили бы не то.
     // sing-box.exe — временные ядра замеров для узлов sing-box (Hysteria2,
     // WireGuard…); собственные соединения основного ядра в TUN не попадают.
-    config.route.rules.push({ process_name: ['xray.exe', 'sing-box.exe'], outbound: 'direct' })
+    config.route.rules.push({ process_name: [binName('xray'), binName('sing-box')], outbound: 'direct' })
     if (resolvedServerIps.length > 0) {
       config.route.rules.push({
         ip_cidr: resolvedServerIps.map((ip) => `${ip}/${net.isIPv6(ip) ? 128 : 32}`),
@@ -4381,10 +4382,10 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // (if that mode is selected) and finish here.
     if (!topology.needsSingBox) {
       if (mode === 'system_proxy') {
-        await setWindowsSystemProxy(topology.ports.front, bypassDomains)
+        await setSystemProxy(topology.ports.front, bypassDomains)
         appendLog(`Режим «Системный прокси»: порт 127.0.0.1:${topology.ports.front}`)
       } else {
-        await clearWindowsSystemProxy()
+        await clearSystemProxy()
         appendLog(`Режим «Только прокси»: порт 127.0.0.1:${topology.ports.front}`)
       }
 
@@ -4589,7 +4590,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       if (generation !== childGeneration) return
       appendLog(`Ошибка процесса: ${err.message}`)
       broadcastStatus({ state: 'error', activeNodeId: null, lastError: err.message })
-      clearWindowsSystemProxy().catch(() => void 0)
+      clearSystemProxy().catch(() => void 0)
       child = null
     })
 
@@ -4622,16 +4623,16 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         'sing-box завершился сразу после запуска. Проверьте параметры узла и вкладку «Логи».' +
         (detail ? ` Последние строки: ${detail}` : '')
       broadcastStatus({ state: 'error', activeNodeId: null, lastError: message })
-      await clearWindowsSystemProxy().catch(() => void 0)
+      await clearSystemProxy().catch(() => void 0)
       throw new Error(message)
     }
 
     // 3. Set Windows System Proxy ONLY if 'system_proxy' mode is active
     if (mode === 'system_proxy') {
-      await setWindowsSystemProxy(settings.mixedPort || 20808, bypassDomains)
+      await setSystemProxy(settings.mixedPort || 20808, bypassDomains)
       appendLog(`Режим «Системный прокси»: порт 127.0.0.1:${settings.mixedPort || 20808}`)
     } else {
-      await clearWindowsSystemProxy()
+      await clearSystemProxy()
       if (mode === 'tun') {
         appendLog(`Режим «Туннелирование (TUN)»: включен виртуальный сетевой адаптер`)
       } else {
@@ -4680,7 +4681,7 @@ export async function disconnectIncy(): Promise<IncyStatus> {
   await stopKillSwitchBlocker()
   lastSession = null
   await stopRunningChild()
-  await clearWindowsSystemProxy()
+  await clearSystemProxy()
   appendLog('Туннель отключен пользователем')
 
   const status = broadcastStatus({

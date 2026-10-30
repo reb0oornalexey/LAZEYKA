@@ -11,6 +11,14 @@ export async function isRunningAsAdmin(): Promise<boolean> {
     return isAdminCached
   }
 
+  // macOS/Linux: «админ» — это root (uid 0). Обычный пользователь на Mac
+  // работает без повышения; привилегированные операции — через root-хелпер
+  // (следующий этап порта).
+  if (process.platform !== 'win32') {
+    isAdminCached = process.getuid?.() === 0
+    return isAdminCached
+  }
+
   // 1. fltmc.exe is the most reliable check across all Windows editions and tweaks
   try {
     await execFilePromise('fltmc.exe', [], { timeout: 2000 })
@@ -60,6 +68,8 @@ function psQuote(s: string): string {
  * стартует, пока мы ещё живы, и иначе сама бы увидела «уже запущено» и вышла.
  */
 export async function relaunchElevated(): Promise<boolean> {
+  // macOS: перезапуска с повышением нет — root-хелпер появится в следующем этапе.
+  if (process.platform !== 'win32') return false
   const args = [...process.argv.slice(1).filter((a) => a !== ELEVATED_FLAG), ELEVATED_FLAG]
   const argList = args.map((a) => psQuote(quoteWinArg(a))).join(',')
   const command =

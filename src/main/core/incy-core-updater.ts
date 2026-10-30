@@ -31,7 +31,7 @@ import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync, copyFileS
 import path from 'node:path'
 import os from 'node:os'
 import AdmZip from 'adm-zip'
-import { dataDir, incyRuntimeDir, incyBinaryPath, xrayBinaryPath, xrayAssetsDir } from '../utils/dirs'
+import { binName, dataDir, incyRuntimeDir, incyBinaryPath, xrayBinaryPath, xrayAssetsDir } from '../utils/dirs'
 
 const REQUEST_HEADERS: Record<string, string> = {
   'User-Agent': 'LAZEYKA-Updater',
@@ -68,7 +68,7 @@ interface CoreSpec {
 const CORES: CoreSpec[] = [
   {
     id: 'sing-box',
-    exeName: 'sing-box.exe',
+    exeName: binName('sing-box'),
     // sing-box-lx — сборка sing-box с AmneziaWG (обфускация WireGuard, без
     // которой WARP в РФ не подключается), MASQUE и NaïveProxy. База та же,
     // что у официального ядра; номер сборки — в суффиксе «-lx.N».
@@ -83,7 +83,7 @@ const CORES: CoreSpec[] = [
   },
   {
     id: 'xray',
-    exeName: 'xray.exe',
+    exeName: binName('xray'),
     repo: 'XTLS/Xray-core',
     matchAsset: (n) => /^Xray-windows-64\.zip$/i.test(n),
     allowPrerelease: true,
@@ -226,6 +226,9 @@ async function fetchLatestRelease(spec: CoreSpec): Promise<GhRelease | null> {
 }
 
 export async function checkCoreUpdates(): Promise<CoreUpdateState[]> {
+  // macOS: ядра приходят в составе сборки (Windows-архивы тут не подходят);
+  // автообновление ядер на Mac — следующий этап порта.
+  if (process.platform === 'darwin') return []
   const out: CoreUpdateState[] = []
 
   for (const spec of CORES) {
@@ -316,6 +319,9 @@ export async function installCoreUpdate(
   const spec = CORES.find((c) => c.id === id)
   if (!spec) return { id, success: false, message: `Неизвестное ядро: ${id}` }
   if (!assetUrl) return { id, success: false, message: 'Пустая ссылка на архив' }
+  if (process.platform === 'darwin') {
+    return { id, success: false, message: 'Обновление ядер на macOS пока не поддерживается' }
+  }
   // Ссылка приходит из окна программы, а файл потом запускается с правами
   // администратора — принимаем только релизы нужного репозитория на GitHub.
   {
