@@ -580,6 +580,16 @@ async function applySystemDnsMac(target: string | 'dhcp'): Promise<{ success: bo
 
   const provider = (await allProviders()).find((p) => p.id === target || p.ip === target)
   if (!provider) return { success: false, message: 'Неизвестный DNS-сервер' }
+  // macOS: шифрованный DNS ставится только профилем — открываем его сразу, как
+  // на Windows «Включить» сразу включает DoH. Провайдеры «только DoH» (DNS-AI)
+  // на обычный DNS не отвечают: их адреса в систему НЕ пишем, иначе пропал бы
+  // весь интернет (и «ИИ-серверы не подключаются»).
+  if (provider.url) {
+    const { openMacDohProfile } = await import('./dns-mac-profile')
+    const prof = await openMacDohProfile(provider)
+    if (provider.strict) return prof
+    if (!prof.success) return prof
+  }
   const servers = [
     ...[provider.ip, provider.secondaryIp].filter((a): a is string => Boolean(a) && net.isIPv4(String(a))),
     ...(provider.ipv6 ?? []).filter((a) => net.isIPv6(a))
@@ -601,10 +611,16 @@ async function applySystemDnsMac(target: string | 'dhcp'): Promise<{ success: bo
     if (createdBackup) try { unlinkSync(file) } catch { /* noop */ }
     return { success: false, message: res.message }
   }
-  const enc = provider.url
-    ? 'на macOS выставляются адреса DNS провайдера; шифрование DoH доступно через профиль'
-    : 'без шифрования'
-  return { success: true, message: `Системный DNS: ${provider.name} (${servers.join(', ')}) — ${enc}` }
+  if (provider.url) {
+    return {
+      success: true,
+      message:
+        `Пока профиль не установлен, работает обычный DNS ${provider.name} (${servers.join(', ')}). ` +
+        'Для шифрования: «Системные настройки» → «Основные» → «Управление устройством» → профиль LAZEYKA → «Установить», ' +
+        'затем «Сеть» → «VPN и фильтры» → «Включено».'
+    }
+  }
+  return { success: true, message: `Системный DNS: ${provider.name} (${servers.join(', ')}) — без шифрования` }
 }
 
 export async function applySystemDns(target: string | 'dhcp'): Promise<{ success: boolean; message: string }> {
