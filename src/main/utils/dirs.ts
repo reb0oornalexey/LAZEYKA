@@ -113,7 +113,8 @@ export function tgwsBinaryPath(): string {
  */
 export function tgwsCliPaths(): { python: string; bootstrap: string; appDir: string; version: string } | null {
   const pyDir = path.join(resourcesDir(), 'tgws', 'python')
-  const python = path.join(pyDir, 'python.exe')
+  // macOS: python-build-standalone (scripts/fetch-mac-binaries.mjs), раскладка python/bin/python3.
+  const python = process.platform === 'darwin' ? path.join(pyDir, 'bin', 'python3') : path.join(pyDir, 'python.exe')
   const bootstrap = path.join(pyDir, 'lazeyka_tgws.py')
   if (!existsSync(python) || !existsSync(bootstrap)) return null
   const runtimeApp = path.join(tgwsRuntimeDir(), 'app')
