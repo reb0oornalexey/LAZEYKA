@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
-// Скачивает для macOS ядра INCY (sing-box и Xray) в resources-mac/incy/ и
-// Python для TgWsProxy (python-build-standalone + пакет proxy Flowseal) в resources-mac/tgws/.
+// Скачивает для macOS ядра INCY (sing-box и Xray) в resources-mac/incy/,
+// Python для TgWsProxy (python-build-standalone + пакет proxy Flowseal) в resources-mac/tgws/
+// и сборку Zapret для Mac (Flowseal/zapret-mac-discord-youtube: utunws, стратегии, списки)
+// в resources-mac/zapret/.
 //
-// Использование:  node scripts/fetch-mac-binaries.mjs <arm64|x64>
+// Использование:  node scripts/fetch-mac-binaries.mjs <arm64|x64> [--only=zapret]
+// (--only=zapret — только Zapret, не трогая incy/ и tgws/; нужен для отладки.)
 //
 // Папка resources-mac/ не хранится в git: её заполняет CI перед сборкой
 // (см. .github/workflows/build-mac.yml). electron-builder кладёт её внутрь
@@ -52,9 +55,20 @@ const PBS_REPO = 'astral-sh/python-build-standalone'
 const PBS_TAG = process.env.PBS_TAG || '20261026'
 const PBS_PYTHON = process.env.PBS_PYTHON || '3.12.16'
 
+// Zapret для macOS — официальный порт Flowseal (nfqws через utun + BPF, движок utunws).
+// Берём из релиза ZapretMac-macOS-universal.zip только Payload (бинарник, стратегии,
+// списки по умолчанию). Скрипты запуска и служба — свои (src/main/core/zapret-mac-scripts).
+// Тег закреплён; переопределяется ZAPRET_MAC_TAG (сумму тогда берём только из API GitHub).
+const ZAPRET_MAC_REPO = 'Flowseal/zapret-mac-discord-youtube'
+const ZAPRET_MAC_ASSET = 'ZapretMac-macOS-universal.zip'
+const ZAPRET_MAC_TAG = process.env.ZAPRET_MAC_TAG || '1.1.2'
+// SHA-256 архива закреплённого тега: запасной вариант, если API GitHub не отдаёт digest.
+const ZAPRET_MAC_PINNED_SHA = { '1.1.2': '9895b0ec5d13ec05676f755cde71107e72d2661538440c3cc4f06e0e6d47844f' }
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const OUT_DIR = path.join(ROOT, 'resources-mac', 'incy')
 const TGWS_OUT = path.join(ROOT, 'resources-mac', 'tgws')
+const ZAPRET_OUT = path.join(ROOT, 'resources-mac', 'zapret')
 
 const ARCH_MAP = {
   arm64: { singBox: 'arm64', xray: 'arm64-v8a', pbs: 'aarch64', pipPlatform: 'macosx_11_0_arm64', cpuType: 0x0100000c },
@@ -67,6 +81,7 @@ function fail(msg) {
 }
 
 const arch = process.argv[2]
+const only = (process.argv.find((a) => a.startsWith('--only=')) ?? '').slice('--only='.length)
 if (!arch || !ARCH_MAP[arch]) fail('укажите архитектуру: arm64 или x64')
 const cfg = ARCH_MAP[arch]
 
@@ -386,13 +401,90 @@ async function fetchTgwsPython(tmp) {
   }
 }
 
+// ---- Zapret для macOS ----------------------------------------------------------
+
+/** Что берём из Payload релиза. Остальное (их скрипты, plist, update-app.sh) нам не нужно. */
+const ZAPRET_KEEP = [
+  /^bin\/[A-Za-z0-9._-]+$/,
+  /^strategies\/general[a-z0-9-]*\.conf\.in$/,
+  /^default-lists\/[a-z0-9-]+\.txt$/,
+  /^strategies\.tsv$/,
+  /^ipset-(any|none)\.txt$/
+]
+
+/** Fat-бинарник Mach-O с обеими архитектурами (utunws у Flowseal — universal). */
+function assertUniversalMachO(file, label) {
+  const buf = readFileSync(file)
+  if (buf.length < 8 || buf.readUInt32BE(0) !== 0xcafebabe) fail(`${label}: ожидался universal Mach-O (fat)`)
+  const n = buf.readUInt32BE(4)
+  const cpus = new Set()
+  for (let i = 0; i < n && i < 8; i++) cpus.add(buf.readUInt32BE(8 + i * 20))
+  if (!cpus.has(0x01000007) || !cpus.has(0x0100000c)) fail(`${label}: в fat-бинарнике нет x86_64 и arm64 одновременно`)
+}
+
+async function fetchZapretMac(tmp) {
+  const tag = ZAPRET_MAC_TAG
+  const url = `https://github.com/${ZAPRET_MAC_REPO}/releases/download/${tag}/${ZAPRET_MAC_ASSET}`
+  console.log(`[fetch-mac] zapret: ${url}`)
+  const buf = await download(url)
+  if (buf.length < 100 * 1024) fail(`${ZAPRET_MAC_ASSET}: слишком маленький файл (${buf.length} байт)`)
+
+  // Сумма: digest из API GitHub; нет его — закреплённая в скрипте; нет и её — только предупреждение.
+  const actual = sha256(buf)
+  let expected = await apiDigest(ZAPRET_MAC_REPO, tag, ZAPRET_MAC_ASSET)
+  let source = 'API GitHub'
+  if (!expected && ZAPRET_MAC_PINNED_SHA[tag]) {
+    expected = ZAPRET_MAC_PINNED_SHA[tag]
+    source = 'сумма, закреплённая в скрипте'
+  }
+  if (!expected) console.warn(`[fetch-mac] ${ZAPRET_MAC_ASSET}: опубликованной суммы нет — SHA-256 ${actual} не сверена`)
+  else if (expected !== actual) fail(`${ZAPRET_MAC_ASSET}: SHA-256 не совпала (${source}: ${expected}, получено ${actual})`)
+  else console.log(`[fetch-mac] ${ZAPRET_MAC_ASSET}: SHA-256 совпала (${source})`)
+
+  const zip = new AdmZip(buf)
+  const prefix = 'ZapretMac.app/Contents/Resources/Payload/'
+  rmSync(ZAPRET_OUT, { recursive: true, force: true })
+  mkdirSync(ZAPRET_OUT, { recursive: true })
+  let files = 0
+  for (const e of zip.getEntries()) {
+    if (e.isDirectory || !e.entryName.startsWith(prefix)) continue
+    const rel = e.entryName.slice(prefix.length)
+    if (!rel || rel.includes('..') || rel.startsWith('/') || rel.includes('\\')) continue
+    if (!ZAPRET_KEEP.some((re) => re.test(rel))) continue
+    const dest = path.join(ZAPRET_OUT, ...rel.split('/'))
+    mkdirSync(path.dirname(dest), { recursive: true })
+    writeFileSync(dest, e.getData())
+    // Права из архива не доверяем: исполняемый только движок.
+    chmodSync(dest, rel === 'bin/utunws' ? 0o755 : 0o644)
+    files++
+  }
+  const engine = path.join(ZAPRET_OUT, 'bin', 'utunws')
+  if (!existsSync(engine)) fail('в архиве Zapret нет bin/utunws')
+  assertMachO(engine, 'utunws')
+  assertUniversalMachO(engine, 'utunws')
+  for (const need of ['strategies.tsv', 'ipset-any.txt', 'ipset-none.txt', 'default-lists/list-general.txt', 'strategies/general.conf.in']) {
+    if (!existsSync(path.join(ZAPRET_OUT, ...need.split('/')))) fail(`в архиве Zapret нет ${need}`)
+  }
+  // Версия — рядом с файлами: по ней приложение сравнивает установленную службу с встроенной.
+  const plist = zip.getEntry('ZapretMac.app/Contents/Info.plist')?.getData().toString('utf8') ?? ''
+  const ver = /CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]
+  if (ver && ver !== tag.replace(/^v/i, '')) console.warn(`[fetch-mac] zapret: версия в Info.plist (${ver}) не равна тегу ${tag}`)
+  writeFileSync(path.join(ZAPRET_OUT, 'VERSION'), `${tag.replace(/^v/i, '')}\n`)
+  console.log(`[fetch-mac] zapret ${tag}: ${files} файлов, utunws ${(statSync(engine).size / 1024).toFixed(0)} КБ -> ${path.relative(ROOT, ZAPRET_OUT)}`)
+}
+
 const tmp = mkdtempSync(path.join(tmpdir(), 'lazeyka-mac-'))
 try {
-  if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true, force: true })
-  console.log(`[fetch-mac] архитектура ${arch}, sing-box ${SING_BOX_VERSION}, xray ${XRAY_VERSION}, python ${PBS_PYTHON}`)
-  await fetchSingBox(tmp)
-  await fetchXray(tmp)
-  await fetchTgwsPython(tmp)
+  if (only === 'zapret') {
+    await fetchZapretMac(tmp)
+  } else {
+    if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true, force: true })
+    console.log(`[fetch-mac] архитектура ${arch}, sing-box ${SING_BOX_VERSION}, xray ${XRAY_VERSION}, python ${PBS_PYTHON}, zapret ${ZAPRET_MAC_TAG}`)
+    await fetchSingBox(tmp)
+    await fetchXray(tmp)
+    await fetchTgwsPython(tmp)
+    await fetchZapretMac(tmp)
+  }
   console.log('[fetch-mac] готово')
 } finally {
   rmSync(tmp, { recursive: true, force: true })
