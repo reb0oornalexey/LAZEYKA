@@ -4,6 +4,7 @@ import { patchAppConfig } from '../config'
 import { getGameFilterMode, setGameFilterMode, type GameFilterMode } from './zapret-service-settings'
 import { showSystemNotification } from '../utils/notifications'
 import { getZapretStatus, restartZapret } from './zapret'
+import { listRunningProcessNames } from '../utils/mac-apps'
 
 /** GameFilter читается bat-файлом при запуске — работающий Zapret перезапускаем. */
 async function applyGameFilter(mode: GameFilterMode): Promise<void> {
@@ -87,6 +88,30 @@ const TARGET_GAME_PROCESSES: { name: string; title: string; kind: TargetKind }[]
   { name: 'RiotClientServices.exe', title: 'Riot Client', kind: 'app' }
 ]
 
+/**
+ * macOS: те же игры и лаунчеры, но только у которых есть версия для Mac, — под
+ * именами процессов macOS (без .exe; имя — главный файл внутри бандла `.app`).
+ * CS2, Valorant, Apex, Fortnite, GTA V и прочих на Mac нет.
+ */
+const TARGET_GAME_PROCESSES_MAC: { name: string; title: string; kind: TargetKind }[] = [
+  { name: 'dota2', title: 'Dota 2', kind: 'game' },
+  { name: 'LeagueClient', title: 'League of Legends', kind: 'game' },
+  { name: 'League of Legends', title: 'League of Legends', kind: 'game' },
+  { name: 'RobloxPlayer', title: 'Roblox', kind: 'game' },
+  { name: 'World of Warcraft', title: 'World of Warcraft', kind: 'game' },
+  { name: 'Hearthstone', title: 'Hearthstone', kind: 'game' },
+  { name: 'Discord', title: 'Discord', kind: 'app' },
+  { name: 'Discord PTB', title: 'Discord PTB', kind: 'app' },
+  { name: 'Discord Canary', title: 'Discord Canary', kind: 'app' },
+  { name: 'steam_osx', title: 'Steam', kind: 'app' },
+  { name: 'EpicGamesLauncher', title: 'Epic Games', kind: 'app' },
+  { name: 'Battle.net', title: 'Battle.net', kind: 'app' },
+  { name: 'RiotClientServices', title: 'Riot Client', kind: 'app' }
+]
+
+const targetProcesses = (): typeof TARGET_GAME_PROCESSES =>
+  process.platform === 'darwin' ? TARGET_GAME_PROCESSES_MAC : TARGET_GAME_PROCESSES
+
 let timer: NodeJS.Timeout | null = null
 /** Процесс, из-за которого сейчас включён фильтр (не название — оно неуникально). */
 let activeProcess: string | null = null
@@ -103,6 +128,7 @@ let savedPreviousMode: GameFilterMode = 'off'
  * а сравнение терпит обрезку.
  */
 async function checkRunningProcesses(): Promise<string[]> {
+  if (process.platform === 'darwin') return listRunningProcessNames()
   try {
     const { stdout } = await execAsync('tasklist /FO CSV /NH', {
       windowsHide: true,
@@ -122,6 +148,8 @@ async function checkRunningProcesses(): Promise<string[]> {
 /** Запущен ли процесс с таким именем, с поправкой на обрезку имени в tasklist. */
 function isRunning(running: string[], name: string): boolean {
   const wanted = name.toLowerCase()
+  // macOS: ps отдаёт полные пути, имена не обрезаются — только точное совпадение.
+  if (process.platform === 'darwin') return running.includes(wanted)
   return running.some((got) => got === wanted || (got.length < wanted.length && wanted.startsWith(got)))
 }
 
@@ -133,7 +161,7 @@ export async function runGameModeWatcherCycle(): Promise<void> {
   if (!timer) return
 
   const running = await checkRunningProcesses()
-  const found = TARGET_GAME_PROCESSES.filter((g) => isRunning(running, g.name))
+  const found = targetProcesses().filter((g) => isRunning(running, g.name))
   // Игра важнее лаунчера: при запущенных Steam и CS2 показать надо CS2.
   const matched = found.find((g) => g.kind === 'game') ?? found[0] ?? null
 
@@ -179,8 +207,6 @@ export async function runGameModeWatcherCycle(): Promise<void> {
  * saved state at boot so the restore doesn't rewrite the config it just read.
  */
 export function setGameModeWatcher(enabled: boolean, persist = true): void {
-  // macOS: игровой режим работает через Zapret и tasklist — пока не поддерживается.
-  if (process.platform === 'darwin') return
   if (timer) {
     clearInterval(timer)
     timer = null
@@ -188,10 +214,15 @@ export function setGameModeWatcher(enabled: boolean, persist = true): void {
 
   if (enabled) {
     savedPreviousMode = getGameFilterMode()
-    timer = setInterval(() => {
-      void runGameModeWatcherCycle()
-    }, 8000)
-    void runGameModeWatcherCycle()
+    // macOS: сбой смены Game Filter (Zapret может быть не установлен) не должен
+    // ронять опрос — следующий цикл попробует снова.
+    const cycle = (): void => {
+      const p = runGameModeWatcherCycle()
+      if (process.platform === 'darwin') p.catch(() => void 0)
+      else void p
+    }
+    timer = setInterval(cycle, 8000)
+    cycle()
   } else {
     // Turning the watcher off while a game is running would otherwise strand
     // the Game Filter in "all" forever — restore what we found before.

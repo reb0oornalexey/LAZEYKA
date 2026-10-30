@@ -2,6 +2,7 @@ import net from 'net'
 import dgram from 'dgram'
 import dns from 'dns'
 import { execFile } from 'child_process'
+import { macPingArgs, parseMacPingRtts, runMacPing } from '../utils/mac-net'
 import { loadIncyNodes, pingIncyNode, type IncyNode } from './incy-engine'
 
 export interface GameServerGeoInfo {
@@ -392,6 +393,9 @@ function probeTcp(ip: string, port: number, timeoutMs = 600): Promise<number | n
  * Attempts direct ICMP ping via ping.exe.
  */
 function probeIcmp(ip: string, timeoutMs = 700): Promise<number | null> {
+  if (process.platform === 'darwin') {
+    return runMacPing(macPingArgs({ count: 1, waitMs: timeoutMs }, ip), timeoutMs + 3000).then((out) => parseMacPingRtts(out)[0] ?? null)
+  }
   return new Promise((resolve) => {
     execFile('ping.exe', [ip, '-n', '1', '-w', String(timeoutMs)], { windowsHide: true }, (err, stdout) => {
       if (err || !stdout) return resolve(null)

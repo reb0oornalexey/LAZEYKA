@@ -12,7 +12,7 @@
  * switch takes effect immediately without a restart.
  */
 import { powerMonitor, BrowserWindow } from 'electron'
-import { exec } from 'node:child_process'
+import { exec, execFile } from 'node:child_process'
 import {
   connectIncyNode,
   disconnectIncy,
@@ -138,12 +138,29 @@ export interface CoreMemoryUsage {
 /**
  * Real memory usage of the running cores.
  *
- * Windows only, via `tasklist`. Returns zeroes rather than throwing when the
- * cores are not running — the caller renders "—" in that case.
+ * Windows via `tasklist`, macOS via `ps -o rss=`. Returns zeroes rather than
+ * throwing when the cores are not running — the caller renders "—" in that case.
  */
 export function readCoreMemory(): Promise<CoreMemoryUsage> {
   return new Promise((resolve) => {
     const empty: CoreMemoryUsage = { totalBytes: 0, perProcess: [] }
+    if (process.platform === 'darwin') {
+      // RSS в КБ, потом полный путь процесса (ядро в службе — sing-box-lxd).
+      execFile('/bin/ps', ['-axo', 'rss=,comm='], { timeout: 4000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+        if (err || !stdout) return resolve(empty)
+        const perProcess: { name: string; bytes: number }[] = []
+        for (const line of String(stdout).split('\n')) {
+          const m = /^\s*(\d+)\s+(.+)$/.exec(line)
+          if (!m) continue
+          const name = m[2].split('/').pop() ?? ''
+          if (!/^(sing-box|sing-box-lx|sing-box-lxd|xray)$/.test(name)) continue
+          const kb = Number(m[1])
+          if (Number.isFinite(kb) && kb > 0) perProcess.push({ name, bytes: kb * 1024 })
+        }
+        resolve({ totalBytes: perProcess.reduce((sum, p) => sum + p.bytes, 0), perProcess })
+      })
+      return
+    }
     if (process.platform !== 'win32') return resolve(empty)
 
     exec(

@@ -299,6 +299,11 @@ const Settings: React.FC = () => {
             <p className="text-xs text-muted-foreground">
               Защита от подмены DNS провайдером и ускорение отклика сайтов. Выберите зашифрованный сервер:
             </p>
+            {isMac && (
+              <p className="text-[11px] text-muted-foreground">
+                На macOS выставляются адреса DNS провайдера; шифрование DoH доступно через профиль.
+              </p>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {dohProviders.map((p) => {
@@ -357,6 +362,18 @@ const Settings: React.FC = () => {
                               onClick={() => void openExternalUrl(p.site!)}
                             >
                               сайт
+                            </button>
+                          </>
+                        )}
+                        {isMac && p.macProfile && (
+                          <>
+                            {' · '}
+                            <button
+                              type="button"
+                              className="text-primary underline underline-offset-2"
+                              onClick={() => void openExternalUrl(p.macProfile!)}
+                            >
+                              профиль DoH
                             </button>
                           </>
                         )}

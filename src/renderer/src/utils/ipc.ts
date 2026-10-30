@@ -475,6 +475,8 @@ export interface DohProvider {
   strict?: boolean
   custom?: boolean
   site?: string
+  /** macOS: страница с профилем шифрованного DNS этого провайдера. */
+  macProfile?: string
 }
 export interface CustomDnsInput {
   name: string
@@ -1016,10 +1018,14 @@ export const incyCheckWarp = (nodeId: string): Promise<WarpCheckResult> => invok
 export interface RunningProcessInfo {
   name: string
   title?: string
+  /** macOS: что записать в список ExitLag (путь бандла `.app`). */
+  rule?: string
+  /** macOS: запущенные процессы приложения. */
+  names?: string[]
 }
 export interface InstalledGame {
   name: string
-  source: 'Steam' | 'Epic'
+  source: 'Steam' | 'Epic' | 'Mac'
   dir: string
   exes: string[]
 }
@@ -1053,6 +1059,8 @@ export interface AppTraffic {
   firstSeen: number
   route: string
   hostCount: number
+  /** macOS: путь бандла/файла — запись для списка ExitLag. */
+  rule?: string
   hosts?: HostTraffic[]
 }
 export interface LiveConnection {
@@ -1063,6 +1071,8 @@ export interface LiveConnection {
   network: string
   route: string
   rule: string
+  /** macOS: путь бандла/файла процесса. */
+  appRule?: string
   upload: number
   download: number
   start: number

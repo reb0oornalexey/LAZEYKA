@@ -16,12 +16,13 @@ import { promisify } from 'node:util'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { decodeConsole } from '../utils/console-decode'
+import { scanInstalledGamesMac } from './game-scan-mac'
 
 const execFileAsync = promisify(execFile)
 
 export interface InstalledGame {
   name: string
-  source: 'Steam' | 'Epic'
+  source: 'Steam' | 'Epic' | 'Mac'
   dir: string
   /** Исполняемые файлы игры, главный — первым. */
   exes: string[]
@@ -186,6 +187,7 @@ function scanEpic(): InstalledGame[] {
 }
 
 export async function scanInstalledGames(): Promise<InstalledGame[]> {
+  if (process.platform === 'darwin') return scanInstalledGamesMac()
   if (process.platform !== 'win32') return []
   const [steam, epic] = await Promise.all([scanSteam().catch(() => []), Promise.resolve().then(scanEpic).catch(() => [])])
   return [...steam, ...epic].sort((a, b) => a.name.localeCompare(b.name))

@@ -11,6 +11,7 @@ import https from 'node:https'
 import http from 'node:http'
 import { execFile } from 'node:child_process'
 import { physicalSourceIp } from './core-probe'
+import { macPingArgs, parseMacPingRtts, runMacPing } from '../utils/mac-net'
 import { appendLog } from './incy-engine'
 
 export interface BufferbloatResult {
@@ -31,6 +32,9 @@ const DOWNLOAD_URLS = [
 ]
 
 function pingSeries(ip: string, count: number, src?: string): Promise<number[]> {
+  if (process.platform === 'darwin') {
+    return runMacPing(macPingArgs({ count, waitMs: 1000, src }, ip), count * 1500 + 3000).then(parseMacPingRtts)
+  }
   return new Promise((resolve) => {
     if (process.platform !== 'win32') return resolve([])
     execFile(

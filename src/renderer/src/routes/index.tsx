@@ -24,11 +24,7 @@ const routes = [
       </MacSoon>
     ) },
   { path: '/incy', element: <Incy /> },
-  { path: '/exitlag', element: (
-      <MacSoon title="ExitLag">
-        <ExitLag />
-      </MacSoon>
-    ) },
+  { path: '/exitlag', element: <ExitLag /> },
   { path: '/optimizer', element: <Optimizer /> },
   { path: '/logs', element: <Logs /> },
   { path: '/settings', element: <Settings /> },

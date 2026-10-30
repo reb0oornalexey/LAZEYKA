@@ -34,6 +34,7 @@ import {
 } from './incy-stats'
 import { getHwidHeaders } from './incy-hwid'
 import { showSystemNotification } from '../utils/notifications'
+import { isMacTelegramEntry, macEntriesRegex, normalizeMacPerAppList } from '../utils/mac-apps'
 import { getAllBypassDomains } from './split-tunneling'
 import { setSystemProxy, clearSystemProxy } from '../utils/system-proxy'
 import { logToFile } from '../utils/file-logger'
@@ -939,7 +940,7 @@ function buildExitLagRuleSets(s: IncySettings): {
   const whitelist = Boolean(s.perAppProxy) && s.perAppMode !== 'bypass_only'
   const regexes: string[] = []
   if (list.length > 0) regexes.push(perAppPathRegex(list))
-  if (list.some((n) => TELEGRAM_CLIENTS.has(n.toLowerCase()))) {
+  if (list.some((n) => isTelegramApp(n))) {
     for (const p of [tgwsCliPaths()?.python, tgwsBinaryPath()].filter((x): x is string => Boolean(x))) {
       regexes.push(exactPathRegex(p))
     }
@@ -2731,6 +2732,8 @@ export function toDomainSuffixes(list: string[]): string[] {
  * Принимает и полный путь, и имя без расширения.
  */
 export function normalizePerAppList(list?: string[]): string[] {
+  // macOS: запись — путь (бандл .app, каталог, файл) или имя процесса без .exe.
+  if (process.platform === 'darwin') return normalizeMacPerAppList(list)
   const seen = new Set<string>()
   const out: string[] = []
   for (const p of list ?? []) {
@@ -2760,12 +2763,17 @@ const TELEGRAM_CLIENTS: ReadonlySet<string> = new Set([
   'materialgram.exe'
 ])
 
+function isTelegramApp(n: string): boolean {
+  return process.platform === 'darwin' ? isMacTelegramEntry(n) : TELEGRAM_CLIENTS.has(n.toLowerCase())
+}
+
 /** Регулярное выражение на точный путь процесса, без учёта регистра. */
 export function exactPathRegex(fullPath: string): string {
   return `(?i)^${fullPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
 }
 
 export function perAppPathRegex(names: string[]): string {
+  if (process.platform === 'darwin') return macEntriesRegex(names)
   const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   return `(?i)(?:^|[\\\\/])(?:${escaped.join('|')})$`
 }
@@ -4023,7 +4031,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // Без него «Telegram через VPN» ничего бы не менял — добавляем его путь.
     const perAppRegexes: string[] = []
     if (perAppList.length > 0) perAppRegexes.push(perAppPathRegex(perAppList))
-    if (perAppList.some((n) => TELEGRAM_CLIENTS.has(n.toLowerCase()))) {
+    if (perAppList.some((n) => isTelegramApp(n))) {
       const tgwsPaths = [tgwsCliPaths()?.python, tgwsBinaryPath()].filter((p): p is string => Boolean(p))
       for (const p of tgwsPaths) perAppRegexes.push(exactPathRegex(p))
     }
