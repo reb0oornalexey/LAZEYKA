@@ -1,17 +1,34 @@
 #!/usr/bin/env node
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
-// Скачивает ядра INCY для macOS (sing-box и Xray) в resources-mac/incy/.
+// Скачивает для macOS ядра INCY (sing-box и Xray) в resources-mac/incy/ и
+// Python для TgWsProxy (python-build-standalone + пакет proxy Flowseal) в resources-mac/tgws/.
 //
 // Использование:  node scripts/fetch-mac-binaries.mjs <arm64|x64>
 //
 // Папка resources-mac/ не хранится в git: её заполняет CI перед сборкой
 // (см. .github/workflows/build-mac.yml). electron-builder кладёт её внутрь
-// .app в ту же раскладку, что и resources/ на Windows (incy/sing-box, incy/xray).
+// .app в ту же раскладку, что и resources/ на Windows (incy/sing-box, incy/xray,
+// tgws/python, tgws/app).
 //
 // Только встроенные модули Node + adm-zip (уже в зависимостях) + системный `tar`.
 
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  copyFileSync,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -27,12 +44,21 @@ const SING_BOX_REPO = 'Leadaxe/sing-box-lx'
 const SING_BOX_VERSION = process.env.SING_BOX_VERSION || '1.14.4-lx.25'
 const XRAY_VERSION = process.env.XRAY_VERSION || '26.10.29'
 
+// Python для TgWsProxy: python-build-standalone (astral-sh), вариант
+// install_only_stripped. Минорная версия 3.12 — как во встроенном Python на
+// Windows (resources/tgws/python/python312.zip). Тег релиза и патч-версия
+// закреплены; переопределяются PBS_TAG / PBS_PYTHON.
+const PBS_REPO = 'astral-sh/python-build-standalone'
+const PBS_TAG = process.env.PBS_TAG || '20261026'
+const PBS_PYTHON = process.env.PBS_PYTHON || '3.12.16'
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const OUT_DIR = path.join(ROOT, 'resources-mac', 'incy')
+const TGWS_OUT = path.join(ROOT, 'resources-mac', 'tgws')
 
 const ARCH_MAP = {
-  arm64: { singBox: 'arm64', xray: 'arm64-v8a', cpuType: 0x0100000c },
-  x64: { singBox: 'amd64', xray: '64', cpuType: 0x01000007 }
+  arm64: { singBox: 'arm64', xray: 'arm64-v8a', pbs: 'aarch64', pipPlatform: 'macosx_11_0_arm64', cpuType: 0x0100000c },
+  x64: { singBox: 'amd64', xray: '64', pbs: 'x86_64', pipPlatform: 'macosx_10_13_x86_64', cpuType: 0x01000007 }
 }
 
 function fail(msg) {
@@ -193,12 +219,180 @@ async function fetchXray(tmp) {
   install(out, 'xray')
 }
 
+// ---- Python для TgWsProxy ----------------------------------------------------
+
+/** Каталоги и файлы python-build-standalone, которые TgWsProxy не нужны (tkinter/IDLE/тесты/заголовки). */
+const PY_PRUNE = [
+  'include',
+  'share',
+  'lib/pkgconfig',
+  'lib/itcl4.3.8',
+  'lib/tcl9',
+  'lib/tcl9.0',
+  'lib/tk9.0',
+  'lib/thread3.0.6',
+  'lib/libtcl9.0.dylib',
+  'lib/libtcl9tk9.0.dylib',
+  // Исполняемый python3.12 собран со статически вложенным интерпретатором
+  // (ссылается только на системные библиотеки), libpython нужна лишь при встраивании.
+  'lib/libpython3.12.dylib',
+  'lib/python3.12/test',
+  'lib/python3.12/idlelib',
+  'lib/python3.12/tkinter',
+  'lib/python3.12/turtledemo',
+  'lib/python3.12/turtle.py',
+  'lib/python3.12/ensurepip',
+  'lib/python3.12/lib2to3',
+  'lib/python3.12/pydoc_data',
+  'lib/python3.12/config-3.12-darwin',
+  'lib/python3.12/lib-dynload/_tkinter.cpython-312-darwin.so'
+]
+
+/** Все __pycache__ и симлинки → обычные файлы (electron-builder не обязан хранить симлинки). */
+function cleanTree(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name)
+    if (entry.isSymbolicLink()) {
+      const target = path.resolve(path.dirname(p), readlinkSync(p))
+      rmSync(p, { force: true })
+      if (existsSync(target) && statSync(target).isFile()) copyFileSync(target, p)
+    } else if (entry.isDirectory()) {
+      if (entry.name === '__pycache__') rmSync(p, { recursive: true, force: true })
+      else cleanTree(p)
+    }
+  }
+}
+
+function dirSizeMB(dir) {
+  let total = 0
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name)
+    total += entry.isDirectory() ? dirSizeMB(p) * 1048576 : lstatSync(p).size
+  }
+  return total / 1048576
+}
+
+/**
+ * Закреплённые версии бинарных зависимостей — из dist-info встроенного Windows-Python.
+ * cffi и pycparser не закрепляем: для Intel-Mac у новых cffi нет колёс, их версию
+ * подбирает pip по требованиям cryptography.
+ */
+function compiledDepSpecs() {
+  const sp = path.join(ROOT, 'resources', 'tgws', 'python', 'Lib', 'site-packages')
+  const specs = []
+  if (existsSync(sp)) {
+    for (const name of readdirSync(sp)) {
+      const m = /^(.+?)-([0-9][^-]*)\.dist-info$/.exec(name)
+      if (m && !/^(cffi|pycparser)$/i.test(m[1])) specs.push(`${m[1].replace(/_/g, '-')}==${m[2]}`)
+    }
+  }
+  if (specs.length === 0) fail('не нашёл закреплённые зависимости в resources/tgws/python/Lib/site-packages')
+  return specs
+}
+
+function run(cmd, args, label) {
+  const r = spawnSync(cmd, args, { stdio: 'inherit' })
+  if (r.status !== 0) fail(`${label} завершился с кодом ${r.status}`)
+}
+
+async function fetchTgwsPython(tmp) {
+  const asset = `cpython-${PBS_PYTHON}+${PBS_TAG}-${cfg.pbs}-apple-darwin-install_only_stripped.tar.gz`
+  const base = `https://github.com/${PBS_REPO}/releases/download/${PBS_TAG}`
+  const url = `${base}/${encodeURIComponent(asset)}`
+  console.log(`[fetch-mac] python: ${url}`)
+
+  // Сумма — строго из SHA256SUMS релиза; без неё Python не берём.
+  const sums = (await download(`${base}/SHA256SUMS`)).toString('utf8')
+  const line = sums.split(/\r?\n/).find((l) => l.trim().endsWith(` ${asset}`) || l.trim().endsWith(`*${asset}`))
+  const m = line ? /^([0-9a-f]{64})/i.exec(line.trim()) : null
+  if (!m) fail(`${asset}: в SHA256SUMS релиза ${PBS_TAG} нет суммы (проверьте PBS_TAG/PBS_PYTHON)`)
+  const buf = await download(url)
+  if (buf.length < 10 * 1024 * 1024) fail(`${asset}: слишком маленький файл (${buf.length} байт)`)
+  const actual = sha256(buf)
+  if (actual !== m[1].toLowerCase()) fail(`${asset}: SHA-256 не совпала (SHA256SUMS: ${m[1]}, получено ${actual})`)
+  console.log(`[fetch-mac] ${asset}: SHA-256 совпала (SHA256SUMS)`)
+
+  const archive = path.join(tmp, 'python.tar.gz')
+  writeFileSync(archive, buf)
+  const ex = path.join(tmp, 'python-x')
+  mkdirSync(ex, { recursive: true })
+  run('tar', ['-xzf', archive, '-C', ex], 'tar (python)')
+  const src = path.join(ex, 'python')
+  if (!existsSync(path.join(src, 'bin', 'python3.12'))) fail('в архиве Python нет bin/python3.12')
+
+  const pyDir = path.join(TGWS_OUT, 'python')
+  rmSync(TGWS_OUT, { recursive: true, force: true })
+  mkdirSync(TGWS_OUT, { recursive: true })
+  renameSync(src, pyDir)
+
+  // Один настоящий файл bin/python3 (без симлинков и лишних скриптов).
+  const binDir = path.join(pyDir, 'bin')
+  renameSync(path.join(binDir, 'python3.12'), path.join(tmp, 'python3'))
+  rmSync(binDir, { recursive: true, force: true })
+  mkdirSync(binDir)
+  const py = path.join(binDir, 'python3')
+  renameSync(path.join(tmp, 'python3'), py)
+  chmodSync(py, 0o755)
+  assertMachO(py, 'python3')
+
+  // Бинарные зависимости (cryptography, cffi…) — в site-packages самого Python.
+  const sitePackages = path.join(pyDir, 'lib', 'python3.12', 'site-packages')
+  const specs = compiledDepSpecs()
+  const native = process.platform === 'darwin' && process.arch === arch
+  const pipCommon = ['--no-warn-script-location', '--disable-pip-version-check', '--only-binary=:all:', '--no-compile']
+  if (native) {
+    console.log(`[fetch-mac] pip (встроенный Python): ${specs.join(' ')}`)
+    run(py, ['-m', 'pip', 'install', ...pipCommon, ...specs], 'pip install')
+  } else {
+    // Другая ОС/архитектура: колёса нужной платформы ставит pip хозяйского Python.
+    const host = process.platform === 'win32' ? 'python' : 'python3'
+    console.log(`[fetch-mac] pip (${host}, платформа ${cfg.pipPlatform}): ${specs.join(' ')}`)
+    run(
+      host,
+      ['-m', 'pip', 'install', ...pipCommon, '--target', sitePackages, '--platform', cfg.pipPlatform, '--python-version', '3.12', '--implementation', 'cp', ...specs],
+      'pip install --platform'
+    )
+  }
+  // pip и его dist-info рантайму не нужны.
+  for (const name of readdirSync(sitePackages)) {
+    if (/^(pip|setuptools|wheel|pkg_resources|_distutils_hack)(-|$)/.test(name) || name === 'README.txt' || name === '__pycache__') {
+      rmSync(path.join(sitePackages, name), { recursive: true, force: true })
+    }
+  }
+
+  for (const rel of PY_PRUNE) rmSync(path.join(pyDir, ...rel.split('/')), { recursive: true, force: true })
+  cleanTree(pyDir)
+
+  // Загрузчик и пакет proxy — те же, что у Windows-сборки (чистый Python).
+  copyFileSync(path.join(ROOT, 'resources', 'tgws', 'python', 'lazeyka_tgws.py'), path.join(pyDir, 'lazeyka_tgws.py'))
+  const appSrc = path.join(ROOT, 'resources', 'tgws', 'app')
+  if (!existsSync(path.join(appSrc, 'proxy', 'tg_ws_proxy.py'))) fail('resources/tgws/app/proxy не найден')
+  const appDir = path.join(TGWS_OUT, 'app')
+  cpSync(appSrc, appDir, { recursive: true })
+  cleanTree(appDir)
+  for (const f of readdirSync(appDir, { recursive: true })) {
+    if (/\.(pyd|dll|exe)$/i.test(String(f))) fail(`в resources/tgws/app есть Windows-бинарник: ${f}`)
+  }
+  console.log(`[fetch-mac] tgws: python ${PBS_PYTHON} (${PBS_TAG}) + app ${dirSizeMB(TGWS_OUT).toFixed(0)} МБ -> ${path.relative(ROOT, TGWS_OUT)}`)
+
+  if (native) {
+    // Дымовая проверка: тот же набор импортов, что нужен proxy.
+    const code = 'import sys; sys.path.insert(0, sys.argv[1]); import ssl, hashlib, asyncio, certifi, cryptography, httpx, h2, proxy.tg_ws_proxy as m; assert hasattr(m, "main"); print("ok", sys.version.split()[0])'
+    const r = spawnSync(py, ['-B', '-s', '-c', code, appDir], { encoding: 'utf8' })
+    if (r.status !== 0 || !r.stdout.includes('ok')) fail(`Python для TgWsProxy не прошёл проверку импорта: ${(r.stderr || '').trim().split('\n').pop()}`)
+    console.log(`[fetch-mac] проверка импорта: ${r.stdout.trim()}`)
+  } else {
+    console.warn('[fetch-mac] НЕ macOS-хост той же архитектуры: проверка запуска Python пропущена')
+  }
+}
+
 const tmp = mkdtempSync(path.join(tmpdir(), 'lazeyka-mac-'))
 try {
   if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true, force: true })
-  console.log(`[fetch-mac] архитектура ${arch}, sing-box ${SING_BOX_VERSION}, xray ${XRAY_VERSION}`)
+  console.log(`[fetch-mac] архитектура ${arch}, sing-box ${SING_BOX_VERSION}, xray ${XRAY_VERSION}, python ${PBS_PYTHON}`)
   await fetchSingBox(tmp)
   await fetchXray(tmp)
+  await fetchTgwsPython(tmp)
   console.log('[fetch-mac] готово')
 } finally {
   rmSync(tmp, { recursive: true, force: true })
