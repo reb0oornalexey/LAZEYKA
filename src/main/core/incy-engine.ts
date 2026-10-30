@@ -917,6 +917,14 @@ function tunnelOutdated(): boolean {
 // ---- ExitLag на горячо подменяемых rule-set --------------------------------
 
 function exitLagRuleSetPath(kind: 'vpn' | 'direct'): string {
+  if (process.platform === 'darwin') {
+    // macOS: ядро (в службе lxd) следит за ПАПКОЙ файла rule-set; в корне папки
+    // данных лежат служебные ссылки Electron (SingletonCookie…), на которых
+    // fswatch падал. Поэтому на Mac файлы ExitLag — в своей подпапке.
+    const dir = path.join(dataDir(), 'rulesets')
+    try { mkdirSync(dir, { recursive: true }) } catch { /* создастся при записи */ }
+    return path.join(dir, `exitlag-${kind}.json`)
+  }
   return path.join(dataDir(), `exitlag-${kind}.json`)
 }
 

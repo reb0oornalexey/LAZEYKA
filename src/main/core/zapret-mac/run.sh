@@ -108,15 +108,24 @@ if ! printf '%s\n' "$STRATEGY" | /usr/bin/grep -Eq '^general(-[a-z0-9]+)*$' || [
     STRATEGY=general-simple-fake
 fi
 
-# LAZEYKA: рабочие копии списков закрыты от пользователя (0700/0600): так подмена файла
-# ссылкой между проверкой и копированием не позволит прочитать чужой файл через список.
+# LAZEYKA: utunws после старта сбрасывает root (работает под UID 2147483647), поэтому
+# рабочие копии списков должны быть доступны на чтение всем (как у Flowseal: 755/644).
+# Чтобы подмена файла ссылкой не позволила вытащить через список чужой файл
+# (например, /etc/master.passwd), исходники читаются С ПРАВАМИ ВЛАДЕЛЬЦА папки, а не root.
+OWNER_UID=$(/usr/bin/stat -f %u "$DATA_ROOT" 2>/dev/null || true)
+case "$OWNER_UID" in ''|0|*[!0-9]*) exit 1 ;; esac
 RUNTIME_LISTS="$BASE/lists"
 /bin/mkdir -p "$RUNTIME_LISTS"
-/bin/chmod 700 "$RUNTIME_LISTS"
+/usr/sbin/chown root:wheel "$RUNTIME_LISTS"
+/bin/chmod 755 "$RUNTIME_LISTS"
 for NAME in list-general.txt list-general-user.txt list-google.txt list-exclude.txt list-exclude-user.txt ipset-all.txt ipset-exclude.txt ipset-exclude-user.txt; do
     SOURCE_LIST="$DATA_ROOT/lists/$NAME"
     if [ -L "$SOURCE_LIST" ] || [ ! -f "$SOURCE_LIST" ]; then exit 1; fi
-    /usr/bin/install -m 0600 -o root -g wheel "$SOURCE_LIST" "$RUNTIME_LISTS/$NAME"
+    /bin/rm -f "$RUNTIME_LISTS/$NAME.tmp"
+    /usr/bin/sudo -n -u "#$OWNER_UID" /bin/cat -- "$SOURCE_LIST" >"$RUNTIME_LISTS/$NAME.tmp" || exit 1
+    /usr/sbin/chown root:wheel "$RUNTIME_LISTS/$NAME.tmp"
+    /bin/chmod 644 "$RUNTIME_LISTS/$NAME.tmp"
+    /bin/mv -f "$RUNTIME_LISTS/$NAME.tmp" "$RUNTIME_LISTS/$NAME"
 done
 
 IPSET_MODE=$(read_state "$DATA_ROOT/ipset-mode")
