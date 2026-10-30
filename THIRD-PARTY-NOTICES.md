@@ -149,6 +149,39 @@ readable list.
 
 ---
 
+## 7. Network cores (Windows and macOS)
+
+INCY runs the cores below as separate processes; LAZEYKA does not link
+against them.
+
+- **sing-box-lx** (fork of SagerNet/sing-box with AmneziaWG, XHTTP, MASQUE)
+  — <https://github.com/Leadaxe/sing-box-lx>, upstream
+  <https://github.com/SagerNet/sing-box>. License: GNU GPL v3.0 or later.
+  On macOS its built-in `lxd` daemon is installed as a LaunchDaemon to run
+  TUN mode with administrator rights.
+- **Xray-core** — <https://github.com/XTLS/Xray-core>. License: Mozilla
+  Public License 2.0.
+
+## 8. macOS-only components
+
+- **Flowseal/zapret-mac-discord-youtube** — the official macOS port of
+  zapret (`utunws`: nfqws over utun + BPF), its strategies and default
+  lists, taken unmodified from release asset `ZapretMac-macOS-universal.zip`.
+  <https://github.com/Flowseal/zapret-mac-discord-youtube>. License: MIT —
+  Copyright (c) 2016-2024 bol-van, Copyright (c) 2026 Flowseal. LAZEYKA
+  ships its own service scripts (`src/main/core/zapret-mac/`) modelled on
+  the port's `run.sh` / `stop.sh` / `watchdog.sh`.
+- **python-build-standalone** (Astral) — CPython 3.12 runtime for
+  TgWsProxy on macOS. <https://github.com/astral-sh/python-build-standalone>.
+  CPython: Python Software Foundation License 2; the build also contains
+  third-party libraries under their own licenses (OpenSSL — Apache-2.0,
+  libffi — MIT, zlib, SQLite — public domain, and others), listed in the
+  distribution's own license files.
+- Python packages installed for macOS (`cryptography`, `cffi`, `certifi`)
+  are the same projects and licenses as listed in section 2.
+
+---
+
 ## How attribution works in practice
 
 * Every source file copied or substantially adapted from one of the

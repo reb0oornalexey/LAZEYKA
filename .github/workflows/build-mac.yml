@@ -9,9 +9,6 @@ on:
   workflow_dispatch:
   release:
     types: [published]
-  # Временно: тестовые сборки из ветки порта (ручной запуск появится только после слияния в main).
-  push:
-    branches: [macos-port]
 
 permissions:
   contents: write
