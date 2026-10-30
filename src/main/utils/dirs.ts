@@ -162,7 +162,17 @@ export function zapretRuntimeDir(): string {
   return path.join(runtimeDir(), 'zapret')
 }
 
+/**
+ * macOS: рабочая папка Zapret пользователя (списки, выбранная стратегия, режим IPset).
+ * Её читает root-служба, поэтому путь жёстко проверяется в run.sh: `…/Application Support/lazeyka[-dev]/zapret-mac`.
+ */
+export function zapretMacDataRoot(): string {
+  return path.join(app.getPath('userData'), 'zapret-mac')
+}
+
 export function zapretBundleDir(): string {
+  // macOS: «папка сборки» — это рабочая папка с lists/ (стратегии и движок лежат в службе).
+  if (process.platform === 'darwin') return zapretMacDataRoot()
   const rt = zapretRuntimeDir()
   if (existsSync(path.join(rt, 'general.bat')) && existsSync(path.join(rt, 'bin', binName('winws')))) return rt
   return path.join(resourcesDir(), 'zapret')
