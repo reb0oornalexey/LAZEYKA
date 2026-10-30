@@ -19,6 +19,7 @@ import dns from 'node:dns'
 import { physicalSourceIp } from './core-probe'
 import { parseGameServerAddress } from './game-ping'
 import { appendLog } from './incy-engine'
+import { macPingArgs, macTraceroute, parseMacPingRtts, parseMacTtlHop, runMacPing } from '../utils/mac-net'
 
 export interface TraceHop {
   hop: number
@@ -45,7 +46,14 @@ export interface TraceResult {
 
 const MAX_HOPS = 24
 
+/** Аргументы ping: count пакетов, при ttl — с ограниченным TTL; src — адрес физического адаптера. */
+function pingArgs(count: number, ttl: number | null, src: string | undefined, ip: string): string[] {
+  if (process.platform === 'darwin') return macPingArgs({ count, waitMs: 1000, ttl: ttl ?? undefined, src }, ip)
+  return ['-n', String(count), '-w', '1000', ...(ttl != null ? ['-i', String(ttl)] : []), ...(src ? ['-S', src] : []), ip]
+}
+
 function runPing(args: string[], timeoutMs: number): Promise<string> {
+  if (process.platform === 'darwin') return runMacPing(args, timeoutMs)
   return new Promise((resolve) => {
     if (process.platform !== 'win32') return resolve('')
     execFile('ping.exe', args, { windowsHide: true, timeout: timeoutMs, encoding: 'latin1' }, (_e, stdout) =>
@@ -56,6 +64,7 @@ function runPing(args: string[], timeoutMs: number): Promise<string> {
 
 /** IPv4 из первой строки ответа (строки ответа содержат «TTL»: и «TTL=55», и «TTL expired»). */
 function hopFromTtlPing(out: string): string | null {
+  if (process.platform === 'darwin') return parseMacTtlHop(out)
   for (const line of out.split(/\r?\n/)) {
     if (!/TTL/i.test(line)) continue
     const m = /(\d{1,3}(?:\.\d{1,3}){3})/.exec(line)
@@ -65,6 +74,7 @@ function hopFromTtlPing(out: string): string | null {
 }
 
 function rtts(out: string): number[] {
+  if (process.platform === 'darwin') return parseMacPingRtts(out)
   return [...out.matchAll(/[=<](\d+)\s*[^\s\d]{0,4}\s+TTL=/gi)].map((m) => Math.max(1, Number(m[1])))
 }
 
@@ -85,13 +95,17 @@ export async function traceRoute(input: string): Promise<TraceResult> {
     }
   }
   const src = (await physicalSourceIp()) ?? undefined
-  const srcArgs = src ? ['-S', src] : []
 
   // 1. Все TTL одновременно — около секунды вместо полуминуты.
   const ttls = Array.from({ length: MAX_HOPS }, (_, i) => i + 1)
-  const found = await Promise.all(
-    ttls.map(async (ttl) => hopFromTtlPing(await runPing(['-n', '1', '-w', '1000', '-i', String(ttl), ...srcArgs, ip], 4000)))
+  const found: (string | null)[] = await Promise.all(
+    ttls.map(async (ttl) => hopFromTtlPing(await runPing(pingArgs(1, ttl, src, ip), 4000)))
   )
+  // macOS: если ping с ограниченным TTL не нашёл ни одного узла — системный traceroute.
+  if (process.platform === 'darwin' && !found.some((f) => f != null)) {
+    const tr = await macTraceroute(ip, MAX_HOPS, src).catch(() => [] as (string | null)[])
+    for (let i = 0; i < Math.min(tr.length, found.length); i++) found[i] = tr[i]
+  }
   const lastIdx = found.indexOf(ip)
   const reached = lastIdx >= 0
   const used = found.slice(0, reached ? lastIdx + 1 : found.length)
@@ -102,7 +116,7 @@ export async function traceRoute(input: string): Promise<TraceResult> {
   const stats = await Promise.all(
     used.map(async (hopIp) => {
       if (!hopIp) return null
-      const r = rtts(await runPing(['-n', '10', '-w', '1000', ...srcArgs, hopIp], 20000))
+      const r = rtts(await runPing(pingArgs(10, null, src, hopIp), 20000))
       return {
         avg: r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length) : null,
         min: r.length ? Math.min(...r) : null,
