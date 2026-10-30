@@ -8,6 +8,7 @@ import {
   zapretListStrategies,
   zapretStart,
   zapretStop,
+  zapretRestart,
   zapretCheckUpdate,
   zapretInstallUpdate,
   zapretDismissUpdate,
@@ -29,6 +30,10 @@ import ZapretIpListCard from '@renderer/components/zapret-iplist-card'
 import ZapretServiceSettingsCard from '@renderer/components/zapret-service-settings-card'
 import ZapretAutopilotCard from '@renderer/components/zapret-autopilot-card'
 import ZapretStrategyBuilderCard from '@renderer/components/zapret-strategy-builder-card'
+import ZapretMacServiceCard from '@renderer/components/zapret-mac-service-card'
+import { platform } from '@renderer/utils/init'
+
+const isMac = platform === 'darwin'
 
 const Zapret: React.FC = () => {
   const status = useZapretStore((s) => s.status)
@@ -204,6 +209,14 @@ const Zapret: React.FC = () => {
     // провайдер меняются, а старый отчёт иначе блокировал её навсегда.
     if (isTestRunning) return
     await patchAppConfig({ zapret: { ...zapret!, activeStrategy: file } })
+    // macOS: выбор записывается в службу и действует сразу — без пароля, перезапуском движка.
+    if (isMac && status.state === 'running') {
+      try {
+        await zapretRestart()
+      } catch (e) {
+        toast.error('Не удалось переключить стратегию', { description: e instanceof Error ? e.message : String(e) })
+      }
+    }
     if (!autoStartRef.current) return
     // One-shot: drop the flag so re-clicking another strategy on this page
     // doesn't keep auto-starting and ping-ponging back to Home.
@@ -246,7 +259,7 @@ const Zapret: React.FC = () => {
               </div>
               <div className="text-xs text-muted-foreground truncate">
                 {installing
-                  ? 'Останавливаем winws.exe, распаковываем архив…'
+                  ? (isMac ? 'Скачиваем и ставим в службу — спросят пароль администратора…' : 'Останавливаем winws.exe, распаковываем архив…')
                   : formatInstalledVersion(updateInfo.installed)}
               </div>
             </div>
@@ -297,6 +310,9 @@ const Zapret: React.FC = () => {
         }
       />
 
+      {isMac ? (
+        <ZapretMacServiceCard disabled={isTestRunning || status.state === 'starting' || status.state === 'stopping'} />
+      ) : (
       <ZapretServiceSettingsCard
         focusFilters={focusFiltersRef.current}
         disabled={isTestRunning || status.state === 'starting' || status.state === 'stopping'}
@@ -312,10 +328,11 @@ const Zapret: React.FC = () => {
         }}
         onManualCheckUpdate={() => runCheckUpdate(true)}
       />
+      )}
 
       <ZapretAutopilotCard />
 
-      <ZapretStrategyBuilderCard onStrategyCreated={refreshStrategies} />
+      {!isMac && <ZapretStrategyBuilderCard onStrategyCreated={refreshStrategies} />}
 
       <Card className="cyber-card">
         <CardHeader

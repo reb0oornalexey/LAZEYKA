@@ -708,7 +708,6 @@ const Settings: React.FC = () => {
                 }
               />
             </div>
-            {!isMac && (
             <div className="flex items-center justify-between">
               <Label className="text-sm">Автозапуск Zapret</Label>
               <Switch
@@ -718,7 +717,6 @@ const Settings: React.FC = () => {
                 }
               />
             </div>
-            )}
             <div className="flex items-center justify-between">
               <div className="flex flex-col">
                 <Label className="text-sm">Проверять обновления LAZEYKA</Label>

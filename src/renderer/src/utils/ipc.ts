@@ -855,6 +855,30 @@ export interface MacServiceNotice {
 export const macServiceGetState = (): Promise<MacServiceInfo> => invoke('macService:getState')
 export const macServiceInstall = (): Promise<MacServiceResult> => invoke('macService:install')
 export const macServiceUninstall = (): Promise<MacServiceResult> => invoke('macService:uninstall')
+
+// ---- macOS: служба Zapret (root-движок utunws) ---------------------------------------
+export type ZapretMacStateId = 'unsupported' | 'not_installed' | 'needs_update' | 'ready'
+export interface ZapretMacServiceInfo {
+  state: ZapretMacStateId
+  installed: boolean
+  installedVersion?: string
+  bundledVersion?: string
+  detail?: string
+}
+export interface ZapretMacServiceResult {
+  ok: boolean
+  cancelled?: boolean
+  message: string
+  info: ZapretMacServiceInfo
+}
+/** Событие из main: нужна служба Zapret или её пора обновить. */
+export interface ZapretMacNotice {
+  reason: 'required' | 'update'
+  message: string
+}
+export const zapretMacGetState = (): Promise<ZapretMacServiceInfo> => invoke('zapretMac:getState')
+export const zapretMacInstall = (): Promise<ZapretMacServiceResult> => invoke('zapretMac:install')
+export const zapretMacUninstall = (): Promise<ZapretMacServiceResult> => invoke('zapretMac:uninstall')
 export const incySetConnectionMode = (mode: 'tun' | 'system_proxy' | 'only_proxy'): Promise<IncyStatus> =>
   invoke('incy:setConnectionMode', mode)
 export const incySetRoutingMode = (mode: 'bypass-ru' | 'global' | 'direct'): Promise<IncyStatus> =>
