@@ -17,11 +17,7 @@ const Appearance = lazy(() => import('@renderer/pages/appearance'))
 const routes = [
   { path: '/', element: <Navigate to="/home" replace /> },
   { path: '/home', element: <Home /> },
-  { path: '/telegram', element: (
-      <MacSoon title="Telegram">
-        <Telegram />
-      </MacSoon>
-    ) },
+  { path: '/telegram', element: <Telegram /> },
   { path: '/zapret', element: (
       <MacSoon title="Zapret">
         <Zapret />

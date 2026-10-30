@@ -25,6 +25,7 @@ import {
 } from '@renderer/utils/ipc'
 import ComponentUpdateDialog from '@renderer/components/component-update-dialog'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
+import { platform } from '@renderer/utils/init'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
@@ -759,8 +760,10 @@ const TelegramPage: React.FC = () => {
               )}
               <p className="text-[11px] text-muted-foreground leading-relaxed">
                 Бесплатный способ Flowseal: свой Worker на Cloudflare (домен вида <span className="font-mono">имя.аккаунт.workers.dev</span>).
-                Несколько доменов — через запятую. Домены Cloudflare (workers.dev, cloudflare.com, cloudflare.dev) LAZEYKA сама
-                добавит в список Zapret, как требует инструкция. Кнопка «Проверить» делает то же рукопожатие, что и
+                Несколько доменов — через запятую.{' '}
+                {platform !== 'darwin' &&
+                  'Домены Cloudflare (workers.dev, cloudflare.com, cloudflare.dev) LAZEYKA сама добавит в список Zapret, как требует инструкция. '}
+                Кнопка «Проверить» делает то же рукопожатие, что и
                 TgWsProxy. Инструкция:{' '}
                 <button
                   type="button"
