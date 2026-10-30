@@ -1,4 +1,4 @@
-import { ChildProcess, spawn, exec } from 'child_process'
+import { ChildProcess, spawn, exec, execFile } from 'child_process'
 import { createConnection, createServer } from 'net'
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import path from 'path'
@@ -137,7 +137,52 @@ function runTaskkill(args: string[]): Promise<void> {
  * убивать по имени: заденем чужой Python). Затем — старый tray-бинарник
  * TgWsProxy_windows.exe, который могла оставить прошлая версия LAZEYKA.
  */
-async function killStaleTgws(): Promise<boolean> {
+/** PID, слушающие TCP-порт (macOS: lsof; других утилит для этого не требуется). */
+function listenersOnPort(port: number): Promise<number[]> {
+  return new Promise((resolve) => {
+    execFile('/usr/sbin/lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { timeout: 5000 }, (err, stdout) => {
+      if (err && !stdout) return resolve([])
+      resolve(
+        String(stdout)
+          .split(/\s+/)
+          .map((x) => parseInt(x, 10))
+          .filter((n) => Number.isInteger(n) && n > 1)
+      )
+    })
+  })
+}
+
+/**
+ * macOS: освободить порт, только если его держит НАШ зависший python (PID из
+ * реестра LAZEYKA, оставшийся после аварийного завершения). Чужие процессы —
+ * в том числе отдельный TgWsProxy пользователя — не трогаем.
+ */
+async function killStaleTgwsMac(port: number): Promise<boolean> {
+  try {
+    const ours = new Set(registeredPids('python3'))
+    const holders = (await listenersOnPort(port)).filter((pid) => ours.has(pid))
+    if (holders.length === 0) return false
+    for (const pid of holders) {
+      try { process.kill(pid, 'SIGTERM') } catch { /* уже нет */ }
+    }
+    await new Promise((r) => setTimeout(r, 1000))
+    for (const pid of holders) {
+      try {
+        process.kill(pid, 0)
+        process.kill(pid, 'SIGKILL')
+      } catch { /* завершился */ }
+      unregisterChild(pid)
+    }
+    log('info', 'зависший экземпляр TgWsProxy завершён')
+    await new Promise((r) => setTimeout(r, 300))
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function killStaleTgws(port: number): Promise<boolean> {
+  if (process.platform === 'darwin') return killStaleTgwsMac(port)
   if (process.platform !== 'win32') return false
   try {
     for (const pid of [...registeredPids('python.exe'), ...registeredPids('TgWsProxy_windows.exe')]) {
@@ -165,7 +210,7 @@ async function ensurePortFree(host: string, port: number): Promise<void> {
     return
   }
   log('warn', `port ${port} is busy, attempting to free it`)
-  await killStaleTgws()
+  await killStaleTgws(port)
   probe = await tryListen(host, port)
   if (probe.free === true) {
     log('info', `port ${port} freed after cleanup`)
@@ -354,6 +399,7 @@ const CLOUDFLARE_ZAPRET_HOSTS = ['workers.dev', 'cloudflare.com', 'cloudflare.de
 
 async function ensureCloudflareInZapret(userDomains: string[]): Promise<void> {
   if (userDomains.length === 0) return
+  if (process.platform === 'darwin') return // на macOS Zapret нет
   try {
     const { addHostsToZapretUserList } = await import('./zapret-iplist')
     const added = addHostsToZapretUserList([...CLOUDFLARE_ZAPRET_HOSTS, ...userDomains])
@@ -448,6 +494,17 @@ function pipeLines(stream: NodeJS.ReadableStream | null | undefined): void {
   stream.on('end', () => {
     if (tail.trim()) emitTgwsLine(tail)
   })
+}
+
+/** Окружение python: на macOS не подмешиваем пользовательский site и чужие PYTHONHOME/PYTHONPATH. */
+function pythonEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8' }
+  if (process.platform === 'darwin') {
+    env.PYTHONNOUSERSITE = '1'
+    delete env.PYTHONHOME
+    delete env.PYTHONPATH
+  }
+  return env
 }
 
 async function startTgwsImpl(): Promise<void> {
@@ -574,7 +631,7 @@ async function startTgwsImpl(): Promise<void> {
     proc = spawn(bin, spawnArgs, {
       windowsHide: true,
       cwd,
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      env: pythonEnv()
     })
     child = proc
     registerChild(proc.pid, bin)
@@ -664,7 +721,8 @@ async function stopTgwsImpl(): Promise<void> {
 
   await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 3000))])
 
-  if (process.platform !== 'win32' && proc.exitCode == null && !proc.killed) {
+  // `proc.killed` становится true уже после отправки SIGTERM — смотрим на фактическое завершение.
+  if (process.platform !== 'win32' && proc.exitCode == null && proc.signalCode == null) {
     try { proc.kill('SIGKILL') } catch { /* noop */ }
   }
 

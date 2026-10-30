@@ -26,6 +26,7 @@ import { corePreferenceFor, computePorts } from './incy-topology'
 import { buildXrayConfig } from './incy-xray'
 import { dataDir, incyBinaryPath, isXrayAvailable, xrayAssetsDir, xrayBinaryPath } from '../utils/dirs'
 import { registerChild, unregisterChild } from '../utils/child-registry'
+import { macPingArgs, parseMacPingRtts, runMacPing } from '../utils/mac-net'
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
@@ -411,6 +412,15 @@ export function icmpRtt(host: string, timeoutMs: number, sourceIp?: string | nul
   return resolve4(host).then(
     (ip) =>
       new Promise((resolve) => {
+        if (ip && process.platform === 'darwin') {
+          const args = macPingArgs({ count: 3, waitMs: Math.min(timeoutMs, 2000), src: sourceIp ?? undefined }, ip)
+          void runMacPing(args, 9000).then((out) => {
+            const v = parseMacPingRtts(out)
+            v.sort((a, b) => a - b)
+            resolve(v.length ? v[Math.floor(v.length / 2)] : null)
+          })
+          return
+        }
         if (!ip || process.platform !== 'win32') return resolve(null)
         const args = ['-n', '3', '-w', String(Math.min(timeoutMs, 2000)), ...(sourceIp ? ['-S', sourceIp] : []), ip]
         execFile('ping.exe', args, { windowsHide: true, timeout: 9000, encoding: 'latin1' }, (_e, stdout) => {

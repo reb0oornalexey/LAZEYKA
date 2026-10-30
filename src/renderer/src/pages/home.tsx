@@ -9,6 +9,7 @@ import { AppVersionButton } from '@renderer/components/changelog-dialog'
 import ZapretIcon from '@renderer/components/zapret-icon'
 import TelegramIcon from '@renderer/components/telegram-icon'
 import LiveTrafficMonitor from '@renderer/components/live-traffic-monitor'
+import { platform } from '@renderer/utils/init'
 import { useTgwsStore } from '@renderer/store/tgws-store'
 import { useZapretStore } from '@renderer/store/zapret-store'
 import { useZapretTestStore } from '@renderer/store/zapret-test-store'
@@ -176,6 +177,8 @@ const UpdateNotice: React.FC<UpdateNoticeProps> = ({ title, subtitle, onDetails,
 )
 
 const Home: React.FC = () => {
+  // macOS: Diagnostics («Почему может не работать?») — только для Windows.
+  const isMac = platform === 'darwin'
   const navigate = useNavigate()
   const tgws = useTgwsStore((s) => s.status)
   const zapret = useZapretStore((s) => s.status)
@@ -275,6 +278,7 @@ const Home: React.FC = () => {
   const incyBusy = pending.incy !== undefined || incy.state === 'connecting'
   const toneOf = (on: boolean, busy: boolean, err: boolean): Tone => (busy ? 'busy' : on ? 'on' : err ? 'error' : 'off')
 
+  const totalServices = 3
   const runningCount = [tgwsOn, zapretOn, incyOn].filter(Boolean).length
   const startedAts = [
     tgwsOn ? tgws.startedAt : undefined,
@@ -376,7 +380,7 @@ const Home: React.FC = () => {
 
   // ---- Шапка статуса ----
   const hero =
-    runningCount === 3
+    runningCount === totalServices
       ? { tone: 'on' as const, title: 'Защита работает', icon: <ShieldCheck className="size-6" /> }
       : runningCount > 0
         ? { tone: 'part' as const, title: 'Работает частично', icon: <ShieldAlert className="size-6" /> }
@@ -384,7 +388,7 @@ const Home: React.FC = () => {
   const onNames = [zapretOn && 'Zapret', tgwsOn && 'Telegram', incyOn && 'VPN'].filter(Boolean) as string[]
   const offNames = [!zapretOn && 'Zapret', !tgwsOn && 'Telegram', !incyOn && 'VPN'].filter(Boolean) as string[]
   const heroText =
-    runningCount === 3
+    runningCount === totalServices
       ? `Zapret, Telegram и VPN включены${since ? ` · ${formatUptime(now - since)} без перерыва` : ''}`
       : runningCount > 0
         ? `Работает: ${onNames.join(', ')} · выключено: ${offNames.join(', ')}`
@@ -468,6 +472,7 @@ const Home: React.FC = () => {
           <div className="min-w-0 flex-1">
             <h2 className="text-xl font-bold leading-tight text-foreground">{hero.title}</h2>
             <p className="mt-1 text-[13px] text-muted-foreground">{heroText}</p>
+            {!isMac && (
             <button
               type="button"
               onClick={() => setDiagOpen(true)}
@@ -476,6 +481,7 @@ const Home: React.FC = () => {
               <Stethoscope className="size-3" />
               Почему может не работать?
             </button>
+            )}
           </div>
           {incyOn && incyNode ? (
             <div className="flex shrink-0 gap-2">
@@ -492,7 +498,7 @@ const Home: React.FC = () => {
                 </div>
               )}
             </div>
-          ) : runningCount < 3 ? (
+          ) : runningCount < totalServices ? (
             <Button onClick={() => void handleStartAll()} disabled={startingAll} className="shrink-0">
               {startingAll ? <Loader2 className="size-4 animate-spin" /> : <Power className="size-4" />}
               Включить всё
@@ -501,7 +507,7 @@ const Home: React.FC = () => {
         </div>
 
         {/* Службы */}
-        <div className="grid grid-cols-1 gap-3.5 md:grid-cols-3">
+        <div className={cn('grid grid-cols-1 gap-3.5', 'md:grid-cols-3')}>
           <ServiceCard
             icon={<ZapretIcon className="size-5" />}
             title="Zapret"

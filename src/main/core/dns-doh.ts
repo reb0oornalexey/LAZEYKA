@@ -7,6 +7,13 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import os from 'node:os'
 import path from 'node:path'
 import { dataDir } from '../utils/dirs'
+import {
+  isMacBackup,
+  readMacDnsState,
+  snapshotMacDns,
+  writeMacDns,
+  type MacDnsBackup
+} from './dns-mac'
 
 const execFileAsync = promisify(execFile)
 
@@ -31,7 +38,12 @@ export interface DohProvider {
   custom?: boolean
   /** Страница сервиса — ссылка «подробнее». */
   site?: string
+  /** Страница с профилем конфигурации macOS для шифрованного DNS (DoH/DoT). */
+  macProfile?: string
 }
+
+/** Репозиторий с подписанными профилями DoH/DoT для macOS и iOS (Cloudflare, Google, Quad9, AdGuard). */
+const MAC_PROFILES_URL = 'https://github.com/paulmillr/encrypted-dns'
 
 export const DOH_PROVIDERS: DohProvider[] = [
   {
@@ -55,7 +67,8 @@ export const DOH_PROVIDERS: DohProvider[] = [
     ip: '1.1.1.1',
     secondaryIp: '1.0.0.1',
     description: 'Самый быстрый и конфиденциальный DNS',
-    latencyMs: null
+    latencyMs: null,
+    macProfile: MAC_PROFILES_URL
   },
   {
     id: 'google',
@@ -64,7 +77,8 @@ export const DOH_PROVIDERS: DohProvider[] = [
     ip: '8.8.8.8',
     secondaryIp: '8.8.4.4',
     description: 'Максимальная стабильность и глобальное покрытие',
-    latencyMs: null
+    latencyMs: null,
+    macProfile: MAC_PROFILES_URL
   },
   {
     id: 'adguard',
@@ -73,7 +87,8 @@ export const DOH_PROVIDERS: DohProvider[] = [
     ip: '94.140.14.14',
     secondaryIp: '94.140.15.15',
     description: 'Блокировка рекламы, трекеров и фишинга на уровне DNS',
-    latencyMs: null
+    latencyMs: null,
+    macProfile: MAC_PROFILES_URL
   },
   {
     id: 'quad9',
@@ -82,7 +97,8 @@ export const DOH_PROVIDERS: DohProvider[] = [
     ip: '9.9.9.9',
     secondaryIp: '149.112.112.112',
     description: 'Безопасность и защита от вредоносных доменов',
-    latencyMs: null
+    latencyMs: null,
+    macProfile: MAC_PROFILES_URL
   },
   {
     id: 'xbox-dns',
@@ -277,7 +293,7 @@ export function removeCustomDnsProvider(id: string): DohProvider[] {
   return loadCustomProviders()
 }
 
-async function allProviders(): Promise<DohProvider[]> {
+export async function allProviders(): Promise<DohProvider[]> {
   const fresh = await refreshDnsAi().catch(() => null)
   const builtins = DOH_PROVIDERS.map((p) =>
     p.id === 'dns-ai' && fresh
@@ -496,6 +512,13 @@ export async function describeSystemDns(): Promise<{ servers: string[]; provider
 
 /** Какие DNS-серверы сейчас стоят на рабочих адаптерах (для подсветки в настройках). */
 export async function getSystemDnsState(): Promise<{ servers: string[]; changedByApp: boolean }> {
+  if (process.platform === 'darwin') {
+    try {
+      return { servers: await readMacDnsState(), changedByApp: existsSync(dnsBackupFile()) }
+    } catch {
+      return { servers: [], changedByApp: existsSync(dnsBackupFile()) }
+    }
+  }
   if (process.platform !== 'win32') return { servers: [], changedByApp: false }
   try {
     const r = await runDnsScript('read', {})
@@ -506,7 +529,108 @@ export async function getSystemDnsState(): Promise<{ servers: string[]; changedB
   }
 }
 
+/**
+ * macOS: пока поднят TUN, DNS ведут хуки службы lxd (post_start/post_stop
+ * снимают снимок и возвращают его) — не мешаем им.
+ */
+async function macTunActive(): Promise<boolean> {
+  try {
+    const { isDaemonCoreActive } = await import('./incy-mac-service')
+    if (isDaemonCoreActive()) return true
+    const { getLiveConnectionMode } = await import('./incy-engine')
+    return getLiveConnectionMode() === 'tun'
+  } catch {
+    return false
+  }
+}
+
+async function applySystemDnsMac(target: string | 'dhcp'): Promise<{ success: boolean; message: string }> {
+  if (await macTunActive()) {
+    return {
+      success: false,
+      message: 'Пока подключён режим TUN, DNS ведёт служба LAZEYKA. Отключите INCY и повторите.'
+    }
+  }
+  const file = dnsBackupFile()
+
+  if (target === 'dhcp') {
+    let backup: MacDnsBackup | null = null
+    try {
+      const raw = existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')) : null
+      backup = isMacBackup(raw) ? raw : null
+    } catch {
+      backup = null
+    }
+    const enabled = await snapshotMacDns().then((b) => Object.keys(b.services))
+    if (enabled.length === 0) return { success: false, message: 'Не найдена ни одна включённая сетевая служба' }
+    // Возвращаем только то, что меняли мы; без копии — сброс на DHCP у всех.
+    const changes: Record<string, string[]> = {}
+    for (const svc of backup ? Object.keys(backup.services) : enabled) {
+      if (enabled.includes(svc)) changes[svc] = backup?.services[svc] ?? []
+    }
+    const res = await writeMacDns(changes)
+    if (!res.ok) return { success: false, message: res.message }
+    try { unlinkSync(file) } catch { /* noop */ }
+    const hadStatic = Object.values(changes).some((v) => v.length > 0)
+    return {
+      success: true,
+      message: hadStatic ? 'Возвращён DNS, который стоял до LAZEYKA' : 'DNS сброшен на стандартный от провайдера (DHCP)'
+    }
+  }
+
+  const provider = (await allProviders()).find((p) => p.id === target || p.ip === target)
+  if (!provider) return { success: false, message: 'Неизвестный DNS-сервер' }
+  // macOS: шифрованный DNS ставится только профилем — открываем его сразу, как
+  // на Windows «Включить» сразу включает DoH. Провайдеры «только DoH» (DNS-AI)
+  // на обычный DNS не отвечают: их адреса в систему НЕ пишем, иначе пропал бы
+  // весь интернет (и «ИИ-серверы не подключаются»).
+  if (provider.url) {
+    const { openMacDohProfile } = await import('./dns-mac-profile')
+    const prof = await openMacDohProfile(provider)
+    if (provider.strict) return prof
+    if (!prof.success) return prof
+  }
+  const servers = [
+    ...[provider.ip, provider.secondaryIp].filter((a): a is string => Boolean(a) && net.isIPv4(String(a))),
+    ...(provider.ipv6 ?? []).filter((a) => net.isIPv6(a))
+  ]
+  if (servers.length === 0) return { success: false, message: 'У сервера нет адресов DNS' }
+
+  const before = await snapshotMacDns()
+  const services = Object.keys(before.services)
+  if (services.length === 0) return { success: false, message: 'Не найдена ни одна включённая сетевая служба' }
+  // Прежние значения запоминаем один раз — до первой смены из LAZEYKA.
+  const createdBackup = !existsSync(file)
+  if (createdBackup) {
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify(before), 'utf-8')
+  }
+  const res = await writeMacDns(Object.fromEntries(services.map((s) => [s, servers])))
+  if (!res.ok) {
+    // Ничего не поменялось — копия не нужна, иначе «изменено LAZEYKA» осталось бы навсегда.
+    if (createdBackup) try { unlinkSync(file) } catch { /* noop */ }
+    return { success: false, message: res.message }
+  }
+  if (provider.url) {
+    return {
+      success: true,
+      message:
+        `Пока профиль не установлен, работает обычный DNS ${provider.name} (${servers.join(', ')}). ` +
+        'Для шифрования: «Системные настройки» → «Основные» → «Управление устройством» → профиль LAZEYKA → «Установить», ' +
+        'затем «Сеть» → «VPN и фильтры» → «Включено».'
+    }
+  }
+  return { success: true, message: `Системный DNS: ${provider.name} (${servers.join(', ')}) — без шифрования` }
+}
+
 export async function applySystemDns(target: string | 'dhcp'): Promise<{ success: boolean; message: string }> {
+  if (process.platform === 'darwin') {
+    try {
+      return await applySystemDnsMac(target)
+    } catch (e: any) {
+      throw new Error(`Не удалось изменить DNS: ${e?.message || String(e)}`)
+    }
+  }
   if (process.platform !== 'win32') {
     return { success: false, message: 'Смена DNS поддерживается только на Windows' }
   }

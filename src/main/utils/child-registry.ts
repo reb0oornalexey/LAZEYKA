@@ -74,6 +74,16 @@ export function unregisterChild(pid: number | undefined): void {
 
 /** Жив ли процесс с этим PID и тем ли он образом, что мы запускали. */
 function isOurProcess(entry: ChildEntry): boolean {
+  if (process.platform === 'darwin') {
+    // macOS: сверяем имя образа через `ps`, чтобы не убить чужой процесс с переиспользованным PID.
+    try {
+      const r = spawnSync('/bin/ps', ['-p', String(entry.pid), '-o', 'comm='], { timeout: 3000, encoding: 'utf8' })
+      const comm = String(r.stdout ?? '').trim()
+      return !!comm && path.posix.basename(comm).toLowerCase() === entry.image.toLowerCase()
+    } catch {
+      return false
+    }
+  }
   if (process.platform !== 'win32') return false
   try {
     const r = spawnSync('tasklist.exe', ['/FI', `PID eq ${entry.pid}`, '/FO', 'CSV', '/NH'], {
@@ -99,7 +109,11 @@ export function killRegisteredChildrenSync(): number {
   for (const e of list) {
     if (!isOurProcess(e)) continue
     try {
-      spawnSync('taskkill.exe', ['/F', '/T', '/PID', String(e.pid)], { windowsHide: true, timeout: 3000 })
+      if (process.platform === 'darwin') {
+        process.kill(e.pid, 'SIGKILL')
+      } else {
+        spawnSync('taskkill.exe', ['/F', '/T', '/PID', String(e.pid)], { windowsHide: true, timeout: 3000 })
+      }
       killed++
     } catch {
       /* noop */

@@ -10,6 +10,7 @@ import { domainToASCII } from 'node:url'
 import { ChildProcess, spawn } from 'node:child_process'
 import { BrowserWindow } from 'electron'
 import {
+  binName,
   dataDir,
   incyBinaryPath,
   incyRuntimeDir,
@@ -33,12 +34,21 @@ import {
 } from './incy-stats'
 import { getHwidHeaders } from './incy-hwid'
 import { showSystemNotification } from '../utils/notifications'
+import { isMacTelegramEntry, macEntriesRegex, normalizeMacPerAppList } from '../utils/mac-apps'
 import { getAllBypassDomains } from './split-tunneling'
-import { setWindowsSystemProxy, clearWindowsSystemProxy } from '../utils/system-proxy'
+import { setSystemProxy, clearSystemProxy } from '../utils/system-proxy'
 import { logToFile } from '../utils/file-logger'
 import { registerChild, unregisterChild } from '../utils/child-registry'
 import { getAppConfig } from '../config'
 import { httpViaCore, physicalSourceIp, tcpRtt, icmpRtt } from './core-probe'
+import {
+  MacServiceRequiredError,
+  applyCoreViaDaemon,
+  ensureMacServiceReady,
+  stopCoreViaDaemon,
+  watchDaemonCore,
+  type DaemonCoreHandle
+} from './incy-mac-service'
 import { extractAwgFields, validateAwgFields, coerceIntOrRange, looksLikeWireGuardConf, parseWireGuardConf } from './incy-awg'
 
 export interface IncyNode {
@@ -481,6 +491,12 @@ export interface IncyStatus {
 }
 
 let child: ChildProcess | null = null
+/** macOS TUN: ядро живёт в root-службе lxd, а не в нашем дочернем процессе. */
+let daemonCore: DaemonCoreHandle | null = null
+/** macOS: Kill Switch держит блокирующий конфиг в той же службе. */
+let blockerViaDaemon = false
+/** Остановка ядра в службе после гибели Xray: Kill Switch ждёт её, чтобы не получить stop поверх своей блокировки. */
+let daemonStopPending: Promise<unknown> = Promise.resolve()
 let currentStatus: IncyStatus = {
   state: 'stopped',
   activeNodeId: null,
@@ -901,6 +917,14 @@ function tunnelOutdated(): boolean {
 // ---- ExitLag на горячо подменяемых rule-set --------------------------------
 
 function exitLagRuleSetPath(kind: 'vpn' | 'direct'): string {
+  if (process.platform === 'darwin') {
+    // macOS: ядро (в службе lxd) следит за ПАПКОЙ файла rule-set; в корне папки
+    // данных лежат служебные ссылки Electron (SingletonCookie…), на которых
+    // fswatch падал. Поэтому на Mac файлы ExitLag — в своей подпапке.
+    const dir = path.join(dataDir(), 'rulesets')
+    try { mkdirSync(dir, { recursive: true }) } catch { /* создастся при записи */ }
+    return path.join(dir, `exitlag-${kind}.json`)
+  }
   return path.join(dataDir(), `exitlag-${kind}.json`)
 }
 
@@ -924,7 +948,7 @@ function buildExitLagRuleSets(s: IncySettings): {
   const whitelist = Boolean(s.perAppProxy) && s.perAppMode !== 'bypass_only'
   const regexes: string[] = []
   if (list.length > 0) regexes.push(perAppPathRegex(list))
-  if (list.some((n) => TELEGRAM_CLIENTS.has(n.toLowerCase()))) {
+  if (list.some((n) => isTelegramApp(n))) {
     for (const p of [tgwsCliPaths()?.python, tgwsBinaryPath()].filter((x): x is string => Boolean(x))) {
       regexes.push(exactPathRegex(p))
     }
@@ -2415,6 +2439,8 @@ export function setIncyConnectionMode(mode: 'tun' | 'system_proxy' | 'only_proxy
   s.connectionMode = mode
   saveIncySettings(s)
   const updated = broadcastStatus({ connectionMode: mode })
+  // macOS: выбрали TUN — сразу сообщаем, если для него нет службы (окно с «Установить службу»).
+  if (process.platform === 'darwin' && mode === 'tun') void ensureMacServiceReady().catch(() => void 0)
   if (currentStatus.state === 'running' && currentStatus.activeNodeId) {
     // Same as setIncyRoutingMode: a silently swallowed reconnect failure looks
     // like the switch did nothing at all.
@@ -2714,6 +2740,8 @@ export function toDomainSuffixes(list: string[]): string[] {
  * Принимает и полный путь, и имя без расширения.
  */
 export function normalizePerAppList(list?: string[]): string[] {
+  // macOS: запись — путь (бандл .app, каталог, файл) или имя процесса без .exe.
+  if (process.platform === 'darwin') return normalizeMacPerAppList(list)
   const seen = new Set<string>()
   const out: string[] = []
   for (const p of list ?? []) {
@@ -2743,12 +2771,17 @@ const TELEGRAM_CLIENTS: ReadonlySet<string> = new Set([
   'materialgram.exe'
 ])
 
+function isTelegramApp(n: string): boolean {
+  return process.platform === 'darwin' ? isMacTelegramEntry(n) : TELEGRAM_CLIENTS.has(n.toLowerCase())
+}
+
 /** Регулярное выражение на точный путь процесса, без учёта регистра. */
 export function exactPathRegex(fullPath: string): string {
   return `(?i)^${fullPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
 }
 
 export function perAppPathRegex(names: string[]): string {
+  if (process.platform === 'darwin') return macEntriesRegex(names)
   const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   return `(?i)(?:^|[\\\\/])(?:${escaped.join('|')})$`
 }
@@ -3230,14 +3263,16 @@ async function stopRunningChild(): Promise<void> {
   // since the last tick, so the last few seconds of traffic are not lost when
   // the process goes away and the Clash API stops answering.
   endStatsSession()
-  if (!child && !xrayChild) return
+  if (!child && !xrayChild && !daemonCore) return
   const singbox = child
   const xray = xrayChild
+  const viaDaemon = daemonCore
   child = null
   xrayChild = null
+  daemonCore = null
   // Invalidate the handlers bound to the processes before they actually die.
   childGeneration++
-  await Promise.all([killProcessTree(singbox), killProcessTree(xray)])
+  await Promise.all([killProcessTree(singbox), killProcessTree(xray), viaDaemon?.stop()])
   // Короткая пауза, чтобы Windows освободила адаптер и сокеты.
   await new Promise((r) => setTimeout(r, 150))
 }
@@ -3331,6 +3366,19 @@ async function startKillSwitchBlocker(): Promise<boolean> {
   }
   const ksFile = path.join(dataDir(), 'sing-box-killswitch.json')
   writeFileSync(ksFile, JSON.stringify(cfg, null, 2), 'utf-8')
+  // macOS, TUN: блокирующий конфиг применяем в той же службе поверх упавшего
+  // (своим дочерним ядром TUN не создать — нет root).
+  if (process.platform === 'darwin' && lastSession?.mode === 'tun') {
+    try {
+      await daemonStopPending
+      await applyCoreViaDaemon(JSON.stringify(cfg), (l) => appendLog(l))
+      blockerViaDaemon = true
+      return true
+    } catch (e) {
+      appendLog(`ВНИМАНИЕ: Kill Switch не смог закрыть трафик (${e instanceof Error ? e.message : String(e)}).`)
+      return false
+    }
+  }
   const bin = incyBinaryPath()
   if (!existsSync(bin)) return false
   const cp = spawn(bin, ['run', '-c', ksFile], { windowsHide: true, cwd: path.dirname(bin), stdio: 'ignore' })
@@ -3351,6 +3399,11 @@ async function startKillSwitchBlocker(): Promise<boolean> {
 }
 
 async function stopKillSwitchBlocker(): Promise<void> {
+  if (blockerViaDaemon) {
+    blockerViaDaemon = false
+    await stopCoreViaDaemon()
+    return
+  }
   const b = blockerChild
   if (!b) return
   blockerChild = null
@@ -3423,17 +3476,21 @@ function onCoreDied(reason: string): void {
   const wasRunning = currentStatus.state === 'running'
   const droppedNode = wasRunning ? currentStatus.activeNodeId : null
   const others = [child, xrayChild].filter((p): p is ChildProcess => Boolean(p))
+  const viaDaemon = daemonCore
   child = null
   xrayChild = null
+  daemonCore = null
   childGeneration++
   for (const p of others) void killProcessTree(p)
+  // Xray умер, а ядро в службе живо — гасим, иначе TUN останется без выхода.
+  if (viaDaemon) daemonStopPending = viaDaemon.stop().catch(() => void 0)
   endStatsSession()
   const s = loadIncySettings()
   // При Kill Switch системный прокси не снимаем: блокировка встанет на тот же
   // порт, и браузер не пойдёт в интернет мимо VPN.
   const keepProxy = Boolean(droppedNode) && s.killSwitch && lastSession?.mode === 'system_proxy'
   broadcastStatus({ state: 'stopped', activeNodeId: null })
-  if (!keepProxy) clearWindowsSystemProxy().catch(() => void 0)
+  if (!keepProxy) clearSystemProxy().catch(() => void 0)
   if (droppedNode) handleTunnelDrop(droppedNode, reason)
 }
 
@@ -3488,7 +3545,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
   try {
     // Ручное (или повторное) подключение отменяет ожидание переподключения и
     // снимает блокировку Kill Switch — новое ядро займёт её место.
-    if (recovery || blockerChild) {
+    if (recovery || blockerChild || blockerViaDaemon) {
       cancelRecovery()
       await stopKillSwitchBlocker()
       broadcastStatus({ killSwitchActive: false, recovering: false })
@@ -3647,6 +3704,19 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       )
     }
 
+    // macOS, TUN: интерфейс utun создаёт только root, поэтому ядро поднимает
+    // служба lxd. Без установленной и сопряжённой службы дальше идти незачем.
+    if (process.platform === 'darwin' && mode === 'tun') {
+      try {
+        await ensureMacServiceReady()
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        appendLog(message)
+        broadcastStatus({ state: 'error', activeNodeId: null, lastError: message })
+        throw e
+      }
+    }
+
     const resolvedServerIps: string[] = []
     const resolveHost = async (host: string): Promise<void> => {
       if (!host) return
@@ -3694,15 +3764,22 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       const tunInbound: any = {
         type: 'tun',
         tag: 'tun-in',
-        interface_name: 'tun0',
+        // macOS: имя utunN выбирает система; tun0 там не бывает.
+        ...(process.platform === 'darwin' ? {} : { interface_name: 'tun0' }),
         // sing-box 1.11 merged inet4_address/inet6_address into a single
         // `address` list and made the old fields a FATAL error unless
         // ENABLE_DEPRECATED_TUN_ADDRESS_X is set. Using the merged form keeps
         // the tunnel working on 1.11+ without relying on a compatibility flag
         // that disappears in 1.12.
-        address: ['172.19.0.1/30'],
+        // macOS: strict_route там не действует, и при одном IPv4-адресе весь
+        // IPv6 шёл бы мимо туннеля напрямую через провайдера — YouTube и другие
+        // сайты с IPv6 не открывались. Поэтому на Mac TUN забирает и ::/0,
+        // а ниже IPv6 отклоняется (браузер сразу уходит на IPv4 через VPN) —
+        // как на Windows, где утечку закрывает strict_route.
+        address: process.platform === 'darwin' ? ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'] : ['172.19.0.1/30'],
         auto_route: true,
-        strict_route: true,
+        // strict_route на macOS не действует (только Linux и Windows).
+        ...(process.platform === 'darwin' ? {} : { strict_route: true }),
         // Стек и MTU — из настроек (по умолчанию mixed и MTU sing-box):
         // некоторым играм и сетям нужен system или gvisor, а за PPPoE —
         // MTU поменьше.
@@ -3962,7 +4039,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // Без него «Telegram через VPN» ничего бы не менял — добавляем его путь.
     const perAppRegexes: string[] = []
     if (perAppList.length > 0) perAppRegexes.push(perAppPathRegex(perAppList))
-    if (perAppList.some((n) => TELEGRAM_CLIENTS.has(n.toLowerCase()))) {
+    if (perAppList.some((n) => isTelegramApp(n))) {
       const tgwsPaths = [tgwsCliPaths()?.python, tgwsBinaryPath()].filter((p): p is string => Boolean(p))
       for (const p of tgwsPaths) perAppRegexes.push(exactPathRegex(p))
     }
@@ -4080,12 +4157,23 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // иначе ушли бы в текущий туннель и мерили бы не то.
     // sing-box.exe — временные ядра замеров для узлов sing-box (Hysteria2,
     // WireGuard…); собственные соединения основного ядра в TUN не попадают.
-    config.route.rules.push({ process_name: ['xray.exe', 'sing-box.exe'], outbound: 'direct' })
+    // macOS: системный DNS указывает на адрес TUN (хук службы), поэтому запросы
+    // на порт 53 нужно перехватить ДО правила «xray напрямую» — иначе DNS самого
+    // Xray ушёл бы «напрямую» на локальный адрес TUN, где никто не слушает.
+    if (process.platform === 'darwin' && mode === 'tun') {
+      config.route.rules.push({ port: [53], action: 'hijack-dns' })
+    }
+    config.route.rules.push({ process_name: [binName('xray'), binName('sing-box')], outbound: 'direct' })
     if (resolvedServerIps.length > 0) {
       config.route.rules.push({
         ip_cidr: resolvedServerIps.map((ip) => `${ip}/${net.isIPv6(ip) ? 128 : 32}`),
         outbound: 'direct'
       })
+    }
+    // macOS + TUN: IPv6 захвачен туннелем (см. tun-in) — отклоняем его после
+    // правил «ядра и сервер узла напрямую», чтобы не было утечки мимо VPN.
+    if (process.platform === 'darwin' && mode === 'tun') {
+      config.route.rules.push({ ip_version: 6, action: 'reject' })
     }
     if (nodeDomains.length > 0) {
       config.route.rules.push({ domain: nodeDomains, outbound: 'direct' })
@@ -4381,10 +4469,10 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // (if that mode is selected) and finish here.
     if (!topology.needsSingBox) {
       if (mode === 'system_proxy') {
-        await setWindowsSystemProxy(topology.ports.front, bypassDomains)
+        await setSystemProxy(topology.ports.front, bypassDomains)
         appendLog(`Режим «Системный прокси»: порт 127.0.0.1:${topology.ports.front}`)
       } else {
-        await clearWindowsSystemProxy()
+        await clearSystemProxy()
         appendLog(`Режим «Только прокси»: порт 127.0.0.1:${topology.ports.front}`)
       }
 
@@ -4570,6 +4658,60 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       throw new Error(message)
     }
 
+    // 2-macOS. TUN: конфиг (уже проверенный `check` выше) уходит в службу lxd —
+    // она сама поднимет ядро от root и вызовет хук DNS. Остальной путь тот же,
+    // что и после запуска дочернего процесса ниже. Xray-мост при этом по-прежнему
+    // наш дочерний процесс от пользователя (loopback-порт, root не нужен).
+    if (process.platform === 'darwin' && mode === 'tun') {
+      try {
+        await applyCoreViaDaemon(readFileSync(cfgFile, 'utf-8'), (l) => appendLog(l))
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        appendLog(message)
+        broadcastStatus({ state: 'error', activeNodeId: null, lastError: message })
+        // Служба пропала/не узнаёт приложение — окно с «Установить службу».
+        if (e instanceof MacServiceRequiredError) await ensureMacServiceReady().catch(() => void 0)
+        // Xray-мост без ядра в службе не нужен.
+        await stopRunningChild()
+        throw e
+      }
+      if (generation !== childGeneration) {
+        // Пока шёл apply, подключение отменили или заменили другим.
+        void stopCoreViaDaemon()
+        return getIncyStatus()
+      }
+      daemonCore = watchDaemonCore(
+        (reason) => {
+          if (generation !== childGeneration) return
+          appendLog(`Ядро в службе остановилось: ${reason}`)
+          // Ядро уже не работает — останавливать в службе нечего.
+          daemonCore = null
+          onCoreDied(reason)
+        },
+        (line) => appendLog(line)
+      )
+      await clearSystemProxy()
+      appendLog('Режим «Туннелирование (TUN)»: виртуальный интерфейс создан службой LAZEYKA')
+      beginStatsSession(statsClashPort)
+      exitLagLogTagging = isExitLagWhitelist
+      sessionHotExitLag = hotExitLag
+      sessionMode = mode
+      sessionTunnelSig = tunnelSig(settings, hotExitLag)
+      lastSession = { nodeId: target.id, mode, singBox: true }
+      const daemonStatus = broadcastStatus({
+        state: 'running',
+        activeNodeId: target.id,
+        selectedNodeId: target.id,
+        connectedAt: Date.now(),
+        exitLagActive: isExitLagWhitelist,
+        exitLagApps: isExitLagWhitelist ? perAppList : []
+      })
+      appendLog(`Успешно подключено к ${target.name}`)
+      showSystemNotification('INCY Proxy подключен', `Активен узел: ${target.name} (${target.protocol.toUpperCase()})`)
+      if (tunnelOutdated()) scheduleTunnelReapply()
+      return daemonStatus
+    }
+
     // 2. Spawn sing-box.exe (generation was claimed before Xray started)
     const spawned = spawn(bin, ['run', '-c', cfgFile], { windowsHide: true })
     registerChild(spawned.pid, bin)
@@ -4589,7 +4731,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       if (generation !== childGeneration) return
       appendLog(`Ошибка процесса: ${err.message}`)
       broadcastStatus({ state: 'error', activeNodeId: null, lastError: err.message })
-      clearWindowsSystemProxy().catch(() => void 0)
+      clearSystemProxy().catch(() => void 0)
       child = null
     })
 
@@ -4622,16 +4764,16 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         'sing-box завершился сразу после запуска. Проверьте параметры узла и вкладку «Логи».' +
         (detail ? ` Последние строки: ${detail}` : '')
       broadcastStatus({ state: 'error', activeNodeId: null, lastError: message })
-      await clearWindowsSystemProxy().catch(() => void 0)
+      await clearSystemProxy().catch(() => void 0)
       throw new Error(message)
     }
 
     // 3. Set Windows System Proxy ONLY if 'system_proxy' mode is active
     if (mode === 'system_proxy') {
-      await setWindowsSystemProxy(settings.mixedPort || 20808, bypassDomains)
+      await setSystemProxy(settings.mixedPort || 20808, bypassDomains)
       appendLog(`Режим «Системный прокси»: порт 127.0.0.1:${settings.mixedPort || 20808}`)
     } else {
-      await clearWindowsSystemProxy()
+      await clearSystemProxy()
       if (mode === 'tun') {
         appendLog(`Режим «Туннелирование (TUN)»: включен виртуальный сетевой адаптер`)
       } else {
@@ -4680,7 +4822,7 @@ export async function disconnectIncy(): Promise<IncyStatus> {
   await stopKillSwitchBlocker()
   lastSession = null
   await stopRunningChild()
-  await clearWindowsSystemProxy()
+  await clearSystemProxy()
   appendLog('Туннель отключен пользователем')
 
   const status = broadcastStatus({

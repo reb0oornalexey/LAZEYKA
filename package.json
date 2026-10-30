@@ -16,6 +16,7 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "checksum": "node scripts/checksum.mjs",
+    "fetch:mac": "node scripts/fetch-mac-binaries.mjs",
     "icons:rebuild": "node scripts/build-icons.mjs",
     "dev": "electron-vite dev",
     "postinstall": "electron-builder install-app-deps",

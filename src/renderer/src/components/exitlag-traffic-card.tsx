@@ -12,6 +12,7 @@ import {
   type ExitLagCheckResult
 } from '@renderer/utils/ipc'
 import { cn } from '@renderer/lib/utils'
+import { appLabel, listHasProc } from '@renderer/utils/per-app'
 
 interface Props {
   /** Приложения из списка ExitLag. */
@@ -48,7 +49,7 @@ function routeClass(route: string): string {
   return 'text-st-warn-text'
 }
 
-const OWN = new Set(['xray.exe', 'sing-box.exe', 'python.exe', 'tgwsproxy_windows.exe'])
+const OWN = new Set(['xray.exe', 'sing-box.exe', 'python.exe', 'tgwsproxy_windows.exe', 'xray', 'sing-box', 'sing-box-lx', 'sing-box-lxd'])
 
 /** Опрос только пока карточка на экране и окно видимо. */
 function usePolling(enabled: boolean, ms: number, fn: () => Promise<void>): void {
@@ -84,8 +85,6 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
   /** Прошлые счётчики соединений — для скорости. */
   const prev = useRef<Map<string, { up: number; down: number; at: number }>>(new Map())
   const [speeds, setSpeeds] = useState<Map<string, { d: number; u: number }>>(new Map())
-
-  const listed = useMemo(() => new Set(apps.map((a) => a.toLowerCase())), [apps])
 
   useEffect(() => {
     if (!active) {
@@ -128,12 +127,12 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
   const leaks = useMemo(
     () =>
       mode === 'proxy_only' && traffic
-        ? traffic.filter((a) => a.open > 0 && a.route === 'VPN' && !listed.has(a.name.toLowerCase()) && !OWN.has(a.name.toLowerCase()))
+        ? traffic.filter((a) => a.open > 0 && a.route === 'VPN' && !listHasProc(apps, a.name, a.rule) && !OWN.has(a.name.toLowerCase()))
         : [],
-    [traffic, listed, mode]
+    [traffic, apps, mode]
   )
 
-  type Row = { name: string; t: AppTraffic | null; inList: boolean }
+  type Row = { name: string; rule?: string; t: AppTraffic | null; inList: boolean }
   const rows: Row[] = useMemo(() => {
     const seen = new Set<string>()
     const out: Row[] = []
@@ -141,11 +140,14 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
       const k = t.name.toLowerCase()
       if (OWN.has(k)) continue
       seen.add(k)
-      out.push({ name: t.name, t, inList: listed.has(k) })
+      out.push({ name: t.name, rule: t.rule, t, inList: listHasProc(apps, t.name, t.rule) })
     }
-    for (const a of apps) if (!seen.has(a.toLowerCase())) out.push({ name: a, t: null, inList: true })
+    for (const a of apps) {
+      const label = appLabel(a)
+      if (!seen.has(label.toLowerCase())) out.push({ name: label, rule: a, t: null, inList: true })
+    }
     return out
-  }, [traffic, apps, listed])
+  }, [traffic, apps])
 
   const act = async (name: string, fn: () => Promise<void>): Promise<void> => {
     setBusyName(name)
@@ -185,10 +187,10 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
   const filteredConns = useMemo(() => {
     const q = query.trim().toLowerCase()
     return (conns ?? [])
-      .filter((c) => !onlyListed || listed.has(c.process.toLowerCase()))
+      .filter((c) => !onlyListed || listHasProc(apps, c.process, c.appRule))
       .filter((c) => !q || c.process.toLowerCase().includes(q) || c.host.toLowerCase().includes(q))
       .sort((a, b) => b.start - a.start)
-  }, [conns, query, onlyListed, listed])
+  }, [conns, query, onlyListed, apps])
 
   const totals = useMemo(
     () => filteredConns.reduce((s, c) => ({ d: s.d + c.download, u: s.u + c.upload }), { d: 0, u: 0 }),
@@ -281,7 +283,7 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
                             <button
                               type="button"
                               disabled={busyName === r.name || vpnDisabled}
-                              onClick={() => void act(r.name, () => (viaVpnIsAdd ? onAddApp(r.name) : onRemoveApp(r.name)))}
+                              onClick={() => void act(r.name, () => (viaVpnIsAdd ? onAddApp(r.rule ?? r.name) : onRemoveApp(r.rule ?? r.name)))}
                               className="rounded-lg border border-primary/40 px-2 py-1 text-[11px] font-semibold text-primary hover:bg-primary/10 disabled:opacity-40 cursor-pointer"
                             >
                               Пустить через VPN
@@ -292,7 +294,7 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
                           <button
                             type="button"
                             disabled={busyName === r.name || !r.inList}
-                            onClick={() => void act(r.name, () => onRemoveApp(r.name))}
+                            onClick={() => void act(r.name, () => onRemoveApp(r.rule ?? r.name))}
                             className="rounded-lg border border-border/60 px-2 py-1 text-[11px] font-semibold hover:border-destructive/50 hover:text-destructive disabled:opacity-40 cursor-pointer"
                           >
                             Убрать из ExitLag
@@ -301,7 +303,7 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
                           <button
                             type="button"
                             disabled={busyName === r.name || r.inList}
-                            onClick={() => void act(r.name, () => onAddApp(r.name))}
+                            onClick={() => void act(r.name, () => onAddApp(r.rule ?? r.name))}
                             className="rounded-lg border border-border/60 px-2 py-1 text-[11px] font-semibold hover:border-primary/50 disabled:opacity-40 cursor-pointer"
                           >
                             Пустить напрямую

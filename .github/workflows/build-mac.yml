@@ -1,0 +1,104 @@
+name: build-mac
+
+# Сборка macOS (.dmg) для Apple Silicon и Intel.
+# Релиз создаётся вручную с Windows (`gh release create`, см. RELEASING.md); как
+# только он опубликован, эта сборка докладывает в него LAZEYKA_arm64.dmg / LAZEYKA_x64.dmg.
+# Вручную (Actions → build-mac → Run workflow) — только сборка, без загрузки в релиз.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            os: macos-15
+          - arch: x64
+            os: macos-15-intel
+    steps:
+      - uses: actions/checkout@v7
+
+      # Версия pnpm берётся из поля packageManager в package.json.
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # postinstall (`electron-builder install-app-deps`) на macOS-раннере отрабатывает штатно.
+      - name: Установка зависимостей
+        run: pnpm install --frozen-lockfile
+
+      - name: Ядра INCY для macOS (sing-box, xray)
+        run: node scripts/fetch-mac-binaries.mjs ${{ matrix.arch }}
+
+      - name: Сборка исходников
+        run: pnpm exec electron-vite build
+
+      - name: Упаковка (.dmg + .zip, подпись ad-hoc)
+        # Тестовые сборки (не релиз) — с номером сборки в имени файла, чтобы тестер
+        # не открыл по ошибке старый .dmg из «Загрузок». В релиз уходит обычное имя
+        # LAZEYKA_<arch>.dmg — по нему приложение находит обновление.
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            pnpm exec electron-builder --mac --${{ matrix.arch }} --publish never
+          else
+            pnpm exec electron-builder --mac --${{ matrix.arch }} --publish never \
+              -c.mac.artifactName='${productName}_${arch}-build${{ github.run_number }}.${ext}'
+          fi
+
+      - name: Проверка архитектуры и подписи
+        run: |
+          set -x
+          APP=$(find dist -maxdepth 2 -name 'LAZEYKA.app' -type d | head -n 1)
+          test -n "$APP" || { echo "LAZEYKA.app не найден в dist"; exit 1; }
+          file "$APP/Contents/MacOS/LAZEYKA"
+          file "$APP/Contents/MacOS/LAZEYKA" | grep -q "${{ matrix.arch == 'arm64' && 'arm64' || 'x86_64' }}"
+          file "$APP/Contents/Resources/incy/sing-box" "$APP/Contents/Resources/incy/xray"
+          ls -la dist/*.dmg dist/*.zip
+
+      # Ad-hoc подпись проверяется «как получится»: без сертификата Apple
+      # --strict может ругаться, но запуск это не блокирует.
+      - name: codesign --verify
+        continue-on-error: true
+        run: |
+          APP=$(find dist -maxdepth 2 -name 'LAZEYKA.app' -type d | head -n 1)
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dv "$APP" 2>&1 | head -n 12
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LAZEYKA-mac-${{ matrix.arch }}-build${{ github.run_number }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+
+      # Релиз владелец создаёт вручную с Windows, и он может появиться позже
+      # окончания этой сборки — ждём до ~10 минут, потом падаем с понятной ошибкой.
+      - name: Загрузка .dmg в релиз
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for i in $(seq 1 20); do
+            if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+              gh release upload "${{ github.ref_name }}" "dist/LAZEYKA_${{ matrix.arch }}.dmg" --clobber
+              exit 0
+            fi
+            echo "Релиз ${{ github.ref_name }} ещё не создан, попытка $i из 20, ждём 30 с…"
+            sleep 30
+          done
+          echo "::error::Релиз ${{ github.ref_name }} так и не появился. Создайте его на GitHub и перезапустите этот job."
+          exit 1

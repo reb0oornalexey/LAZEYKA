@@ -33,6 +33,7 @@ import {
   appendLog,
   type IncyNode
 } from './incy-engine'
+import { macPingArgs, parseMacPingRtts, runMacPing } from '../utils/mac-net'
 import { startTempCore, withCoreSlot, physicalSourceIp, tcpRtt, icmpRtt, sleep, type TempCore } from './core-probe'
 import {
   parseGameServerAddress,
@@ -260,6 +261,13 @@ async function directA2s(ip: string, port: number, sourceIp?: string): Promise<(
 
 /** ICMP-серия (ping.exe -n N). Разбор по «число перед TTL=» — работает в любой локали. */
 function icmpSeries(ip: string, count = 10, sourceIp?: string): Promise<(number | null)[]> {
+  if (process.platform === 'darwin') {
+    return runMacPing(macPingArgs({ count, waitMs: 1000, src: sourceIp }, ip), count * 1500 + 3000).then((out) => {
+      const res: (number | null)[] = parseMacPingRtts(out)
+      while (res.length < count) res.push(null)
+      return res
+    })
+  }
   return new Promise((resolve) => {
     if (process.platform !== 'win32') return resolve([null])
     execFile(

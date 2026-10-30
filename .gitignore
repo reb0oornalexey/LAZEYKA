@@ -24,3 +24,6 @@ latest.yml
 
 # Тексты релизов живут в GitHub Releases, в репозиторий не кладём
 release-notes-v*.md
+
+# macOS: ╤П╨┤╤А╨░ INCY, ╨║╨╗╨░╨┤╤Г╤В╤Б╤П ╨▓ CI ╤Б╨║╤А╨╕╨┐╤В╨╛╨╝ scripts/fetch-mac-binaries.mjs
+resources-mac/

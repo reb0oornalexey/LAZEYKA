@@ -27,6 +27,7 @@ import {
   profileImport,
   dnsGetProviders,
   dnsApplySystem,
+  dnsOpenMacProfile,
   dnsGetSystemState,
   dnsAddCustom,
   dnsRemoveCustom,
@@ -40,6 +41,11 @@ import {
 } from '@renderer/utils/ipc'
 import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
 import BasePage from '@renderer/components/base/base-page'
+import { platform } from '@renderer/utils/init'
+import MacServiceCard from '@renderer/components/mac-service-card'
+
+// На macOS часть переключателей относится к Windows (панель задач, Zapret, Telegram-прокси).
+const isMac = platform === 'darwin'
 
 const Settings: React.FC = () => {
   const { appConfig, patchAppConfig } = useAppConfig()
@@ -294,6 +300,11 @@ const Settings: React.FC = () => {
             <p className="text-xs text-muted-foreground">
               Защита от подмены DNS провайдером и ускорение отклика сайтов. Выберите зашифрованный сервер:
             </p>
+            {isMac && (
+              <p className="text-[11px] text-muted-foreground">
+                На macOS выставляются адреса DNS провайдера; шифрование DoH доступно через профиль.
+              </p>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {dohProviders.map((p) => {
@@ -352,6 +363,24 @@ const Settings: React.FC = () => {
                               onClick={() => void openExternalUrl(p.site!)}
                             >
                               сайт
+                            </button>
+                          </>
+                        )}
+                        {isMac && p.url && (
+                          <>
+                            {' · '}
+                            <button
+                              type="button"
+                              className="text-primary underline underline-offset-2"
+                              onClick={() =>
+                                void dnsOpenMacProfile(p.id).then((r) =>
+                                  r.success
+                                    ? toast.success('Профиль DoH загружен', { description: r.message, duration: 15000 })
+                                    : toast.error('Профиль не создан', { description: r.message })
+                                )
+                              }
+                            >
+                              установить DoH-профиль
                             </button>
                           </>
                         )}
@@ -654,6 +683,9 @@ const Settings: React.FC = () => {
           </CardContent>
         </Card>
 
+        {/* Служба macOS (TUN) — карточка сама скрыта вне macOS */}
+        <MacServiceCard />
+
         {/* Launch */}
         <Card className="cyber-card">
           <CardHeader>
@@ -661,7 +693,7 @@ const Settings: React.FC = () => {
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center justify-between">
-              <Label className="text-sm">Запускать при входе в Windows</Label>
+              <Label className="text-sm">{isMac ? 'Запускать при входе в систему' : 'Запускать при входе в Windows'}</Label>
               <Switch
                 checked={appConfig?.autoLaunch ?? false}
                 onCheckedChange={(v) => patchAppConfig({ autoLaunch: v })}
@@ -767,6 +799,7 @@ const Settings: React.FC = () => {
                 onCheckedChange={(v) => patchAppConfig({ disableTray: !v })}
               />
             </div>
+            {!isMac && (
             <div className="flex items-center justify-between">
               <div className="flex flex-col">
                 <Label className="text-sm">Убрать иконку с панели задач</Label>
@@ -779,6 +812,7 @@ const Settings: React.FC = () => {
                 onCheckedChange={(v) => patchAppConfig({ hideTaskbarIcon: v })}
               />
             </div>
+            )}
           </CardContent>
         </Card>
 

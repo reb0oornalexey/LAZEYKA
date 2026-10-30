@@ -12,7 +12,7 @@
  * switch takes effect immediately without a restart.
  */
 import { powerMonitor, BrowserWindow } from 'electron'
-import { exec } from 'node:child_process'
+import { exec, execFile } from 'node:child_process'
 import {
   connectIncyNode,
   disconnectIncy,
@@ -22,6 +22,7 @@ import {
   refreshIncySubscription
 } from './incy-engine'
 import { showSystemNotification } from '../utils/notifications'
+import { macServiceState, notifyMacService } from './incy-mac-service'
 import { appLog } from '../utils/app-logger'
 
 // ---- Sleep / wake ---------------------------------------------------------
@@ -137,12 +138,29 @@ export interface CoreMemoryUsage {
 /**
  * Real memory usage of the running cores.
  *
- * Windows only, via `tasklist`. Returns zeroes rather than throwing when the
- * cores are not running — the caller renders "—" in that case.
+ * Windows via `tasklist`, macOS via `ps -o rss=`. Returns zeroes rather than
+ * throwing when the cores are not running — the caller renders "—" in that case.
  */
 export function readCoreMemory(): Promise<CoreMemoryUsage> {
   return new Promise((resolve) => {
     const empty: CoreMemoryUsage = { totalBytes: 0, perProcess: [] }
+    if (process.platform === 'darwin') {
+      // RSS в КБ, потом полный путь процесса (ядро в службе — sing-box-lxd).
+      execFile('/bin/ps', ['-axo', 'rss=,comm='], { timeout: 4000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+        if (err || !stdout) return resolve(empty)
+        const perProcess: { name: string; bytes: number }[] = []
+        for (const line of String(stdout).split('\n')) {
+          const m = /^\s*(\d+)\s+(.+)$/.exec(line)
+          if (!m) continue
+          const name = m[2].split('/').pop() ?? ''
+          if (!/^(sing-box|sing-box-lx|sing-box-lxd|xray)$/.test(name)) continue
+          const kb = Number(m[1])
+          if (Number.isFinite(kb) && kb > 0) perProcess.push({ name, bytes: kb * 1024 })
+        }
+        resolve({ totalBytes: perProcess.reduce((sum, p) => sum + p.bytes, 0), perProcess })
+      })
+      return
+    }
     if (process.platform !== 'win32') return resolve(empty)
 
     exec(
@@ -252,7 +270,30 @@ export function installSubscriptionUpdater(): void {
   timer.unref?.()
 }
 
+/**
+ * macOS: служба lxd хранит ЗАЩИЩЁННУЮ копию ядра, поэтому после обновления
+ * LAZEYKA с новым sing-box она остаётся со старым. Проверяем при запуске и
+ * предлагаем обновить (повторная установка — снова один запрос пароля).
+ */
+export function installMacServiceWatcher(): void {
+  if (process.platform !== 'darwin') return
+  setTimeout(() => {
+    void macServiceState()
+      .then((info) => {
+        if (info.state !== 'needs_update') return
+        appLog('info', `[mac-service] служба ${info.serviceVersion ?? '?'} старше ядра ${info.bundledVersion ?? '?'}`)
+        notifyMacService({
+          reason: 'update',
+          state: info.state,
+          message: 'Служба LAZEYKA устарела: в приложении более новое ядро. Обновите службу (спросят пароль).'
+        })
+      })
+      .catch(() => void 0)
+  }, 10_000).unref?.()
+}
+
 export function installIncyWatchers(): void {
+  installMacServiceWatcher()
   installSleepWatcher()
   installExpiryWatcher()
   installMemoryMonitor()

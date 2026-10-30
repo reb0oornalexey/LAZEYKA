@@ -44,20 +44,6 @@ files:
   - '!lazeyka-report-*'
   - '!incy-logs-*'
   - '!{components.json,eslint.config.cjs,COPYRIGHT,LICENSE}'
-extraResources:
-  - from: './resources/'
-    to: ''
-    filter:
-      - '**/*'
-      - '!**/.git/**'
-      - '!**/.github/**'
-      - '!**/.service/**'
-      - '!**/.gitignore'
-      - '!**/.gitattributes'
-      - '!**/README.md'
-      - '!**/LICENSE.txt'
-      - '!**/*.backup'
-      - '!**/zapret/utils/**'
 protocols:
   name: 'LAZEYKA URI Scheme'
   schemes:
@@ -69,6 +55,24 @@ win:
     - 7z
   artifactName: ${productName}_${arch}-portable.${ext}
   requestedExecutionLevel: requireAdministrator
+  # Windows/Linux: все рантайм-бинарники из resources/ (winws, sing-box.exe, tgws…).
+  # Раньше блок стоял на верхнем уровне; electron-builder СКЛАДЫВАЕТ глобальные
+  # extraResources с платформенными, поэтому для macOS (там нужен другой набор)
+  # он перенесён сюда — итоговый конфиг Windows не изменился.
+  extraResources: &resourcesAll
+    - from: './resources/'
+      to: ''
+      filter:
+        - '**/*'
+        - '!**/.git/**'
+        - '!**/.github/**'
+        - '!**/.service/**'
+        - '!**/.gitignore'
+        - '!**/.gitattributes'
+        - '!**/README.md'
+        - '!**/LICENSE.txt'
+        - '!**/*.backup'
+        - '!**/zapret/utils/**'
 nsis:
   artifactName: ${productName}_${arch}.${ext}
   uninstallDisplayName: ${productName}
@@ -78,18 +82,40 @@ nsis:
   createDesktopShortcut: true
   include: build/nsis/installer.nsh
 mac:
+  # Целевая архитектура задаётся в CI ключом --arm64 / --x64 (universal не собираем).
   target:
-    - pkg
-  hardenedRuntime: true
-  entitlements: build/entitlements.mac.plist
-  entitlementsInherit: build/entitlements.mac.plist
-  notarize: false
-  extendInfo:
-    - NSCameraUsageDescription: Application requests access to the device's camera.
-    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
-    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+    - dmg
+    - zip
   artifactName: ${productName}_${arch}.${ext}
+  category: public.app-category.utilities
+  icon: build/icon.png
+  minimumSystemVersion: '14.0'
+  # Сертификата Apple Developer нет: подпись ad-hoc (identity '-'). Без неё
+  # arm64-сборка не запустится вовсе. Hardened runtime и нотаризация без
+  # платного сертификата невозможны, entitlements нужны только вместе с ними.
+  identity: '-'
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  notarize: false
+  # macOS не получает Windows-бинарники (153 МБ .exe/.dll и Python для tgws):
+  # только списки, иконки трея, гео-базы INCY и ядра из resources-mac/
+  # (их кладёт scripts/fetch-mac-binaries.mjs; раскладка та же: incy/sing-box, incy/xray).
+  extraResources:
+    - from: './resources/'
+      to: ''
+      filter:
+        - 'lists/**/*'
+        - 'icon.png'
+        - 'icon_on.png'
+        - 'icon_off.png'
+        - 'incy/geoip.dat'
+        - 'incy/geosite.dat'
+    - from: './resources-mac/'
+      to: ''
+      filter:
+        - '**/*'
+dmg:
+  title: ${productName}
 pkg:
   allowAnywhere: false
   allowCurrentUserHome: false
@@ -103,6 +129,7 @@ linux:
     - rpm
     - pacman
   maintainer: LAZEYKA
+  extraResources: *resourcesAll
   category: Utility
   artifactName: ${productName}_${arch}.${ext}
 deb:

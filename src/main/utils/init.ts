@@ -95,7 +95,8 @@ async function initRuntimeBundles(): Promise<void> {
     // disk footprint.
     const incyDest = incyRuntimeDir()
     const incySrc = path.join(resourcesDir(), 'incy')
-    if (existsSync(incySrc)) {
+    // На macOS ядра запускаются прямо из .app, копия в runtime не нужна.
+    if (existsSync(incySrc) && process.platform !== 'darwin') {
       for (const file of ['sing-box.exe', 'xray.exe', 'wintun.dll']) {
         const from = path.join(incySrc, file)
         const to = path.join(incyDest, file)
@@ -138,4 +139,4 @@ export async function init(): Promise<void> {
   await initRuntimeBundles()
   await initConfig()
   initDeeplink()
-}
+}

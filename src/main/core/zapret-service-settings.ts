@@ -8,6 +8,7 @@ import { zapretBundleDir, tgwsCliPaths } from '../utils/dirs'
 import { isRunningAsAdmin } from '../utils/elevation'
 import { mergeLazeykaIpset } from './zapret-iplist'
 import { getAppConfig, patchAppConfig } from '../config'
+import { macGetIpsetMode, macIpsetSnapshot, macMarkIpsetLoaded, macSetIpsetMode } from './zapret-mac'
 
 const execAsync = promisify(exec)
 
@@ -206,6 +207,8 @@ function nonEmptyLines(content: string): string[] {
 }
 
 export function getIpsetFilterMode(): IpsetFilterMode {
+  // macOS: режим хранится в файле ipset-mode рабочей папки (ipset-all.txt всегда настоящий список).
+  if (process.platform === 'darwin') return macGetIpsetMode()
   const file = ipsetListFile()
   if (!existsSync(file)) return 'any'
   let content: string
@@ -226,6 +229,7 @@ export interface IpsetFilterSnapshot {
 }
 
 export function getIpsetFilterSnapshot(): IpsetFilterSnapshot {
+  if (process.platform === 'darwin') return macIpsetSnapshot()
   const file = ipsetListFile()
   let lines = 0
   try {
@@ -239,6 +243,7 @@ export function getIpsetFilterSnapshot(): IpsetFilterSnapshot {
 }
 
 export async function setIpsetFilterMode(mode: IpsetFilterMode): Promise<IpsetFilterSnapshot> {
+  if (process.platform === 'darwin') return macSetIpsetMode(mode)
   const file = ipsetListFile()
   const backup = ipsetBackupFile()
   const current = getIpsetFilterMode()
@@ -297,6 +302,7 @@ export async function updateIpsetList(): Promise<IpsetFilterSnapshot> {
   }
   // Свежий список не знает про наши добавления (серверы Valve и т. п.).
   try { mergeLazeykaIpset() } catch { /* не критично */ }
+  if (process.platform === 'darwin') macMarkIpsetLoaded()
 
   const cfg = await getAppConfig()
   await patchAppConfig({ zapret: { ...(cfg.zapret as ZapretConfig), ipsetMode: 'loaded' } })

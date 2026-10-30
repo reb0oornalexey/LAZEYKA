@@ -11,13 +11,15 @@ import { createTray, isTrayActive, refreshTray } from './resolve/tray'
 import { createApplicationMenu } from './resolve/menu'
 import { initShortcut } from './resolve/shortcut'
 import { startTgws, stopTgws } from './core/tgws'
-import { startZapret, stopZapret } from './core/zapret'
+import { startZapret, stopZapret, adoptRunningZapret } from './core/zapret'
+import { stopZapretMacSync } from './core/zapret-mac'
 import { disconnectIncy, loadIncySettings, connectIncyNode } from './core/incy-engine'
 import { restoreAutopilotFromConfig } from './core/zapret-autopilot'
 import { restoreGameModeFromConfig } from './core/game-mode'
-import { clearWindowsSystemProxy, clearWindowsSystemProxySync } from './utils/system-proxy'
+import { clearSystemProxy, clearSystemProxySync } from './utils/system-proxy'
 import { appLog } from './utils/app-logger'
 import { killRegisteredChildrenSync } from './utils/child-registry'
+import { reapOrphanDaemonCore, stopCoreViaDaemonSync } from './core/incy-mac-service'
 import { enableAutoRun, disableAutoRun } from './sys/autoRun'
 import { isRunningAsAdmin, relaunchElevated, ELEVATED_FLAG } from './utils/elevation'
 import { pruneOldLogs, flushLogsNow, currentLogFilePath } from './utils/file-logger'
@@ -130,6 +132,11 @@ app.whenReady().then(async () => {
     // держит TUN и порты, и новый туннель не поднимается.
     const reaped = killRegisteredChildrenSync()
     if (reaped > 0) appLog('warn', `Завершено процессов, оставшихся от прошлого запуска: ${reaped}`)
+    // macOS: ядро TUN живёт в службе и переживает краш приложения — без остановки
+    // оно держало бы маршруты и DNS, а его Xray-мост уже мёртв.
+    if (process.platform === 'darwin') {
+      await Promise.race([reapOrphanDaemonCore().catch(() => false), new Promise((r) => setTimeout(r, 5000))])
+    }
   } catch (e) {
     appLog('error', `Ошибка инициализации: ${e}`)
     dialog.showErrorBox('LAZEYKA init failed', `${e}`)
@@ -161,8 +168,13 @@ app.whenReady().then(async () => {
     appLog('info', 'Автозапуск Zapret — старт')
     startZapret().catch((e) => {
       appLog('error', `Автозапуск Zapret упал: ${e}`)
+      // macOS без службы: окно «Нужна служба Zapret» уже показано, второй ошибки не нужно.
+      if (e instanceof Error && e.name === 'ZapretMacServiceRequiredError') return
       showError('Zapret start failed', `${e}`)
     })
+  } else if (process.platform === 'darwin') {
+    // macOS: служба Zapret переживает падение приложения — подхватываем её, а не делаем вид, что её нет.
+    adoptRunningZapret().catch(() => void 0)
   }
 
   // INCY autoStart or ensure stale proxy from previous crash/reboot is cleared
@@ -174,7 +186,7 @@ app.whenReady().then(async () => {
     })
   } else {
     // If not running INCY, ensure Windows system proxy is disabled so internet is never blocked
-    clearWindowsSystemProxy().catch(() => void 0)
+    clearSystemProxy().catch(() => void 0)
   }
 
   // Synchronise Windows auto-launch with the saved config — keeps the toggle
@@ -323,6 +335,18 @@ let isQuitting = false
  * errors (services that aren't loaded, processes that no longer exist, etc.).
  */
 function syncKillChildren(): void {
+  if (process.platform === 'darwin') {
+    // macOS: свои дочерние процессы по PID из реестра + возврат системного прокси.
+    try {
+      killRegisteredChildrenSync()
+      clearSystemProxySync()
+      // Zapret в root-службе: выход из LAZEYKA выключает его, как и на Windows (без пароля).
+      stopZapretMacSync()
+      // Ядро TUN в службе: синхронно «постучаться» в неё запросом stop (best effort).
+      stopCoreViaDaemonSync()
+    } catch { /* noop */ }
+    return
+  }
   if (process.platform !== 'win32') return
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -348,7 +372,7 @@ function syncKillChildren(): void {
 
     // 3) Системный прокси, который включала LAZEYKA, возвращаем как было
     //    (чужой прокси пользователя больше не выключается).
-    clearWindowsSystemProxySync()
+    clearSystemProxySync()
   } catch { /* noop */ }
 }
 
@@ -425,6 +449,8 @@ export async function createWindow(appConfig?: AppConfig): Promise<void> {
     frame: false,
     fullscreenable: false,
     titleBarStyle: 'hidden',
+    // macOS: родные кнопки окна над шапкой меню (под них в app-sidebar есть отступ).
+    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 14, y: 12 } } : {}),
     autoHideMenuBar: true,
     backgroundMaterial: process.platform === 'win32' ? 'mica' : undefined,
     skipTaskbar: initialSkipTaskbar,
@@ -534,4 +560,4 @@ export async function triggerMainWindow(): Promise<void> {
   } else {
     await showMainWindow()
   }
-}
+}

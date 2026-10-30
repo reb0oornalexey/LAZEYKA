@@ -8,6 +8,7 @@ import { fetchAppActivity } from '../core/incy-stats'
 import { getAppTraffic, getConnections, closeConnection } from '../core/incy-traffic'
 import { extractServerIp, extractServerHost } from './server-ip'
 import { listRunningProcesses } from './process-helper'
+import { describePickedPath } from './mac-apps'
 import { getAppConfig, patchAppConfig, resetAppSettings } from '../config'
 import { applyTheme, readThemeCss, setNativeTheme } from '../resolve/theme'
 import {
@@ -94,6 +95,9 @@ import {
   areGeoDatabasesReady
 } from '../core/incy-geo-updater'
 import { checkCoreUpdates, installCoreUpdate } from '../core/incy-core-updater'
+import { macServiceState, installMacService, uninstallMacService } from '../core/incy-mac-service'
+import { zapretMacServiceState, installZapretMacService, uninstallZapretMacService } from '../core/zapret-mac-service'
+import { afterZapretMacInstall } from '../core/zapret-mac'
 import { GEO_CATEGORY_CATALOG } from '../core/incy-xray'
 import {
   exportIncyBackup,
@@ -457,6 +461,16 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('dns:getSystemState', h(() => getSystemDnsState()))
   ipcMain.handle('dns:addCustom', h((input) => addCustomDnsProvider(input as any)))
   ipcMain.handle('dns:removeCustom', h((id) => removeCustomDnsProvider(String(id))))
+  ipcMain.handle(
+    'dns:macProfile',
+    h(async (id) => {
+      const { allProviders } = await import('../core/dns-doh')
+      const { openMacDohProfile } = await import('../core/dns-mac-profile')
+      const p = (await allProviders()).find((x) => x.id === String(id))
+      if (!p) return { success: false, message: 'DNS не найден' }
+      return openMacDohProfile(p)
+    })
+  )
 
   // ---- Smart Game Mode ---------------------------------------------------
   ipcMain.handle('gameMode:getStatus', h(() => getGameModeStatus()))
@@ -529,6 +543,33 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('incy:patchSettings', h((patch) => patchIncySettings((patch ?? {}) as any)))
   ipcMain.handle('incy:reapplyTunnel', h(() => reapplyIncyTunnelIfRunning()))
   ipcMain.handle('incy:connect', h((id) => connectIncyNode(id ? String(id) : undefined)))
+
+  // ---- macOS: служба LAZEYKA (root-демон lxd) для режима TUN -------------
+  ipcMain.handle('macService:getState', h(() => macServiceState()))
+  ipcMain.handle('macService:install', h(async () => {
+    // Установка/обновление перезапускает службу — работающий TUN нужно снять.
+    if (getIncyStatus().state === 'running') await disconnectIncy()
+    return installMacService()
+  }))
+  ipcMain.handle('macService:uninstall', h(async () => {
+    if (getIncyStatus().state === 'running') await disconnectIncy()
+    return uninstallMacService()
+  }))
+  // ---- macOS: служба Zapret (root-движок utunws; пароль — только при установке) ----
+  ipcMain.handle('zapretMac:getState', h(() => zapretMacServiceState()))
+  ipcMain.handle('zapretMac:install', h(async () => {
+    // Установка останавливает службу: работающий Zapret снимаем и после успеха поднимаем снова.
+    const wasRunning = getZapretStatus().state === 'running'
+    if (wasRunning) await stopZapret().catch(() => void 0)
+    const res = await installZapretMacService()
+    if (res.ok) await afterZapretMacInstall()
+    if (wasRunning) startZapret().catch(() => void 0)
+    return res
+  }))
+  ipcMain.handle('zapretMac:uninstall', h(async () => {
+    if (getZapretStatus().state === 'running') await stopZapret().catch(() => void 0)
+    return uninstallZapretMacService()
+  }))
   ipcMain.handle('incy:disconnect', h(() => disconnectIncy()))
   ipcMain.handle('incy:selectNode', h((id) => selectIncyNode(String(id))))
   ipcMain.handle('incy:setConnectionMode', h((mode) => setIncyConnectionMode(mode as any)))
@@ -672,6 +713,21 @@ export function registerIpcMainHandlers(): void {
     }
   }))
   ipcMain.handle('dialog:pickExecutable', h(async () => {
+    if (process.platform === 'darwin') {
+      // macOS: приложение-бандл (.app) → правило по его пути, оно ловит и
+      // вспомогательные процессы внутри; можно выбрать и одиночный файл.
+      const mac = await dialog.showOpenDialog({
+        title: 'Выберите приложение',
+        defaultPath: '/Applications',
+        filters: [
+          { name: 'Applications', extensions: ['app'] },
+          { name: 'Все файлы', extensions: ['*'] }
+        ],
+        properties: ['openFile']
+      })
+      if (mac.canceled || mac.filePaths.length === 0) return null
+      return (await describePickedPath(mac.filePaths[0]))?.rule ?? null
+    }
     const res = await dialog.showOpenDialog({
       title: 'Выберите исполняемый файл приложения',
       filters: [{ name: 'Программы (.exe)', extensions: ['exe'] }],

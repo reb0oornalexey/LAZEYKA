@@ -7,6 +7,8 @@ const TASK_NAME = 'LazeykaAutoStart'
 
 /** Remove any legacy HKCU\…\Run entry left over from older versions. */
 function clearLegacyRunEntry(): void {
+  // На macOS это был бы наш собственный автозапуск — не трогаем.
+  if (process.platform === 'darwin') return
   try {
     app.setLoginItemSettings({ openAtLogin: false })
   } catch { /* noop */ }
@@ -92,6 +94,11 @@ function buildTaskXml(exePathRaw: string): string {
 
 export async function enableAutoRun(): Promise<void> {
   if (is.dev) return
+  if (process.platform === 'darwin') {
+    // macOS: штатный Login Item; openAsHidden запускает приложение без окна.
+    app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true })
+    return
+  }
   // Снимаем возможную запись в HKCU\Run: автозапуск ведётся через Task
   // Scheduler, и дублирующая запись в реестре запускала бы приложение дважды.
   clearLegacyRunEntry()
@@ -117,6 +124,10 @@ export async function enableAutoRun(): Promise<void> {
 
 export async function disableAutoRun(): Promise<void> {
   if (is.dev) return
+  if (process.platform === 'darwin') {
+    app.setLoginItemSettings({ openAtLogin: false })
+    return
+  }
   clearLegacyRunEntry()
   // /F forces silent removal even if task is missing or running.
   await runSchtasks(['/Delete', '/F', '/TN', TASK_NAME])
@@ -124,6 +135,7 @@ export async function disableAutoRun(): Promise<void> {
 
 export async function isAutoRun(): Promise<boolean> {
   if (is.dev) return false
+  if (process.platform === 'darwin') return app.getLoginItemSettings().openAtLogin
   const r = await runSchtasks(['/Query', '/TN', TASK_NAME])
   return r.code === 0
 }

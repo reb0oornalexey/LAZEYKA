@@ -167,7 +167,11 @@ function smokeTestPackage(appDir: string): Promise<string | null> {
       'for i in pkgutil.iter_modules(proxy.__path__): importlib.import_module("proxy." + i.name)',
       'print("ok")'
     ].join('\n')
-    const p = spawn(cli.python, ['-B', '-X', 'utf8', '-c', code, appDir], { windowsHide: true })
+    const p = spawn(cli.python, ['-B', '-X', 'utf8', '-c', code, appDir], {
+      windowsHide: true,
+      // macOS: пользовательский site-packages не должен маскировать недостающие модули.
+      ...(process.platform === 'darwin' ? { env: { ...process.env, PYTHONNOUSERSITE: '1' } } : {})
+    })
     let out = ''
     let err = ''
     p.stdout?.on('data', (d) => (out += d.toString()))
@@ -226,7 +230,15 @@ function parsePins(pyproject: string): Map<string, string> {
     const marker = m[3] ?? ''
     // Маркеры под старый Python/другие ОС пропускаем — нам нужен Windows + 3.12.
     if (/python_version\s*<\s*'3\.(?:[0-9]|1[0-2])'/.test(marker) && !/>=/.test(marker)) continue
-    if (/platform_system\s*==\s*'(?:Darwin|Linux)'/.test(marker)) continue
+    if (process.platform === 'darwin') {
+      // macOS: пропускаем маркеры под Windows/Linux; Darwin-зависимости оставляем.
+      const osEq = /platform_system\s*==\s*'([A-Za-z]+)'/.exec(marker)?.[1]
+      const osNe = /platform_system\s*!=\s*'([A-Za-z]+)'/.exec(marker)?.[1]
+      if (osEq && osEq !== 'Darwin') continue
+      if (osNe === 'Darwin') continue
+    } else if (/platform_system\s*==\s*'(?:Darwin|Linux)'/.test(marker)) {
+      continue
+    }
     pins.set(m[1].toLowerCase().replace(/_/g, '-'), m[2])
   }
   return pins
@@ -269,8 +281,8 @@ async function fetchPypiWheel(dist: string, version?: string): Promise<{ file: P
   const pick =
     files.find((f) => /-py3-none-any\.whl$/i.test(f.filename)) ??
     files.find((f) => /-py2\.py3-none-any\.whl$/i.test(f.filename)) ??
-    files.find((f) => /-cp312-[^-]+-win_amd64\.whl$/i.test(f.filename))
-  if (!pick) throw new Error(`PyPI ${dist}: нет подходящего колеса для Windows / Python 3.12`)
+    (process.platform === 'darwin' ? undefined : files.find((f) => /-cp312-[^-]+-win_amd64\.whl$/i.test(f.filename)))
+  if (!pick) throw new Error(`PyPI ${dist}: нет подходящего колеса для ${process.platform === 'darwin' ? 'macOS' : 'Windows'} / Python 3.12`)
   return { file: pick, version: data.info?.version ?? version ?? '?' }
 }
 

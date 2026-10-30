@@ -24,7 +24,7 @@ import { useTgwsStore } from '@renderer/store/tgws-store'
 import { useIncyStore } from '@renderer/store/incy-store'
 import { useOnlineStore } from '@renderer/store/online-store'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
-import { version } from '@renderer/utils/init'
+import { platform, version } from '@renderer/utils/init'
 import { NavItem, BrandText } from '@renderer/components/app-chrome'
 import { AppVersionButton } from '@renderer/components/changelog-dialog'
 import { cn, pluralRu } from '@renderer/lib/utils'
@@ -126,9 +126,12 @@ const AppSidebar: React.FC = () => {
     <aside
       className={cn(
         'relative z-20 flex h-full shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-out',
-        collapsed ? 'w-[60px]' : 'w-[var(--sidebar-width,212px)]'
+        // macOS: свёрнутое меню чуть шире — в него целиком помещаются кнопки окна.
+        collapsed ? (platform === 'darwin' ? 'w-[76px]' : 'w-[60px]') : 'w-[var(--sidebar-width,212px)]'
       )}
     >
+      {/* macOS: полоса под родные кнопки окна (закрыть/свернуть/развернуть). */}
+      {platform === 'darwin' && <div className="app-drag h-8 shrink-0" />}
       {/* Логотип + версия; зона перетаскивания окна. */}
       <div className={cn('app-drag flex h-14.25 shrink-0 items-center gap-2.5', collapsed ? 'justify-center' : 'px-4')}>
         <img

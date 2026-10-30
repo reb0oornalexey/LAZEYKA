@@ -2,6 +2,8 @@ export interface GhAsset {
   name: string
   browser_download_url: string
   size?: number
+  /** «sha256:…» — сумма файла, если GitHub её отдаёт. */
+  digest?: string
 }
 
 export interface GhRelease {

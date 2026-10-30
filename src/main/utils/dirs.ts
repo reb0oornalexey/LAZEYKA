@@ -6,7 +6,14 @@ import path from 'path'
 
 export const homeDir = app.getPath('home')
 
+/** Имя исполняемого файла: `.exe` только на Windows (на macOS бинарники без расширения). */
+export function binName(base: string): string {
+  return process.platform === 'win32' ? `${base}.exe` : base
+}
+
 export function isPortable(): boolean {
+  // На macOS exe лежит внутри .app (только чтение) — портативного режима нет.
+  if (process.platform === 'darwin') return false
   return existsSync(path.join(exeDir(), 'PORTABLE'))
 }
 
@@ -106,7 +113,8 @@ export function tgwsBinaryPath(): string {
  */
 export function tgwsCliPaths(): { python: string; bootstrap: string; appDir: string; version: string } | null {
   const pyDir = path.join(resourcesDir(), 'tgws', 'python')
-  const python = path.join(pyDir, 'python.exe')
+  // macOS: python-build-standalone (scripts/fetch-mac-binaries.mjs), раскладка python/bin/python3.
+  const python = process.platform === 'darwin' ? path.join(pyDir, 'bin', 'python3') : path.join(pyDir, 'python.exe')
   const bootstrap = path.join(pyDir, 'lazeyka_tgws.py')
   if (!existsSync(python) || !existsSync(bootstrap)) return null
   const runtimeApp = path.join(tgwsRuntimeDir(), 'app')
@@ -154,14 +162,24 @@ export function zapretRuntimeDir(): string {
   return path.join(runtimeDir(), 'zapret')
 }
 
+/**
+ * macOS: рабочая папка Zapret пользователя (списки, выбранная стратегия, режим IPset).
+ * Её читает root-служба, поэтому путь жёстко проверяется в run.sh: `…/Application Support/lazeyka[-dev]/zapret-mac`.
+ */
+export function zapretMacDataRoot(): string {
+  return path.join(app.getPath('userData'), 'zapret-mac')
+}
+
 export function zapretBundleDir(): string {
+  // macOS: «папка сборки» — это рабочая папка с lists/ (стратегии и движок лежат в службе).
+  if (process.platform === 'darwin') return zapretMacDataRoot()
   const rt = zapretRuntimeDir()
-  if (existsSync(path.join(rt, 'general.bat')) && existsSync(path.join(rt, 'bin', 'winws.exe'))) return rt
+  if (existsSync(path.join(rt, 'general.bat')) && existsSync(path.join(rt, 'bin', binName('winws')))) return rt
   return path.join(resourcesDir(), 'zapret')
 }
 
 export function zapretBinaryPath(): string {
-  return path.join(zapretBundleDir(), 'bin', 'winws.exe')
+  return path.join(zapretBundleDir(), 'bin', binName('winws'))
 }
 
 export function incyRuntimeDir(): string {
@@ -215,7 +233,7 @@ function newerCore(runtimePath: string, bundledPath: string): string {
 }
 
 export function incyBinaryPath(): string {
-  return newerCore(path.join(incyRuntimeDir(), 'sing-box.exe'), path.join(resourcesDir(), 'incy', 'sing-box.exe'))
+  return newerCore(path.join(incyRuntimeDir(), binName('sing-box')), path.join(resourcesDir(), 'incy', binName('sing-box')))
 }
 
 /**
@@ -229,7 +247,7 @@ export function incyBinaryPath(): string {
  * %APPDATA%\lazeyka\runtime\incy wins over the one shipped in the installer.
  */
 export function xrayBinaryPath(): string {
-  return newerCore(path.join(incyRuntimeDir(), 'xray.exe'), path.join(resourcesDir(), 'incy', 'xray.exe'))
+  return newerCore(path.join(incyRuntimeDir(), binName('xray')), path.join(resourcesDir(), 'incy', binName('xray')))
 }
 
 /** True when an xray.exe is available in either location. */

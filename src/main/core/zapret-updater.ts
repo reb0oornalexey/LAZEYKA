@@ -2,6 +2,7 @@ import { installZapretBundle } from './zapret'
 import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 import { fetchLatestGithubRelease, type GhRelease } from '../utils/github-release'
+import { checkMacUpdate, installMacUpdate } from './zapret-mac-updater'
 
 const REPO = 'Flowseal/zapret-discord-youtube'
 const REQUEST_HEADERS: Record<string, string> = {
@@ -92,6 +93,8 @@ function compareBaseline(installed?: string): string {
 }
 
 export async function checkZapretUpdate(force = false): Promise<ZapretUpdateInfo> {
+  // macOS: Mac-сборка берётся из Flowseal/zapret-mac-discord-youtube (zapret-mac-updater.ts).
+  if (process.platform === 'darwin') return checkMacUpdate(force)
   hydrateCacheFromDisk()
   if (!force && cache && Date.now() - cache.at < CACHE_TTL_MS) {
     // Re-attach live values that may have changed since the cached call.
@@ -159,6 +162,7 @@ export async function installZapretUpdate(
   assetUrl: string,
   expectedVersion?: string
 ): Promise<{ strategies: number; installedVersion?: string }> {
+  if (process.platform === 'darwin') return installMacUpdate(assetUrl, expectedVersion)
   if (!assetUrl) throw new Error('Пустая ссылка на архив')
 
   let buf: Buffer
