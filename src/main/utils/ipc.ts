@@ -461,6 +461,16 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('dns:getSystemState', h(() => getSystemDnsState()))
   ipcMain.handle('dns:addCustom', h((input) => addCustomDnsProvider(input as any)))
   ipcMain.handle('dns:removeCustom', h((id) => removeCustomDnsProvider(String(id))))
+  ipcMain.handle(
+    'dns:macProfile',
+    h(async (id) => {
+      const { allProviders } = await import('../core/dns-doh')
+      const { openMacDohProfile } = await import('../core/dns-mac-profile')
+      const p = (await allProviders()).find((x) => x.id === String(id))
+      if (!p) return { success: false, message: 'DNS не найден' }
+      return openMacDohProfile(p)
+    })
+  )
 
   // ---- Smart Game Mode ---------------------------------------------------
   ipcMain.handle('gameMode:getStatus', h(() => getGameModeStatus()))

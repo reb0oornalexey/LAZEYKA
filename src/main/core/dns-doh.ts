@@ -293,7 +293,7 @@ export function removeCustomDnsProvider(id: string): DohProvider[] {
   return loadCustomProviders()
 }
 
-async function allProviders(): Promise<DohProvider[]> {
+export async function allProviders(): Promise<DohProvider[]> {
   const fresh = await refreshDnsAi().catch(() => null)
   const builtins = DOH_PROVIDERS.map((p) =>
     p.id === 'dns-ai' && fresh

@@ -27,6 +27,7 @@ import {
   profileImport,
   dnsGetProviders,
   dnsApplySystem,
+  dnsOpenMacProfile,
   dnsGetSystemState,
   dnsAddCustom,
   dnsRemoveCustom,
@@ -365,15 +366,21 @@ const Settings: React.FC = () => {
                             </button>
                           </>
                         )}
-                        {isMac && p.macProfile && (
+                        {isMac && p.url && (
                           <>
                             {' · '}
                             <button
                               type="button"
                               className="text-primary underline underline-offset-2"
-                              onClick={() => void openExternalUrl(p.macProfile!)}
+                              onClick={() =>
+                                void dnsOpenMacProfile(p.id).then((r) =>
+                                  r.success
+                                    ? toast.success('Профиль DoH загружен', { description: r.message, duration: 15000 })
+                                    : toast.error('Профиль не создан', { description: r.message })
+                                )
+                              }
                             >
-                              профиль DoH
+                              установить DoH-профиль
                             </button>
                           </>
                         )}

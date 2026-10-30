@@ -493,6 +493,9 @@ export const dnsGetProviders = (): Promise<DohProvider[]> =>
   invoke('dns:getProviders')
 export const dnsApplySystem = (ip: string | 'dhcp'): Promise<{ success: boolean; message: string }> =>
   invoke('dns:applySystemDns', ip)
+/** macOS: сгенерировать и открыть DoH-профиль провайдера. */
+export const dnsOpenMacProfile = (id: string): Promise<{ success: boolean; message: string }> =>
+  invoke('dns:macProfile', id)
 /** DNS-серверы, которые сейчас стоят на рабочих адаптерах Windows. */
 export const dnsGetSystemState = (): Promise<{ servers: string[]; changedByApp: boolean }> =>
   invoke('dns:getSystemState')
