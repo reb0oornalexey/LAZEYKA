@@ -92,6 +92,9 @@ function compareBaseline(installed?: string): string {
 }
 
 export async function checkZapretUpdate(force = false): Promise<ZapretUpdateInfo> {
+  // macOS: здесь Windows-сборка Flowseal (winws + .bat). Mac-версия берётся из
+  // Flowseal/zapret-mac-discord-youtube — подключается на этапе порта Zapret.
+  if (process.platform === 'darwin') return { hasUpdate: false }
   hydrateCacheFromDisk()
   if (!force && cache && Date.now() - cache.at < CACHE_TTL_MS) {
     // Re-attach live values that may have changed since the cached call.
@@ -159,6 +162,7 @@ export async function installZapretUpdate(
   assetUrl: string,
   expectedVersion?: string
 ): Promise<{ strategies: number; installedVersion?: string }> {
+  if (process.platform === 'darwin') throw new Error('Обновление Zapret для macOS пока недоступно')
   if (!assetUrl) throw new Error('Пустая ссылка на архив')
 
   let buf: Buffer

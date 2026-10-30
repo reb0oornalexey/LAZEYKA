@@ -63,6 +63,8 @@ export async function getComponentReleaseHistory(
   page = 1,
   perPage = 6
 ): Promise<ComponentReleaseNote[]> {
+  // macOS: история Windows-сборок Zapret/TgWsProxy на Mac не нужна (свои репозитории — следующие этапы).
+  if (process.platform === 'darwin') return []
   const repo = REPOS[component]
   if (!repo) throw new Error(`Неизвестный компонент: ${component}`)
   const key = `${component}:${page}:${perPage}`

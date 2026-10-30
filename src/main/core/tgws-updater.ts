@@ -96,6 +96,9 @@ function compareBaseline(installed?: string): string {
 }
 
 export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
+  // macOS: обновление ставится во встроенный Windows-Python — на Mac не подходит,
+  // подключается на этапе порта TgWsProxy.
+  if (process.platform === 'darwin') return { hasUpdate: false }
   hydrateCacheFromDisk()
   const cfg = await getAppConfig()
   const installed = installedVersion(cfg.tgws?.installedVersion)
@@ -336,6 +339,7 @@ export async function installTgwsUpdate(
   expectedVersion?: string,
   onProgress?: (msg: string) => void
 ): Promise<{ installedVersion?: string; sizeBytes: number }> {
+  if (process.platform === 'darwin') throw new Error('Обновление TgWsProxy для macOS пока недоступно')
   if (!assetUrl) throw new Error('Пустая ссылка на обновление')
   if (!tgwsCliPaths()) throw new Error('Встроенный Python для TgWsProxy не найден — переустановите LAZEYKA')
 
