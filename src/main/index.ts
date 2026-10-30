@@ -11,7 +11,8 @@ import { createTray, isTrayActive, refreshTray } from './resolve/tray'
 import { createApplicationMenu } from './resolve/menu'
 import { initShortcut } from './resolve/shortcut'
 import { startTgws, stopTgws } from './core/tgws'
-import { startZapret, stopZapret } from './core/zapret'
+import { startZapret, stopZapret, adoptRunningZapret } from './core/zapret'
+import { stopZapretMacSync } from './core/zapret-mac'
 import { disconnectIncy, loadIncySettings, connectIncyNode } from './core/incy-engine'
 import { restoreAutopilotFromConfig } from './core/zapret-autopilot'
 import { restoreGameModeFromConfig } from './core/game-mode'
@@ -163,12 +164,17 @@ app.whenReady().then(async () => {
       showError('TG WS start failed', `${e}`)
     })
   }
-  if (process.platform !== 'darwin' && appConfig.zapret?.autoStart) {
+  if (appConfig.zapret?.autoStart) {
     appLog('info', 'Автозапуск Zapret — старт')
     startZapret().catch((e) => {
       appLog('error', `Автозапуск Zapret упал: ${e}`)
+      // macOS без службы: окно «Нужна служба Zapret» уже показано, второй ошибки не нужно.
+      if (e instanceof Error && e.name === 'ZapretMacServiceRequiredError') return
       showError('Zapret start failed', `${e}`)
     })
+  } else if (process.platform === 'darwin') {
+    // macOS: служба Zapret переживает падение приложения — подхватываем её, а не делаем вид, что её нет.
+    adoptRunningZapret().catch(() => void 0)
   }
 
   // INCY autoStart or ensure stale proxy from previous crash/reboot is cleared
@@ -331,10 +337,11 @@ let isQuitting = false
 function syncKillChildren(): void {
   if (process.platform === 'darwin') {
     // macOS: свои дочерние процессы по PID из реестра + возврат системного прокси.
-    // Zapret/WinDivert здесь нет (порт — отдельный этап).
     try {
       killRegisteredChildrenSync()
       clearSystemProxySync()
+      // Zapret в root-службе: выход из LAZEYKA выключает его, как и на Windows (без пароля).
+      stopZapretMacSync()
       // Ядро TUN в службе: синхронно «постучаться» в неё запросом stop (best effort).
       stopCoreViaDaemonSync()
     } catch { /* noop */ }

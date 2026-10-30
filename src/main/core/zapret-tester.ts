@@ -15,6 +15,7 @@ import {
 } from './zapret'
 import { getAppConfig } from '../config'
 import { getGameFilterVars } from './zapret-service-settings'
+import { macApplyStrategyForTest, macStopForTest, requireZapretMacInstalled } from './zapret-mac'
 
 // HTTPS hosts that DPI bypass solutions are typically tested against.
 const HTTP_TARGETS: string[] = [
@@ -35,6 +36,9 @@ const STRATEGY_WARMUP_MS = 4500
 const STRATEGY_BOOT_TIMEOUT_MS = 6000
 const PASS_THRESHOLD = 0.5
 const RESULTS_FILENAME = 'zapret-test-results.json'
+// macOS: стратегию применяет root-служба (перезапуск движка), а не .bat-файл.
+const IS_MAC = process.platform === 'darwin'
+const MAC_STRATEGY_WARMUP_MS = 1500
 
 // Same shape as the renderer-side type in renderer/utils/ipc.ts —
 // kept duplicated to avoid leaking renderer types into main code.
@@ -262,6 +266,25 @@ async function testOneStrategy(batPath: string): Promise<{
   }
 }
 
+/** macOS: применить стратегию в службе и прогнать те же проверки, что и на Windows. */
+async function testOneStrategyMac(id: string): Promise<{
+  okCount: number
+  totalCount: number
+  score: number
+  passed: boolean
+}> {
+  if (!(await macApplyStrategyForTest(id))) {
+    return { okCount: 0, totalCount: HTTP_TARGETS.length, score: 0, passed: false }
+  }
+  // «running» значит, что движок поднят и правила pf загружены; небольшая пауза — на ARP/первые пакеты.
+  await sleep(MAC_STRATEGY_WARMUP_MS)
+  const results = await probeAll()
+  const okCount = results.filter((r) => r.ok).length
+  const totalCount = results.length
+  const score = totalCount === 0 ? 0 : okCount / totalCount
+  return { okCount, totalCount, score, passed: score >= PASS_THRESHOLD }
+}
+
 /**
  * Run the full strategy test sweep. Holds the zapret start/stop lock for
  * the entire duration so a user toggle waits for us to finish (or queues
@@ -272,6 +295,8 @@ export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<Strat
   stopRequested = false
 
   runningPromise = (async () => {
+    // Без службы на macOS тест бессмысленен: покажем окно установки, а не «все стратегии не прошли».
+    if (IS_MAC) requireZapretMacInstalled()
     const startedAt = Date.now()
 
     const strategies = listStrategies()
@@ -333,7 +358,7 @@ export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<Strat
             strategy: s.file
           })
           const batPath = path.join(zapretBundleDir(), s.file)
-          if (!existsSync(batPath)) {
+          if (!IS_MAC && !existsSync(batPath)) {
             results[s.file] = {
               tested: true,
               passed: false,
@@ -344,7 +369,7 @@ export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<Strat
             continue
           }
           try {
-            const r = await testOneStrategy(batPath)
+            const r = IS_MAC ? await testOneStrategyMac(s.file) : await testOneStrategy(batPath)
             results[s.file] = { tested: true, ...r }
             if (r.passed && r.score > bestScore) {
               bestScore = r.score
@@ -365,6 +390,9 @@ export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<Strat
     } catch (e) {
       testError = e instanceof Error ? e : new Error(String(e))
     }
+
+    // macOS: тест оставил службу запущенной — если Zapret до теста не работал, выключаем.
+    if (IS_MAC && !wasRunning) await withZapretLock(() => macStopForTest())
 
     const report: StrategyTestReport = {
       ranAt: startedAt,
