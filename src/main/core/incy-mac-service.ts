@@ -39,6 +39,7 @@ import { BrowserWindow } from 'electron'
 import { dataDir, incyBinaryPath } from '../utils/dirs'
 import { appLog } from '../utils/app-logger'
 import {
+  HOOK_PRE_START,
   HOOK_POST_START,
   HOOK_POST_STOP,
   buildAdminScript,
@@ -312,6 +313,7 @@ export function buildInstallCommand(bin: string, invite: string, uid: number): s
     `/bin/mkdir -p ${shQuote(HOOKS_DIR)}`,
     `/bin/chmod 0700 ${shQuote(SUPPORT_DIR)} ${shQuote(STATE_DIR)}`,
     `/bin/chmod 0755 ${shQuote(HOOKS_DIR)}`,
+    ...writeHook('pre_start', HOOK_PRE_START),
     ...writeHook('post_start', HOOK_POST_START),
     ...writeHook('post_stop', HOOK_POST_STOP),
     `/usr/sbin/chown -R root:wheel ${shQuote(SUPPORT_DIR)}`,
