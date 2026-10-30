@@ -60,8 +60,21 @@ trap cleanup EXIT INT TERM HUP
 clear_intercept
 /usr/bin/pkill -9 -x utunws >/dev/null 2>&1 || true
 
-PHYSICAL_IFACE=$(/sbin/route -n get default | /usr/bin/awk '/interface:/{print $2; exit}')
-GATEWAY=$(/sbin/route -n get default | /usr/bin/awk '/gateway:/{print $2; exit}')
+# LAZEYKA: «route get default» при включённом INCY TUN вернул бы туннель (utunN):
+# sing-box на macOS ставит маршруты 0/1 и 128/1 поверх настоящего default.
+# Поэтому берём default-маршрут из таблицы, пропуская виртуальные интерфейсы.
+phys_default() {
+    # Сначала основной маршрут (без флага I — не привязанный к интерфейсу), потом любой.
+    /usr/sbin/netstat -rn -f "$1" 2>/dev/null | /usr/bin/awk '
+        $1=="default" && $4 !~ /^(utun|ipsec|ppp|gif|stf|lo|awdl|llw)/ {
+            if ($3 !~ /I/) { print $2, $4; found=1; exit }
+            if (any=="") any=$2 " " $4
+        }
+        END { if (!found && any!="") print any }'
+}
+DEF4=$(phys_default inet)
+GATEWAY=${DEF4%% *}
+PHYSICAL_IFACE=${DEF4##* }
 if [ -z "$PHYSICAL_IFACE" ] || [ -z "$GATEWAY" ]; then exit 1; fi
 # LAZEYKA: имя интерфейса попадёт в правило pf — пропускаем только вид en0 / bridge0.
 if ! printf '%s\n' "$PHYSICAL_IFACE" | /usr/bin/grep -Eq '^[a-z]+[0-9]+$'; then exit 1; fi
@@ -73,13 +86,13 @@ case "$GATEWAY_MAC" in
 esac
 
 GATEWAY6_MAC=
-if /sbin/route -n get -inet6 default >/var/run/lazeyka-zapret.route6 2>/dev/null; then
-    GATEWAY6=$(/usr/bin/awk '/gateway:/{print $2; exit}' /var/run/lazeyka-zapret.route6)
+DEF6=$(phys_default inet6)
+if [ -n "$DEF6" ] && [ "${DEF6##* }" = "$PHYSICAL_IFACE" ]; then
+    GATEWAY6=${DEF6%% *}
     if [ -n "$GATEWAY6" ]; then
         GATEWAY6_MAC=$(/usr/sbin/ndp -n "$GATEWAY6" 2>/dev/null | /usr/bin/awk '/ at |%/{for(i=1;i<=NF;i++) if($i ~ /^([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}$/){print $i; exit}}')
     fi
 fi
-/bin/rm -f /var/run/lazeyka-zapret.route6
 
 # Файлы состояния лежат в папке пользователя, значит им верить нельзя: обычные файлы
 # (не ссылки), читаем не больше 64 байт.
@@ -150,8 +163,9 @@ printf '%s\n' \
 
 while kill -0 "$ENGINE_PID" 2>/dev/null; do
     sleep 2
-    CURRENT_IFACE=$(/sbin/route -n get default 2>/dev/null | /usr/bin/awk '/interface:/{print $2; exit}')
-    CURRENT_GATEWAY=$(/sbin/route -n get default 2>/dev/null | /usr/bin/awk '/gateway:/{print $2; exit}')
+    CUR=$(phys_default inet)
+    CURRENT_GATEWAY=${CUR%% *}
+    CURRENT_IFACE=${CUR##* }
     if [ "$CURRENT_IFACE" != "$PHYSICAL_IFACE" ] || [ "$CURRENT_GATEWAY" != "$GATEWAY" ]; then exit 1; fi
 done
 exit 1
