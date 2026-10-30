@@ -475,6 +475,8 @@ export interface DohProvider {
   strict?: boolean
   custom?: boolean
   site?: string
+  /** macOS: страница с профилем шифрованного DNS этого провайдера. */
+  macProfile?: string
 }
 export interface CustomDnsInput {
   name: string
