@@ -94,6 +94,7 @@ import {
   areGeoDatabasesReady
 } from '../core/incy-geo-updater'
 import { checkCoreUpdates, installCoreUpdate } from '../core/incy-core-updater'
+import { macServiceState, installMacService, uninstallMacService } from '../core/incy-mac-service'
 import { GEO_CATEGORY_CATALOG } from '../core/incy-xray'
 import {
   exportIncyBackup,
@@ -529,6 +530,18 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('incy:patchSettings', h((patch) => patchIncySettings((patch ?? {}) as any)))
   ipcMain.handle('incy:reapplyTunnel', h(() => reapplyIncyTunnelIfRunning()))
   ipcMain.handle('incy:connect', h((id) => connectIncyNode(id ? String(id) : undefined)))
+
+  // ---- macOS: служба LAZEYKA (root-демон lxd) для режима TUN -------------
+  ipcMain.handle('macService:getState', h(() => macServiceState()))
+  ipcMain.handle('macService:install', h(async () => {
+    // Установка/обновление перезапускает службу — работающий TUN нужно снять.
+    if (getIncyStatus().state === 'running') await disconnectIncy()
+    return installMacService()
+  }))
+  ipcMain.handle('macService:uninstall', h(async () => {
+    if (getIncyStatus().state === 'running') await disconnectIncy()
+    return uninstallMacService()
+  }))
   ipcMain.handle('incy:disconnect', h(() => disconnectIncy()))
   ipcMain.handle('incy:selectNode', h((id) => selectIncyNode(String(id))))
   ipcMain.handle('incy:setConnectionMode', h((mode) => setIncyConnectionMode(mode as any)))
