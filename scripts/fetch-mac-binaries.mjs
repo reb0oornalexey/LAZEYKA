@@ -19,13 +19,13 @@ import { fileURLToPath } from 'node:url'
 import AdmZip from 'adm-zip'
 
 // ---- Версии ----------------------------------------------------------------
-// sing-box: в Windows-сборке ядро 1.14.3 (форк sing-box-lx на базе 1.14.3);
-// на macOS берём официальный релиз SagerNet с той же базовой версией.
-// Xray: XRAY_VERSION нужно держать равной версии xray.exe в resources/incy
-// (проверка: `resources/incy/xray.exe version`). Переопределяются переменными
-// окружения SING_BOX_VERSION / XRAY_VERSION.
-const SING_BOX_VERSION = process.env.SING_BOX_VERSION || '1.14.3'
-const XRAY_VERSION = process.env.XRAY_VERSION || '26.3.27'
+// sing-box: тот же форк, что и на Windows, — Leadaxe/sing-box-lx (AmneziaWG,
+// без которой WARP в РФ не подключается). Официальный SagerNet не подходит.
+// Xray: официальный XTLS/Xray-core. Переопределяются переменными окружения
+// SING_BOX_VERSION / XRAY_VERSION.
+const SING_BOX_REPO = 'Leadaxe/sing-box-lx'
+const SING_BOX_VERSION = process.env.SING_BOX_VERSION || '1.14.4-lx.25'
+const XRAY_VERSION = process.env.XRAY_VERSION || '26.10.29'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const OUT_DIR = path.join(ROOT, 'resources-mac', 'incy')
@@ -86,6 +86,20 @@ async function verify(buf, repo, tag, assetName, url, kind) {
   const actual = sha256(buf)
   let expected = null
   let source = ''
+  if (kind === 'sums') {
+    // sing-box-lx публикует общий файл SHA256SUMS рядом с архивами.
+    try {
+      const txt = (await download(`https://github.com/${repo}/releases/download/${tag}/SHA256SUMS`, { soft: true })).toString('utf8')
+      const line = txt.split(/\r?\n/).find((l) => l.trim().endsWith(` ${assetName}`) || l.trim().endsWith(`*${assetName}`))
+      const m = line ? /^([0-9a-f]{64})/i.exec(line.trim()) : null
+      if (m) {
+        expected = m[1].toLowerCase()
+        source = 'SHA256SUMS'
+      }
+    } catch {
+      /* пойдём через API */
+    }
+  }
   if (kind === 'dgst') {
     try {
       const txt = (await download(`${url}.dgst`, { soft: true })).toString('utf8')
@@ -147,11 +161,11 @@ function install(src, name) {
 async function fetchSingBox(tmp) {
   const tag = `v${SING_BOX_VERSION}`
   const asset = `sing-box-${SING_BOX_VERSION}-darwin-${cfg.singBox}.tar.gz`
-  const url = `https://github.com/SagerNet/sing-box/releases/download/${tag}/${asset}`
+  const url = `https://github.com/${SING_BOX_REPO}/releases/download/${tag}/${asset}`
   console.log(`[fetch-mac] sing-box: ${url}`)
   const buf = await download(url)
   if (buf.length < 5 * 1024 * 1024) fail(`${asset}: слишком маленький файл (${buf.length} байт)`)
-  await verify(buf, 'SagerNet/sing-box', tag, asset, url, 'api')
+  await verify(buf, SING_BOX_REPO, tag, asset, url, 'sums')
   const archive = path.join(tmp, asset)
   writeFileSync(archive, buf)
   const dir = path.join(tmp, 'sing-box')

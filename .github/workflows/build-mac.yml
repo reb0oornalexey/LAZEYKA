@@ -1,14 +1,14 @@
 name: build-mac
 
 # Сборка macOS (.dmg) для Apple Silicon и Intel.
-# Релиз создаётся вручную с Windows (см. RELEASING.md); эта сборка запускается по
-# тегу v* и докладывает LAZEYKA_arm64.dmg / LAZEYKA_x64.dmg в уже созданный релиз.
+# Релиз создаётся вручную с Windows (`gh release create`, см. RELEASING.md); как
+# только он опубликован, эта сборка докладывает в него LAZEYKA_arm64.dmg / LAZEYKA_x64.dmg.
+# Вручную (Actions → build-mac → Run workflow) — только сборка, без загрузки в релиз.
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -79,7 +79,7 @@ jobs:
       # Релиз владелец создаёт вручную с Windows, и он может появиться позже
       # окончания этой сборки — ждём до ~10 минут, потом падаем с понятной ошибкой.
       - name: Загрузка .dmg в релиз
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
