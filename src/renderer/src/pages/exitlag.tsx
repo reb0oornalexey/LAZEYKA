@@ -27,6 +27,7 @@ import { cn } from '@renderer/lib/utils'
 import { useIncyStore } from '@renderer/store/incy-store'
 import InstalledGamesModal from '@renderer/components/installed-games-modal'
 import ExitLagTrafficCard from '@renderer/components/exitlag-traffic-card'
+import { appLabel, entryMatchesProc, isMacPlatform } from '@renderer/utils/per-app'
 import {
   incyGetSettings,
   incyPatchSettings,
@@ -46,6 +47,40 @@ const POWER_ON_BANNER_STYLE = {
   border: '1px solid rgba(16, 185, 129, 0.5)',
   color: '#34d399'
 }
+
+/** Быстрые наборы для macOS: только приложения, которые есть на Mac. Пути — бандлы `.app` (ловят и помощников внутри). */
+const MAC_PRESETS = {
+  games: [
+    // Steam работает из ~/Library/Application Support/Steam/Steam.AppBundle, а не из /Applications/Steam.app.
+    'steam_osx',
+    'steamwebhelper',
+    'Steam Helper',
+    '~/Library/Application Support/Steam/Steam.AppBundle',
+    // Dota 2 (CS2 на Mac нет).
+    'dota2',
+    '~/Library/Application Support/Steam/steamapps/common/dota 2 beta',
+    '/Applications/League of Legends.app',
+    'LeagueClient',
+    'RiotClientServices',
+    '/Users/Shared/Riot Games',
+    '/Applications/Epic Games Launcher.app',
+    '/Applications/Battle.net.app',
+    '/Users/Shared/Battle.net'
+  ],
+  chat: ['/Applications/Discord.app', '/Applications/Telegram.app'],
+  browsers: [
+    // Сеть Safari делает общий процесс WebKit, а не бандл Safari.
+    'Safari',
+    'com.apple.WebKit.Networking',
+    '/Applications/Google Chrome.app',
+    '/Applications/Firefox.app',
+    '/Applications/Yandex.app',
+    '/Applications/Microsoft Edge.app',
+    '/Applications/Arc.app'
+  ]
+}
+
+const OS_NAME = isMacPlatform ? 'macOS' : 'Windows'
 
 function cleanServerName(name: string): string {
   return name.replace(/^\[.*?\]\s*/, '').trim() || name
@@ -144,9 +179,15 @@ export default function ExitLagPage(): React.ReactElement {
     // Имя хранится в исходном регистре (Discord.exe, VALORANT-Win64-Shipping.exe):
     // сравнение без учёта регистра делает ядро. Раньше всё приводилось к
     // нижнему регистру, и такие приложения в туннель не попадали.
-    const base = processName.trim().split(/[\\/]/).pop()?.trim() ?? ''
+    const raw = processName.trim()
+    // macOS: путь (бандл .app, каталог) остаётся путём, остальное — имя без .exe.
+    const base = isMacPlatform
+      ? raw.startsWith('/') || raw.startsWith('~/')
+        ? raw.replace(/\/+$/, '')
+        : (raw.split('/').pop()?.trim() ?? '')
+      : (raw.split(/[\\/]/).pop()?.trim() ?? '')
     if (!base || !settings) return
-    const cleaned = /\.exe$/i.test(base) ? base : `${base}.exe`
+    const cleaned = isMacPlatform || /\.exe$/i.test(base) ? base : `${base}.exe`
     const current = settings.perAppProcesses ?? []
     if (current.some((p) => p.toLowerCase() === cleaned.toLowerCase())) {
       toast.info('Это приложение уже в списке')
@@ -154,14 +195,16 @@ export default function ExitLagPage(): React.ReactElement {
     }
     await handleUpdateSettings({ perAppProcesses: [...current, cleaned] })
     setNewAppInput('')
-    toast.success(`Добавлено: ${cleaned}`)
+    toast.success(`Добавлено: ${appLabel(cleaned)}`)
   }
 
   const handleRemovePerAppProcess = async (proc: string): Promise<void> => {
     if (!settings) return
     const current = settings.perAppProcesses ?? []
     await handleUpdateSettings({
-      perAppProcesses: current.filter((p) => p.toLowerCase() !== proc.toLowerCase())
+      perAppProcesses: isMacPlatform
+        ? current.filter((p) => !entryMatchesProc(p, appLabel(proc), proc))
+        : current.filter((p) => p.toLowerCase() !== proc.toLowerCase())
     })
   }
 
@@ -301,7 +344,7 @@ export default function ExitLagPage(): React.ReactElement {
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground mt-1 leading-relaxed max-w-2xl">
-                  Изолируйте игровой трафик от фонового: туннелируйте исключительно указанные игры и приложения, направляя весь остальной трафик Windows напрямую без малейшей потери пинга.
+                  Изолируйте игровой трафик от фонового: туннелируйте исключительно указанные игры и приложения, направляя весь остальной трафик {OS_NAME} напрямую без малейшей потери пинга.
                 </p>
               </div>
             </div>
@@ -414,7 +457,7 @@ export default function ExitLagPage(): React.ReactElement {
                     Только выбранные (режим ExitLag)
                   </div>
                   <div className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
-                    Через VPN-туннель направляются <b>исключительно</b> указанные игры и программы. Браузеры, Windows, торренты и рабочий софт идут напрямую с нулевым влиянием на сетевой стек.
+                    Через VPN-туннель направляются <b>исключительно</b> указанные игры и программы. Браузеры, {OS_NAME}, торренты и рабочий софт идут напрямую с нулевым влиянием на сетевой стек.
                   </div>
                 </button>
 
@@ -448,7 +491,7 @@ export default function ExitLagPage(): React.ReactElement {
                     size="sm"
                     variant="outline"
                     type="button"
-                    onClick={() => void handleApplyPreset([
+                    onClick={() => void handleApplyPreset(isMacPlatform ? MAC_PRESETS.games : [
                       'cs2.exe',
                       'dota2.exe',
                       'steam.exe',
@@ -460,13 +503,13 @@ export default function ExitLagPage(): React.ReactElement {
                     className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/15 hover:border-primary"
                   >
                     <Gamepad2 className="h-3.5 w-3.5 shrink-0" />
-                    Игры (CS2, Dota 2, Steam, Riot, Epic)
+                    {isMacPlatform ? 'Игры (Dota 2, Steam, Riot, Epic, Battle.net)' : 'Игры (CS2, Dota 2, Steam, Riot, Epic)'}
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
                     type="button"
-                    onClick={() => void handleApplyPreset(['discord.exe', 'telegram.exe'])}
+                    onClick={() => void handleApplyPreset(isMacPlatform ? MAC_PRESETS.chat : ['discord.exe', 'telegram.exe'])}
                     className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/15 hover:border-primary"
                   >
                     <MessageCircle className="h-3.5 w-3.5 shrink-0" />
@@ -476,11 +519,11 @@ export default function ExitLagPage(): React.ReactElement {
                     size="sm"
                     variant="outline"
                     type="button"
-                    onClick={() => void handleApplyPreset(['chrome.exe', 'msedge.exe', 'firefox.exe', 'browser.exe'])}
+                    onClick={() => void handleApplyPreset(isMacPlatform ? MAC_PRESETS.browsers : ['chrome.exe', 'msedge.exe', 'firefox.exe', 'browser.exe'])}
                     className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/15 hover:border-primary"
                   >
                     <Globe className="h-3.5 w-3.5 shrink-0" />
-                    Браузеры (Chrome, Edge, Firefox, Yandex)
+                    {isMacPlatform ? 'Браузеры (Safari, Chrome, Firefox, Yandex, Edge, Arc)' : 'Браузеры (Chrome, Edge, Firefox, Yandex)'}
                   </Button>
                 </div>
               </div>
@@ -517,7 +560,7 @@ export default function ExitLagPage(): React.ReactElement {
                       onClick={() => { void handlePickExeFile() }}
                       className="text-xs h-7 gap-1.5 border-primary/40 hover:bg-primary/15"
                     >
-                      <FolderOpen className="h-3.5 w-3.5" /> Обзор .exe
+                      <FolderOpen className="h-3.5 w-3.5" /> {isMacPlatform ? 'Обзор…' : 'Обзор .exe'}
                     </Button>
                     {(settings.perAppProcesses?.length ?? 0) > 0 && (
                       <Button
@@ -539,7 +582,7 @@ export default function ExitLagPage(): React.ReactElement {
                     value={newAppInput}
                     onChange={(e) => setNewAppInput(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') void handleAddPerAppProcess(newAppInput) }}
-                    placeholder="Название процесса, например: cs2.exe или discord.exe"
+                    placeholder={isMacPlatform ? 'Приложение или процесс, например: /Applications/Discord.app или steam_osx' : 'Название процесса, например: cs2.exe или discord.exe'}
                     className="text-xs font-mono"
                   />
                   <Button
@@ -561,7 +604,7 @@ export default function ExitLagPage(): React.ReactElement {
                         key={proc}
                         className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-card/90 border border-primary/30 text-xs font-mono text-foreground shadow-sm hover:border-primary/60 transition-colors"
                       >
-                        <span className="font-semibold">{proc}</span>
+                        <span className="font-semibold" title={isMacPlatform ? proc : undefined}>{appLabel(proc)}</span>
                         <button
                           type="button"
                           onClick={() => void handleRemovePerAppProcess(proc)}
@@ -637,7 +680,7 @@ export default function ExitLagPage(): React.ReactElement {
                 <div className="flex items-center gap-2">
                   <Monitor className="h-4 w-4 text-primary" />
                   <div className="text-sm font-bold text-foreground">
-                    Выбор из запущенных процессов Windows
+                    {isMacPlatform ? 'Выбор из запущенных приложений macOS' : 'Выбор из запущенных процессов Windows'}
                   </div>
                 </div>
                 <Button
@@ -663,7 +706,7 @@ export default function ExitLagPage(): React.ReactElement {
               <div className="p-3 flex-1 overflow-y-auto space-y-1.5 min-h-[250px]">
                 {loadingProcesses ? (
                   <div className="py-16 text-center text-xs text-muted-foreground animate-pulse">
-                    Получение списка процессов Windows...
+                    Получение списка процессов {OS_NAME}...
                   </div>
                 ) : runningProcesses.length === 0 ? (
                   <div className="py-16 text-center text-xs text-muted-foreground">
@@ -677,12 +720,14 @@ export default function ExitLagPage(): React.ReactElement {
                       return p.name.toLowerCase().includes(q) || (p.title && p.title.toLowerCase().includes(q))
                     })
                     .map((p) => {
-                      const isAlreadyAdded = settings?.perAppProcesses?.some((proc) => proc.toLowerCase() === p.name.toLowerCase())
+                      const isAlreadyAdded = settings?.perAppProcesses?.some((proc) =>
+                        isMacPlatform ? entryMatchesProc(proc, p.name, p.rule) : proc.toLowerCase() === p.name.toLowerCase()
+                      )
                       return (
                         <div
-                          key={p.name}
+                          key={p.rule ?? p.name}
                           onClick={() => {
-                            void handleAddPerAppProcess(p.name)
+                            void handleAddPerAppProcess(p.rule ?? p.name)
                             setShowProcessPickerModal(false)
                           }}
                           className={cn(

@@ -8,6 +8,7 @@
  *  - «из списка»: тот же запрос через временное ядро с подключённым узлом —
  *    ровно так выходят приложения из списка.
  */
+import { macEntryMatches } from '../utils/mac-apps'
 import { appendLog, getIncyStatus, loadIncyNodes, loadIncySettings, normalizePerAppList } from './incy-engine'
 import { startTempCore, socksConnect, withCoreSlot } from './core-probe'
 import path from 'node:path'
@@ -133,7 +134,10 @@ export async function checkExitLag(): Promise<ExitLagCheckResult> {
   const mode = settings.perAppMode === 'bypass_only' ? 'bypass_only' : 'proxy_only'
   const list = normalizePerAppList(settings.perAppProcesses).map((p) => p.toLowerCase())
   const selfName = path.basename(app.getPath('exe')).toLowerCase()
-  const selfListed = list.includes(selfName)
+  const selfListed =
+    process.platform === 'darwin'
+      ? list.some((e) => macEntryMatches(e, app.getPath('exe')))
+      : list.includes(selfName)
   const nodeId = st.activeNodeId ?? st.selectedNodeId ?? null
 
   const [outside, listed] = await Promise.all([

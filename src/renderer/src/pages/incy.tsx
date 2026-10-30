@@ -1,3 +1,4 @@
+import { appLabel } from '@renderer/utils/per-app'
 import React, { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -2028,7 +2029,7 @@ export default function IncyPage(): React.ReactElement {
                   <div className="font-semibold text-foreground">Включён режим ExitLag</div>
                   <div className="text-muted-foreground truncate">
                     {(settings.perAppProcesses?.length ?? 0) > 0
-                      ? `Через VPN идут только: ${(settings.perAppProcesses ?? []).join(', ')}. Остальной трафик — напрямую.`
+                      ? `Через VPN идут только: ${(settings.perAppProcesses ?? []).map(appLabel).join(', ')}. Остальной трафик — напрямую.`
                       : 'Список приложений пуст — через VPN сейчас ничего не идёт. Добавьте приложения на вкладке ExitLag.'}
                   </div>
                 </div>

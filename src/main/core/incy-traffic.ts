@@ -8,6 +8,7 @@
  * хостам. Данные живут до остановки/нового запуска туннеля.
  */
 import path from 'node:path'
+import { outerBundle } from '../utils/mac-apps'
 import { clashRequest, clashApiActive, onTunnelSession } from './incy-stats'
 
 const SAMPLE_MS = 1500
@@ -53,6 +54,7 @@ interface AppRec {
   open: number
   route: string
   hosts: Map<string, HostTraffic>
+  rule?: string
 }
 
 export interface AppTraffic {
@@ -67,6 +69,8 @@ export interface AppTraffic {
   /** «VPN» / «напрямую» / тег — последний маршрут. */
   route: string
   hostCount: number
+  /** macOS: путь бандла/файла — запись для списка ExitLag. */
+  rule?: string
   /** Только для запрошенного приложения. */
   hosts?: HostTraffic[]
 }
@@ -79,6 +83,8 @@ export interface LiveConnection {
   network: 'tcp' | 'udp' | string
   route: string
   rule: string
+  /** macOS: путь бандла/файла процесса — запись для списка ExitLag. */
+  appRule?: string
   upload: number
   download: number
   /** Начало, мс с эпохи. */
@@ -100,7 +106,18 @@ export function routeOf(chains: string[] | undefined): string {
 }
 
 function procName(p: string | undefined): string {
+  if (p && process.platform === 'darwin') {
+    // macOS: все процессы внутри .app (помощники Chrome, Discord…) — одно приложение.
+    const bundle = outerBundle(p)
+    return path.posix.basename(bundle ?? p).replace(/\.app$/i, '')
+  }
   return p ? path.win32.basename(p) : ''
+}
+
+/** macOS: запись списка ExitLag для процесса — бандл `.app` либо путь файла. */
+function procRule(p: string | undefined): string | undefined {
+  if (!p || process.platform !== 'darwin') return undefined
+  return outerBundle(p) ?? p
 }
 
 function hostOf(m: RawConn['metadata']): string {
@@ -140,7 +157,7 @@ async function tick(): Promise<void> {
       const key = name.toLowerCase()
       let a = apps.get(key)
       if (!a) {
-        a = { name, download: 0, upload: 0, lastSeen: now, firstSeen: now, downSpeed: 0, upSpeed: 0, open: 0, route: '—', hosts: new Map() }
+        a = { name, download: 0, upload: 0, lastSeen: now, firstSeen: now, downSpeed: 0, upSpeed: 0, open: 0, route: '—', hosts: new Map(), rule: procRule(c.metadata?.processPath) }
         apps.set(key, a)
       }
       const route = routeOf(c.chains)
@@ -212,6 +229,7 @@ export function getAppTraffic(withHostsOf?: string): { active: boolean; apps: Ap
       firstSeen: a.firstSeen,
       route: a.route,
       hostCount: a.hosts.size,
+      ...(a.rule ? { rule: a.rule } : {}),
       ...(withHostsOf && a.name.toLowerCase() === withHostsOf.toLowerCase()
         ? { hosts: [...a.hosts.values()].sort((x, y) => y.download + y.upload - (x.download + x.upload)).slice(0, 200) }
         : {})
@@ -231,6 +249,7 @@ export async function getConnections(): Promise<LiveConnection[] | null> {
     network: String(c.metadata?.network || 'tcp').toLowerCase(),
     route: routeOf(c.chains),
     rule: [c.rule, c.rulePayload].filter(Boolean).join(': '),
+    ...(procRule(c.metadata?.processPath) ? { appRule: procRule(c.metadata?.processPath) } : {}),
     upload: Number(c.upload) || 0,
     download: Number(c.download) || 0,
     start: Date.parse(c.start ?? '') || 0

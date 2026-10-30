@@ -3,6 +3,7 @@ import { Gamepad2, Loader2, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { cn } from '@renderer/lib/utils'
+import { isMacPlatform } from '@renderer/utils/per-app'
 import { systemScanInstalledGames, type InstalledGame } from '@renderer/utils/ipc'
 
 interface Props {
@@ -62,7 +63,7 @@ const InstalledGamesModal: React.FC<Props> = ({ open, onClose, existing, onAdd }
         <div className="flex items-center justify-between border-b border-border/40 p-4">
           <div className="flex items-center gap-2 text-sm font-bold">
             <Gamepad2 className="h-4 w-4 text-primary" />
-            Установленные игры (Steam, Epic)
+            {isMacPlatform ? 'Установленные игры (Steam, Epic, Приложения)' : 'Установленные игры (Steam, Epic)'}
           </div>
           <Button size="icon-sm" variant="ghost" onClick={onClose} className="h-7 w-7">
             <X className="h-4 w-4" />
@@ -76,11 +77,11 @@ const InstalledGamesModal: React.FC<Props> = ({ open, onClose, existing, onAdd }
         <div className="min-h-[250px] flex-1 space-y-2 overflow-y-auto p-3">
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-16 text-xs text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Ищу игры в библиотеках Steam и Epic…
+              <Loader2 className="h-4 w-4 animate-spin" /> {isMacPlatform ? 'Ищу игры Steam, Epic и в «Программах»…' : 'Ищу игры в библиотеках Steam и Epic…'}
             </div>
           ) : visible.length === 0 ? (
             <div className="py-16 text-center text-xs text-muted-foreground">
-              {games && games.length === 0 ? 'Игры Steam и Epic не найдены' : 'Ничего не найдено'}
+              {games && games.length === 0 ? (isMacPlatform ? 'Игры для macOS не найдены' : 'Игры Steam и Epic не найдены') : 'Ничего не найдено'}
             </div>
           ) : (
             visible.map((g) => (

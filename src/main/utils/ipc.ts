@@ -8,6 +8,7 @@ import { fetchAppActivity } from '../core/incy-stats'
 import { getAppTraffic, getConnections, closeConnection } from '../core/incy-traffic'
 import { extractServerIp, extractServerHost } from './server-ip'
 import { listRunningProcesses } from './process-helper'
+import { describePickedPath } from './mac-apps'
 import { getAppConfig, patchAppConfig, resetAppSettings } from '../config'
 import { applyTheme, readThemeCss, setNativeTheme } from '../resolve/theme'
 import {
@@ -685,6 +686,21 @@ export function registerIpcMainHandlers(): void {
     }
   }))
   ipcMain.handle('dialog:pickExecutable', h(async () => {
+    if (process.platform === 'darwin') {
+      // macOS: приложение-бандл (.app) → правило по его пути, оно ловит и
+      // вспомогательные процессы внутри; можно выбрать и одиночный файл.
+      const mac = await dialog.showOpenDialog({
+        title: 'Выберите приложение',
+        defaultPath: '/Applications',
+        filters: [
+          { name: 'Applications', extensions: ['app'] },
+          { name: 'Все файлы', extensions: ['*'] }
+        ],
+        properties: ['openFile']
+      })
+      if (mac.canceled || mac.filePaths.length === 0) return null
+      return (await describePickedPath(mac.filePaths[0]))?.rule ?? null
+    }
     const res = await dialog.showOpenDialog({
       title: 'Выберите исполняемый файл приложения',
       filters: [{ name: 'Программы (.exe)', extensions: ['exe'] }],

@@ -1,8 +1,13 @@
 import { exec, execFile } from 'node:child_process'
+import { collectRunningMacApps, outerBundle } from './mac-apps'
 
 export interface RunningProcessInfo {
   name: string
   title?: string
+  /** macOS: что записать в список ExitLag (путь бандла `.app` или файла). */
+  rule?: string
+  /** macOS: исполняемые файлы приложения, которые сейчас запущены. */
+  names?: string[]
 }
 
 /**
@@ -97,24 +102,20 @@ export function listRunningProcesses(): Promise<RunningProcessInfo[]> {
 }
 
 /**
- * macOS: запущенные приложения (.app) через `ps -axo comm=`.
- * Берём только процессы из `X.app/Contents/MacOS/…` — системные демоны и
- * вспомогательные процессы в список для пользователя не попадают.
+ * macOS: запущенные приложения, сгруппированные по бандлам `.app` (трафик
+ * Chrome идёт из «Google Chrome Helper», а не из «Google Chrome»): название —
+ * имя бандла, правило — путь бандла, внутри — все его запущенные процессы.
  */
-function listRunningProcessesDarwin(): Promise<RunningProcessInfo[]> {
-  return new Promise((resolve) => {
-    execFile('/bin/ps', ['-axo', 'comm='], { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
-      if (err || !stdout) return resolve([])
-      const map = new Map<string, RunningProcessInfo>()
-      for (const line of stdout.split('\n')) {
-        const m = /\/([^/]+)\.app\/Contents\/MacOS\/[^/]+$/.exec(line.trim())
-        if (!m) continue
-        const name = m[1]
-        if (!map.has(name.toLowerCase())) map.set(name.toLowerCase(), { name })
-      }
-      resolve(Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })))
-    })
-  })
+async function listRunningProcessesDarwin(): Promise<RunningProcessInfo[]> {
+  const apps = await collectRunningMacApps()
+  return apps
+    .filter((a) => a.isApp || !outerBundle(a.rule))
+    .map((a) => ({
+      name: a.title,
+      title: a.names.length > 1 ? `${a.path} · ещё ${a.names.length - 1} внутри` : a.path,
+      rule: a.rule,
+      names: a.names
+    }))
 }
 
 /** Запущен ли процесс с таким именем образа (`pgrep -x`) — macOS; на других платформах false. */
