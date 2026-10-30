@@ -3755,7 +3755,12 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         // ENABLE_DEPRECATED_TUN_ADDRESS_X is set. Using the merged form keeps
         // the tunnel working on 1.11+ without relying on a compatibility flag
         // that disappears in 1.12.
-        address: ['172.19.0.1/30'],
+        // macOS: strict_route там не действует, и при одном IPv4-адресе весь
+        // IPv6 шёл бы мимо туннеля напрямую через провайдера — YouTube и другие
+        // сайты с IPv6 не открывались. Поэтому на Mac TUN забирает и ::/0,
+        // а ниже IPv6 отклоняется (браузер сразу уходит на IPv4 через VPN) —
+        // как на Windows, где утечку закрывает strict_route.
+        address: process.platform === 'darwin' ? ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'] : ['172.19.0.1/30'],
         auto_route: true,
         // strict_route на macOS не действует (только Linux и Windows).
         ...(process.platform === 'darwin' ? {} : { strict_route: true }),
@@ -4148,6 +4153,11 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         ip_cidr: resolvedServerIps.map((ip) => `${ip}/${net.isIPv6(ip) ? 128 : 32}`),
         outbound: 'direct'
       })
+    }
+    // macOS + TUN: IPv6 захвачен туннелем (см. tun-in) — отклоняем его после
+    // правил «ядра и сервер узла напрямую», чтобы не было утечки мимо VPN.
+    if (process.platform === 'darwin' && mode === 'tun') {
+      config.route.rules.push({ ip_version: 6, action: 'reject' })
     }
     if (nodeDomains.length > 0) {
       config.route.rules.push({ domain: nodeDomains, outbound: 'direct' })
