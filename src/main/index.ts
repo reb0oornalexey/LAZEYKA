@@ -18,6 +18,7 @@ import { restoreGameModeFromConfig } from './core/game-mode'
 import { clearSystemProxy, clearSystemProxySync } from './utils/system-proxy'
 import { appLog } from './utils/app-logger'
 import { killRegisteredChildrenSync } from './utils/child-registry'
+import { reapOrphanDaemonCore, stopCoreViaDaemonSync } from './core/incy-mac-service'
 import { enableAutoRun, disableAutoRun } from './sys/autoRun'
 import { isRunningAsAdmin, relaunchElevated, ELEVATED_FLAG } from './utils/elevation'
 import { pruneOldLogs, flushLogsNow, currentLogFilePath } from './utils/file-logger'
@@ -130,6 +131,11 @@ app.whenReady().then(async () => {
     // держит TUN и порты, и новый туннель не поднимается.
     const reaped = killRegisteredChildrenSync()
     if (reaped > 0) appLog('warn', `Завершено процессов, оставшихся от прошлого запуска: ${reaped}`)
+    // macOS: ядро TUN живёт в службе и переживает краш приложения — без остановки
+    // оно держало бы маршруты и DNS, а его Xray-мост уже мёртв.
+    if (process.platform === 'darwin') {
+      await Promise.race([reapOrphanDaemonCore().catch(() => false), new Promise((r) => setTimeout(r, 5000))])
+    }
   } catch (e) {
     appLog('error', `Ошибка инициализации: ${e}`)
     dialog.showErrorBox('LAZEYKA init failed', `${e}`)
@@ -329,6 +335,8 @@ function syncKillChildren(): void {
     try {
       killRegisteredChildrenSync()
       clearSystemProxySync()
+      // Ядро TUN в службе: синхронно «постучаться» в неё запросом stop (best effort).
+      stopCoreViaDaemonSync()
     } catch { /* noop */ }
     return
   }

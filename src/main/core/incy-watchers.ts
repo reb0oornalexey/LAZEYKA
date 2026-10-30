@@ -22,6 +22,7 @@ import {
   refreshIncySubscription
 } from './incy-engine'
 import { showSystemNotification } from '../utils/notifications'
+import { macServiceState, notifyMacService } from './incy-mac-service'
 import { appLog } from '../utils/app-logger'
 
 // ---- Sleep / wake ---------------------------------------------------------
@@ -252,7 +253,30 @@ export function installSubscriptionUpdater(): void {
   timer.unref?.()
 }
 
+/**
+ * macOS: служба lxd хранит ЗАЩИЩЁННУЮ копию ядра, поэтому после обновления
+ * LAZEYKA с новым sing-box она остаётся со старым. Проверяем при запуске и
+ * предлагаем обновить (повторная установка — снова один запрос пароля).
+ */
+export function installMacServiceWatcher(): void {
+  if (process.platform !== 'darwin') return
+  setTimeout(() => {
+    void macServiceState()
+      .then((info) => {
+        if (info.state !== 'needs_update') return
+        appLog('info', `[mac-service] служба ${info.serviceVersion ?? '?'} старше ядра ${info.bundledVersion ?? '?'}`)
+        notifyMacService({
+          reason: 'update',
+          state: info.state,
+          message: 'Служба LAZEYKA устарела: в приложении более новое ядро. Обновите службу (спросят пароль).'
+        })
+      })
+      .catch(() => void 0)
+  }, 10_000).unref?.()
+}
+
 export function installIncyWatchers(): void {
+  installMacServiceWatcher()
   installSleepWatcher()
   installExpiryWatcher()
   installMemoryMonitor()
