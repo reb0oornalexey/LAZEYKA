@@ -45,7 +45,7 @@ import AdmZip from 'adm-zip'
 // SING_BOX_VERSION / XRAY_VERSION.
 const SING_BOX_REPO = 'Leadaxe/sing-box-lx'
 const SING_BOX_VERSION = process.env.SING_BOX_VERSION || '1.14.4-lx.32'
-const XRAY_VERSION = process.env.XRAY_VERSION || '26.10.29'
+const XRAY_VERSION = process.env.XRAY_VERSION || '26.10.21'
 
 // Python для TgWsProxy: python-build-standalone (astral-sh), вариант
 // install_only_stripped. Минорная версия 3.12 — как во встроенном Python на
