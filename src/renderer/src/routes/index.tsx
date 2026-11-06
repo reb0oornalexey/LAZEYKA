@@ -10,6 +10,8 @@ import Logs from '@renderer/pages/logs'
 import Settings from '@renderer/pages/settings'
 import About from '@renderer/pages/about'
 import Support from '@renderer/pages/support'
+import Dns from '@renderer/pages/dns'
+import Scenarios from '@renderer/pages/scenarios'
 
 const Appearance = lazy(() => import('@renderer/pages/appearance'))
 
@@ -18,6 +20,8 @@ const routes = [
   { path: '/home', element: <Home /> },
   { path: '/telegram', element: <Telegram /> },
   { path: '/zapret', element: <Zapret /> },
+  { path: '/dns', element: <Dns /> },
+  { path: '/scenarios', element: <Scenarios /> },
   { path: '/incy', element: <Incy /> },
   { path: '/exitlag', element: <ExitLag /> },
   { path: '/optimizer', element: <Optimizer /> },

@@ -75,7 +75,10 @@ export function effectiveTokens(
   accent?: string | null
 ): Record<string, string> {
   const base = { ...baseTokens(s.presetId, custom), ...(accent ? accentTokens(accent) : {}) }
-  return { ...base, ...derivedFromOverrides(s.tokens, base), ...s.tokens }
+  // «Акцент из Windows» включён — он главнее своих правок акцентного цвета:
+  // раньше любая ручная правка primary молча перекрывала акцент системы, и
+  // переключатель «ничего не делал».
+  return { ...base, ...derivedFromOverrides(s.tokens, base), ...s.tokens, ...(accent ? accentTokens(accent) : {}) }
 }
 
 export function fontStack(settings: AppearanceSettings): string | null {

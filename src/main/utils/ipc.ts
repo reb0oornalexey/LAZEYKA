@@ -27,6 +27,8 @@ import {
   restartTgws,
   getTgwsLink,
   getTgwsShareLinks,
+  enableTgwsLan,
+  disableTgwsLan,
   checkTgwsWorkers,
   pingTelegramDataCenters
 } from '../core/tgws'
@@ -48,7 +50,10 @@ import {
   applySystemDns,
   getSystemDnsState,
   addCustomDnsProvider,
-  removeCustomDnsProvider
+  removeCustomDnsProvider,
+  updateCustomDnsProvider,
+  providersInstant,
+  confirmMacDohProfile
 } from '../core/dns-doh'
 import { getRealNetworkSpeed } from './network-stats'
 import { getGameModeStatus, setGameModeWatcher } from '../core/game-mode'
@@ -120,6 +125,7 @@ import {
 } from '../core/zapret'
 import {
   checkZapretUpdate,
+  getZapretInstalledVersion,
   installZapretUpdate,
   dismissZapretUpdate
 } from '../core/zapret-updater'
@@ -360,6 +366,7 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('zapret:installBundle', h((bytes) =>
     installZapretBundle(bytes as Uint8Array)
   ))
+  ipcMain.handle('zapret:installedVersion', h(() => getZapretInstalledVersion()))
   ipcMain.handle('zapret:checkUpdate', h((force) => checkZapretUpdate(Boolean(force))))
   ipcMain.handle('zapret:installUpdate', h((url, expectedVersion) =>
     installZapretUpdate(url as string, expectedVersion as string | undefined)
@@ -434,6 +441,8 @@ export function registerIpcMainHandlers(): void {
 
   // ---- Tgws Sharing & Data Centers --------------------------------------
   ipcMain.handle('tgws:getShareLinks', h(() => getTgwsShareLinks()))
+  ipcMain.handle('tgws:enableLan', h(() => enableTgwsLan()))
+  ipcMain.handle('tgws:disableLan', h(() => disableTgwsLan()))
   ipcMain.handle('tgws:checkWorkers', h(() => checkTgwsWorkers()))
   ipcMain.handle('tgws:pingDataCenters', h(() => pingTelegramDataCenters()))
 
@@ -457,10 +466,14 @@ export function registerIpcMainHandlers(): void {
 
   // ---- Encrypted DNS (DoH) -----------------------------------------------
   ipcMain.handle('dns:getProviders', h(() => getDohProvidersWithPing()))
+  ipcMain.handle('dns:providersInstant', h(() => providersInstant()))
+  ipcMain.handle('dns:updateCustom', h((id, input) => updateCustomDnsProvider(String(id), input as any)))
+  ipcMain.handle('dns:confirmMacProfile', h((id) => confirmMacDohProfile(String(id))))
   ipcMain.handle('dns:applySystemDns', h((ip) => applySystemDns(String(ip) as any)))
   ipcMain.handle('dns:getSystemState', h(() => getSystemDnsState()))
   ipcMain.handle('dns:addCustom', h((input) => addCustomDnsProvider(input as any)))
   ipcMain.handle('dns:removeCustom', h((id) => removeCustomDnsProvider(String(id))))
+  ipcMain.handle('dns:setOrder', h(async (ids) => (await import('../core/dns-doh')).setDnsOrder(Array.isArray(ids) ? ids.map(String) : [])))
   ipcMain.handle(
     'dns:macProfile',
     h(async (id) => {
@@ -523,6 +536,15 @@ export function registerIpcMainHandlers(): void {
 
   // ---- INCY proxy cores (sing-box / Xray) --------------------------------
   ipcMain.handle('incy:checkCoreUpdates', h(() => checkCoreUpdates()))
+  // Одной кнопкой из ошибки «ядро не поддерживает AmneziaWG»: найти свежий
+  // sing-box-lx и поставить его, без похода в настройки ядер.
+  ipcMain.handle('incy:updateSingBoxNow', h(async () => {
+    const st = (await checkCoreUpdates()).find((s) => s.id === 'sing-box')
+    if (!st?.assetUrl || st.kind === 'none') {
+      return { success: true, message: `Ядро уже последнее${st?.installed ? ` (${st.installed})` : ''}` }
+    }
+    return installCoreUpdate('sing-box', st.assetUrl, st.latest)
+  }))
   ipcMain.handle('incy:installCoreUpdate', h((id, url, version) =>
     installCoreUpdate(id as 'sing-box' | 'xray', String(url), version as string | undefined)
   ))
@@ -627,6 +649,17 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('incy:pingGameServer', h((target) => optimizeRoute(String(target))))
   // Тест скорости через выбранный сервер (временное ядро, VPN не рвётся).
   ipcMain.handle('incy:speedTest', h((nodeId) => runIncySpeedTest(String(nodeId))))
+  // Тест скорости интернета с главной: через INCY, если подключён, иначе напрямую.
+  ipcMain.handle('speed:run', h(async (service, economy) => {
+    const { runNetSpeedTest } = await import('../core/speed-test')
+    const s = String(service)
+    return runNetSpeedTest(s === 'ookla' || s === 'yandex' ? s : 'cloudflare', economy === true)
+  }))
+  ipcMain.handle('speed:runNode', h(async (nodeId, service, economy) => {
+    const { runNodeSpeedTest } = await import('../core/speed-test')
+    const s = String(service)
+    return runNodeSpeedTest(String(nodeId), s === 'ookla' || s === 'yandex' ? s : 'cloudflare', economy === true)
+  }))
   // IP сервера из оптимизатора → наш список Zapret (тот же, что на вкладке
   // Zapret, list-general.txt). Только IP: без connect, порта и пароля.
   // Работающий Zapret перезапускается, чтобы winws перечитал список.
@@ -824,6 +857,45 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('app:quit', h(() => app.quit()))
   // quit(), а не exit(): иначе пропускалась штатная остановка служб и
   // сохранение последних строк лога и счётчиков трафика.
+  // ---- Мастер «Ничего не открывается» --------------------------------------
+  ipcMain.handle('rescue:run', h(async () => (await import('../core/rescue')).runRescue()))
+  ipcMain.handle('rescue:fix', h(async (action, arg) =>
+    (await import('../core/rescue')).rescueFix(String(action), arg == null ? undefined : String(arg))
+  ))
+  // ---- Сценарии ----------------------------------------------------------
+  ipcMain.handle('scenarios:list', h(async () => (await import('../core/scenarios')).listScenarios()))
+  // После сохранения/удаления перерегистрируем горячие клавиши — у сценария может быть своя.
+  ipcMain.handle('scenarios:save', h(async (s) => {
+    const list = (await import('../core/scenarios')).saveScenario(s as any)
+    await (await import('../resolve/shortcut')).initShortcut().catch(() => [])
+    return list
+  }))
+  ipcMain.handle('scenarios:delete', h(async (id) => {
+    const list = (await import('../core/scenarios')).deleteScenario(String(id))
+    await (await import('../resolve/shortcut')).initShortcut().catch(() => [])
+    return list
+  }))
+  ipcMain.handle('scenarios:systemIcons', h(async () => (await import('../core/win-icons')).systemIcons()))
+  ipcMain.handle('scenarios:listAppIcons', h(async () => (await import('../core/app-icons')).listAppIcons()))
+  ipcMain.handle('scenarios:pickIcon', h(async () => {
+    const win = BrowserWindow.getFocusedWindow() ?? undefined
+    const opts: Electron.OpenDialogOptions = {
+      title: 'Значок для сценария',
+      properties: ['openFile'],
+      filters:
+        process.platform === 'darwin'
+          ? [{ name: 'Программы и картинки', extensions: ['app', 'png', 'jpg', 'jpeg', 'icns'] }]
+          : [{ name: 'Программы, ярлыки и картинки', extensions: ['exe', 'lnk', 'url', 'ico', 'dll', 'png', 'jpg', 'jpeg'] }]
+    }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    if (r.canceled || !r.filePaths[0]) return null
+    return (await import('../core/app-icons')).iconForFile(r.filePaths[0])
+  }))
+  ipcMain.handle('scenarios:apply', h(async (id) => (await import('../core/scenarios')).applyScenario(String(id))))
+  ipcMain.handle('app:reloadShortcuts', h(async () => {
+    const { initShortcut } = await import('../resolve/shortcut')
+    return initShortcut()
+  }))
   ipcMain.handle('app:relaunch', h(() => {
     app.relaunch()
     app.quit()

@@ -1,4 +1,6 @@
+import { fetchWithMirror } from '../utils/mirror'
 import { installZapretBundle } from './zapret'
+import { bundledZapretVersion } from './zapret-service-settings'
 import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 import { fetchLatestGithubRelease, type GhRelease } from '../utils/github-release'
@@ -84,7 +86,21 @@ function backgroundRefresh(): void {
  */
 function installedVersion(cfgInstalled?: string): string | undefined {
   const v = cfgInstalled?.trim()
-  return v ? v : undefined
+  if (v) return v
+  // Встроенная сборка: версию берём из её service.bat — пользователь видит
+  // номер, а не «встроенная», и не получает ложного «есть обновление».
+  if (process.platform === 'win32') return bundledZapretVersion()
+  return undefined
+}
+
+/** Installed/bundled version for the UI — works offline (no GitHub call). */
+export async function getZapretInstalledVersion(): Promise<string | null> {
+  if (process.platform === 'darwin') {
+    const cfg = await getAppConfig()
+    return cfg.zapret?.installedVersion?.trim() || null
+  }
+  const cfg = await getAppConfig()
+  return installedVersion(cfg.zapret?.installedVersion) ?? null
 }
 
 /** Baseline used for comparison — an unknown install is older than anything. */
@@ -167,7 +183,7 @@ export async function installZapretUpdate(
 
   let buf: Buffer
   try {
-    const res = await fetch(assetUrl, { headers: { 'User-Agent': REQUEST_HEADERS['User-Agent'] } })
+    const res = await fetchWithMirror(assetUrl, { headers: { 'User-Agent': REQUEST_HEADERS['User-Agent'] } })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const ab = await res.arrayBuffer()
     buf = Buffer.from(ab)

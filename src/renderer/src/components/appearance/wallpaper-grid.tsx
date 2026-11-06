@@ -79,7 +79,7 @@ function SolidColorRow({ label, value, onChange }: { label: string; value: strin
     <div className="flex items-center justify-between px-1 text-xs">
       <span>{label}</span>
       <ColorPicker value={value} onChange={onChange} title={label}>
-        <button type="button" className="block h-5 w-8 cursor-pointer rounded-md border border-border">
+        <button type="button" className="block h-5 w-8 cursor-pointer overflow-hidden rounded-md shadow-sm">
           <Swatch color={value} className="size-full rounded-[5px]" />
         </button>
       </ColorPicker>

@@ -11,6 +11,15 @@ import BaseErrorBoundary from './components/base/base-error-boundary'
 import { Toaster } from './components/ui/sonner'
 import { appQuit } from './utils/ipc'
 import { AppConfigProvider } from './hooks/use-app-config'
+import { installSpotlight } from './lib/appearance/spotlight'
+import { installSoundListener, setCurrentSound } from './lib/sound'
+import { installScenarioEvents } from './lib/scenario-events'
+import { getAppConfig } from './utils/ipc'
+
+installSpotlight()
+installSoundListener()
+installScenarioEvents()
+void getAppConfig().then((c) => setCurrentSound(c.hotkeySoundId)).catch(() => void 0)
 
 init().then(() => {
   document.addEventListener('keydown', (e) => {

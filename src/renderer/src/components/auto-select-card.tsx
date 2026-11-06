@@ -100,7 +100,7 @@ export default function AutoSelectCard({ settings, nodes, onPatch, className }: 
         <label className="flex items-center justify-between gap-3 cursor-pointer">
           <span className="text-[11px] leading-snug">
             <span className="font-semibold text-foreground block">Подключаться к лучшему после замера</span>
-            <span className="text-muted-foreground">Оптимизатор маршрута ExitLag сам переключит на узел с лучшей оценкой.</span>
+            <span className="text-muted-foreground">После замера пинга в INCY или оптимизатора ExitLag — переход на заметно более быстрый узел.</span>
           </span>
           <Switch
             checked={Boolean(settings?.routeAutoConnectBest)}

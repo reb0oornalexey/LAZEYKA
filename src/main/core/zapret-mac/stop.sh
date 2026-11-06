@@ -9,10 +9,16 @@ TOKEN_FILE=/var/run/lazeyka-zapret.pf-token
 KEEPINIT_FILE=/var/db/lazeyka-zapret.keepinit
 ARMED_FILE=/var/run/lazeyka-zapret.armed
 
+/bin/echo "$(/bin/date '+%Y-%m-%d %H:%M:%S') LAZEYKA: остановка по команде из приложения" >>'/Library/Application Support/LAZEYKA/zapret/zapret.log' 2>/dev/null || true
 /bin/rm -f "$ARMED_FILE"
 /bin/launchctl disable "system/$LABEL" >/dev/null 2>&1 || true
 /bin/launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
 /sbin/pfctl -a "$ANCHOR" -F all >/dev/null 2>&1 || true
+# LAZEYKA: сначала TERM и до 3 с ожидания — run.sh сам аккуратно гасит движок;
+# KILL только если он завис. Раньше сразу шёл kill -9, и в журнале оставалось «Killed: 9».
+/usr/bin/pkill -TERM -x utunws >/dev/null 2>&1 || true
+N=0
+while /usr/bin/pgrep -x utunws >/dev/null 2>&1 && [ "$N" -lt 30 ]; do sleep 0.1; N=$((N + 1)); done
 /usr/bin/pkill -9 -x utunws >/dev/null 2>&1 || true
 if [ -s "$TOKEN_FILE" ]; then
     TOKEN=$(/bin/cat "$TOKEN_FILE" 2>/dev/null || true)

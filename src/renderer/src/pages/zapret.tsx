@@ -10,6 +10,7 @@ import {
   zapretStop,
   zapretRestart,
   zapretCheckUpdate,
+  zapretInstalledVersion,
   zapretInstallUpdate,
   zapretDismissUpdate,
   zapretRunStrategyTest,
@@ -58,6 +59,11 @@ const Zapret: React.FC = () => {
 
   // ---- Auto-update banner
   const [updateInfo, setUpdateInfo] = useState<ZapretUpdateInfo | null>(null)
+  // Версия без сети: встроенная сборка показывает свой номер, даже если GitHub недоступен.
+  const [localVersion, setLocalVersion] = useState<string | null>(null)
+  useEffect(() => {
+    void zapretInstalledVersion().then(setLocalVersion).catch(() => void 0)
+  }, [updateInfo?.installed])
   const [installing, setInstalling] = useState(false)
   const installingRef = useRef(false)
 
@@ -235,7 +241,7 @@ const Zapret: React.FC = () => {
       <ComponentUpdateDialog
         component="zapret"
         open={updateDialogOpen}
-        info={updateInfo}
+        info={updateInfo ?? { installed: zapret?.installedVersion, latest: zapret?.installedVersion, hasUpdate: false }}
         onInstall={installUpdate}
         onLater={dismissUpdate}
         onClose={() => setUpdateDialogOpen(false)}
@@ -243,7 +249,7 @@ const Zapret: React.FC = () => {
       <div className="px-4 pb-6 space-y-4">
         {showBanner && updateInfo && (
           <div className={cn(
-            'relative flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 transition',
+            'ui-glow relative flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 transition',
             installing && 'pointer-events-none opacity-80'
           )}>
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/20 text-primary ">
@@ -281,8 +287,9 @@ const Zapret: React.FC = () => {
           icon={ZapretIcon}
           title="Обход DPI (Zapret)"
           subtitle={active ?? 'Выберите стратегию ниже'}
-          version={zapret?.installedVersion ?? updateInfo?.installed}
+          version={zapret?.installedVersion ?? updateInfo?.installed ?? localVersion ?? undefined}
           versionFallback="встроенная"
+          onVersionClick={() => setUpdateDialogOpen(true)}
           status={status}
           disabled={isTestRunning}
           onToggle={(v) => {

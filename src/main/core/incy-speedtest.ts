@@ -6,7 +6,7 @@
  * Сервер замера — speed.cloudflare.com (тот же, что у speed.cloudflare.com в
  * браузере): задержка, скачивание в несколько потоков и отдача.
  *
- * Расход трафика ограничен: не больше ~60 МБ на скачивание и 10 МБ на
+ * Расход трафика ограничен: не больше ~150 МБ на скачивание и 25 МБ на
  * отдачу, даже на очень быстром канале (важно для подписок с лимитом).
  */
 import tls from 'node:tls'
@@ -16,11 +16,11 @@ import { startTempCore, socksConnect, withCoreSlot, type TempCore } from './core
 import { loadIncyNodes } from './incy-engine'
 
 const HOST = 'speed.cloudflare.com'
-const DOWNLOAD_STREAMS = 3
-const DOWNLOAD_SECONDS = 8
-const DOWNLOAD_CAP_BYTES = 60 * 1024 * 1024
-const UPLOAD_BYTES = 10 * 1024 * 1024
-const UPLOAD_TIMEOUT_MS = 20_000
+const DOWNLOAD_STREAMS = 6
+const DOWNLOAD_SECONDS = 12
+const DOWNLOAD_CAP_BYTES = 150 * 1024 * 1024
+const UPLOAD_BYTES = 25 * 1024 * 1024
+const UPLOAD_TIMEOUT_MS = 30_000
 
 let running = false
 

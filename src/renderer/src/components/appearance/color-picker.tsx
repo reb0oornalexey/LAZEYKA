@@ -27,8 +27,11 @@ const toHsva = (value: string, prev?: HSVA): HSVA => {
 }
 
 const Swatch: React.FC<{ color: string; className?: string }> = ({ color, className }) => (
-  <span className={cn('cp-checker relative block overflow-hidden rounded-md', className)}>
-    <span className="absolute inset-0" style={{ background: color }} />
+  // Шахматка (для прозрачных цветов) просвечивала по сглаженному краю
+  // скругления — у тёмных цветов вокруг образца появлялась светлая рамка.
+  // Цветной слой чуть шире и рисуется поверх с тем же скруглением.
+  <span className={cn('cp-checker relative block overflow-hidden rounded-md [isolation:isolate]', className)}>
+    <span className="absolute -inset-px" style={{ background: color }} />
   </span>
 )
 
@@ -174,7 +177,7 @@ export const ColorPicker: React.FC<PickerProps> = ({ value, onChange, onLive, on
     <Popover.Root open={open} onOpenChange={handleOpen}>
       <Popover.Trigger asChild>
         {children ?? (
-          <button type="button" title={title} className={cn('block h-7 w-9 shrink-0 cursor-pointer rounded-md border border-border', className)}>
+          <button type="button" title={title} className={cn('block h-7 w-9 shrink-0 cursor-pointer overflow-hidden rounded-md shadow-sm', className)}>
             <Swatch color={value} className="h-full w-full rounded-[5px]" />
           </button>
         )}
@@ -326,7 +329,7 @@ export const ColorPicker: React.FC<PickerProps> = ({ value, onChange, onLive, on
                       emit(toHsva(c, hsva))
                       commit()
                     }}
-                    className="size-5 cursor-pointer rounded border border-border"
+                    className="size-5 cursor-pointer overflow-hidden rounded shadow-sm"
                   >
                     <Swatch color={c} className="size-full rounded-[3px]" />
                   </button>

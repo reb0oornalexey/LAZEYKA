@@ -26,6 +26,7 @@
  * a visible notice instead of a broken VPN.
  */
 
+import { fetchWithMirror } from '../utils/mirror'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync, copyFileSync, statSync } from 'node:fs'
 import path from 'node:path'
@@ -133,6 +134,10 @@ export function classifyUpdate(installed?: string, latest?: string): UpdateKind 
   const a = parseSemver(installed)
   const b = parseSemver(latest)
   if (!a || !b) return 'unknown'
+  // Обычное ядро → sing-box-lx (с AmneziaWG) в пределах той же мажорной версии —
+  // ставится само: без lx не работают WARP и AmneziaWG-узлы, а «минорное»
+  // обновление ждало подтверждения, которого пользователь не видел.
+  if (b[0] === a[0] && lxBuild(installed) < 0 && lxBuild(latest) >= 0 && (b[1] > a[1] || (b[1] === a[1] && b[2] >= a[2]))) return 'patch'
   if (b[0] > a[0]) return 'major'
   if (b[0] < a[0]) return 'none'
   if (b[1] > a[1]) return 'minor'
@@ -340,7 +345,7 @@ export async function installCoreUpdate(
 
   let buf: Buffer
   try {
-    const res = await fetch(assetUrl, { headers: { 'User-Agent': REQUEST_HEADERS['User-Agent'] } })
+    const res = await fetchWithMirror(assetUrl, { headers: { 'User-Agent': REQUEST_HEADERS['User-Agent'] } })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     buf = Buffer.from(await res.arrayBuffer())
   } catch (e) {

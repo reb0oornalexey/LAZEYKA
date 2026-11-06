@@ -62,7 +62,7 @@ export const AdvancedTab: React.FC = () => {
       {ADVANCED_GROUPS.map((g) => {
         const isOpen = open.includes(g.id)
         return (
-          <section key={g.id} className="rounded-xl border border-border bg-card text-card-foreground">
+          <section key={g.id} className="ui-glow rounded-xl border border-border bg-card text-card-foreground">
             <button
               type="button"
               onClick={() => toggle(g.id)}

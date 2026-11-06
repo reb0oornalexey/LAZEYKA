@@ -1,0 +1,106 @@
+name: mirror-sourceforge
+
+# Зеркало загрузок на SourceForge — для тех, у кого GitHub тормозит (РФ).
+#
+# Что кладётся (структура повторяет GitHub, LAZEYKA сама строит адрес зеркала):
+#   /<tag>/<файл> — релизы LAZEYKA (.exe, .7z, .dmg). Их SourceForge и так
+#     забирает сам (Import from GitHub); здесь — подстраховка, если синхронизация
+#     отстала: докладываем только то, чего ещё нет;
+#   /mirror/<owner>/<repo>/<tag>/<файл>
+#   - компоненты: Zapret (Flowseal), Zapret для macOS, TgWsProxy (архив исходников),
+#     ядра sing-box-lx и Xray — раз в сутки, только новые версии.
+#
+# Один раз настроить (Settings → Secrets and variables → Actions):
+#   secret  SF_USER     — логин SourceForge;
+#   secret  SF_SSH_KEY  — приватный SSH-ключ, публичная часть добавлена в
+#                         SourceForge → Account Settings → SSH Settings;
+#   variable SF_PROJECT — имя проекта на SourceForge (по умолчанию «lazeyka»).
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [build-mac]
+    types: [completed]
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror-sourceforge
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SF_PROJECT: ${{ vars.SF_PROJECT || 'lazeyka' }}
+    steps:
+      - name: Проверка настроек
+        id: cfg
+        run: |
+          if [ -z "${{ secrets.SF_USER }}" ] || [ -z "${{ secrets.SF_SSH_KEY }}" ]; then
+            echo "::warning::Зеркало не настроено: нет секретов SF_USER / SF_SSH_KEY — пропускаю."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: SSH-ключ SourceForge
+        if: steps.cfg.outputs.skip != '1'
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SF_SSH_KEY }}" > ~/.ssh/sf
+          chmod 600 ~/.ssh/sf
+          ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Релиз LAZEYKA
+        if: steps.cfg.outputs.skip != '1'
+        run: |
+          set -e
+          TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          mkdir -p "own/$TAG"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -D "own/$TAG" \
+            -p 'LAZEYKA_*' --skip-existing
+
+      - name: Компоненты (последние версии)
+        if: steps.cfg.outputs.skip != '1'
+        run: |
+          set -e
+          dl() { # repo pattern...
+            repo=$1; shift
+            tag=$(gh release view --repo "$repo" --json tagName -q .tagName) || return 0
+            mkdir -p "out/$repo/$tag"
+            for p in "$@"; do
+              gh release download "$tag" --repo "$repo" -D "out/$repo/$tag" -p "$p" --skip-existing || true
+            done
+            echo "$repo $tag"
+          }
+          dl Flowseal/zapret-discord-youtube 'zapret-discord-youtube*.zip'
+          dl Flowseal/zapret-mac-discord-youtube '*.zip' '*.tar.gz'
+          dl Leadaxe/sing-box-lx '*windows-amd64.zip' '*darwin-*.tar.gz' 'SHA256SUMS'
+          dl XTLS/Xray-core 'Xray-windows-64.zip' 'Xray-macos-*.zip'
+          # TgWsProxy ставится из архива исходников тега.
+          tg=$(gh release view --repo Flowseal/tg-ws-proxy --json tagName -q .tagName)
+          mkdir -p "out/Flowseal/tg-ws-proxy/$tg"
+          curl -fsSL -o "out/Flowseal/tg-ws-proxy/$tg/source.zip" \
+            "https://github.com/Flowseal/tg-ws-proxy/archive/refs/tags/$tg.zip"
+
+      - name: Загрузка на SourceForge
+        if: steps.cfg.outputs.skip != '1'
+        run: |
+          rsync -av --ignore-existing -e "ssh -i ~/.ssh/sf" own/ \
+            "${{ secrets.SF_USER }}@frs.sourceforge.net:/home/frs/project/$SF_PROJECT/"
+          rsync -av --ignore-existing -e "ssh -i ~/.ssh/sf" out/ \
+            "${{ secrets.SF_USER }}@frs.sourceforge.net:/home/frs/project/$SF_PROJECT/mirror/"
+
+      - name: Ссылка на зеркало в описании релиза
+        if: steps.cfg.outputs.skip != '1'
+        run: |
+          LINK="https://sourceforge.net/projects/$SF_PROJECT/files/$TAG/"
+          BODY=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body)
+          if ! printf '%s' "$BODY" | grep -q "sourceforge.net/projects/$SF_PROJECT"; then
+            printf '%s\n\n---\n🪞 **Зеркало (если GitHub медленный):** [SourceForge](%s)\n' "$BODY" "$LINK" > notes.md
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          fi

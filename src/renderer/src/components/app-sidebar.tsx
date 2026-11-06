@@ -8,12 +8,14 @@ import {
   Settings as SettingsIcon,
   Info as InfoIcon,
   Globe,
-  LifeBuoy,
+  Headset,
   PanelLeftClose,
   PanelLeftOpen,
   Gamepad2,
   Target,
-  Palette
+  Palette,
+  ShieldCheck,
+  Sparkles
 } from 'lucide-react'
 import ZapretIcon from '@renderer/components/zapret-icon'
 import TelegramIcon from '@renderer/components/telegram-icon'
@@ -46,7 +48,8 @@ const groups: { title: string | null; items: NavItem[] }[] = [
     title: 'Обход блокировок',
     items: [
       { key: 'zapret', path: '/zapret', icon: ZapretIcon, label: 'Zapret', service: 'zapret' },
-      { key: 'telegram', path: '/telegram', icon: TelegramIcon, label: 'Telegram', service: 'tgws' }
+      { key: 'telegram', path: '/telegram', icon: TelegramIcon, label: 'Telegram', service: 'tgws' },
+      { key: 'dns', path: '/dns', icon: ShieldCheck, label: 'DNS', service: null }
     ]
   },
   {
@@ -62,8 +65,9 @@ const groups: { title: string | null; items: NavItem[] }[] = [
     items: [
       { key: 'settings', path: '/settings', icon: SettingsIcon, label: 'Настройки', service: null },
       { key: 'appearance', path: '/appearance', icon: Palette, label: 'Оформление', service: null },
+      { key: 'scenarios', path: '/scenarios', icon: Sparkles, label: 'Сценарии', service: null },
       { key: 'about', path: '/about', icon: InfoIcon, label: 'Информация', service: null },
-      { key: 'support', path: '/support', icon: LifeBuoy, label: 'Поддержка', service: null },
+      { key: 'support', path: '/support', icon: Headset, label: 'Поддержка', service: null },
       { key: 'logs', path: '/logs', icon: ScrollText, label: 'Логи', service: null }
     ]
   }

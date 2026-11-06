@@ -5,7 +5,7 @@ import {
   Heart,
   Coins,
   ExternalLink,
-  LifeBuoy,
+  Headset,
   MessageSquare,
   Lightbulb,
   Bug,
@@ -94,7 +94,7 @@ const Support: React.FC = () => {
         <Card className="cyber-card border-primary/40">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <LifeBuoy className="size-4 text-primary" />
+              <Headset className="size-4 text-primary" />
               Поддержка: жалобы, вопросы, предложения
             </CardTitle>
           </CardHeader>
@@ -124,9 +124,9 @@ const Support: React.FC = () => {
             <button
               type="button"
               onClick={() => openExternalUrl(SUPPORT_TELEGRAM_URL)}
-              className="group w-full cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-primary/20 via-primary/15 to-primary/20 text-primary border border-primary/40 hover:border-primary/70 transition-all duration-200 active:scale-[0.98]"
+              className="group w-full cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-primary/20 via-primary/15 to-primary/20 text-primary border border-primary/40 hover:border-primary/70 transition-all duration-200 active:brightness-90"
             >
-              <LifeBuoy className="size-4 group-hover:scale-110 transition-transform" />
+              <Headset className="size-4 group-hover:scale-110 transition-transform" />
               <span>Открыть поддержку LAZEYKA в Telegram</span>
               <ExternalLink className="size-3 opacity-70" />
             </button>
@@ -174,7 +174,7 @@ const Support: React.FC = () => {
               <button
                 type="button"
                 onClick={() => openExternalUrl('https://www.donationalerts.com/r/reb0oorn')}
-                className="group cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-st-warn/15 via-orange-500/15 to-st-err/15 text-st-warn-text hover:text-st-warn-text border border-st-warn/30 hover:border-st-warn/60 shadow-[0_0_12px_rgba(245,158,11,0.15)] hover:shadow-[0_0_18px_rgba(245,158,11,0.3)] transition-all duration-200 active:scale-95"
+                className="group cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-st-warn/15 via-orange-500/15 to-st-err/15 text-st-warn-text hover:text-st-warn-text border border-st-warn/30 hover:border-st-warn/60 shadow-[0_0_12px_rgba(245,158,11,0.15)] hover:shadow-[0_0_18px_rgba(245,158,11,0.3)] transition-all duration-200 active:brightness-90"
               >
                 <Coins className="size-4 group-hover:scale-110 transition-transform" />
                 <span>DonationAlerts</span>
@@ -184,7 +184,7 @@ const Support: React.FC = () => {
               <button
                 type="button"
                 onClick={() => openExternalUrl('https://t.me/send?start=IVCka2D1cl42')}
-                className="group cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-st-info/15 via-st-info/15 to-indigo-500/15 text-st-info-text hover:text-st-info-text border border-st-info/30 hover:border-st-info/60 shadow-[0_0_12px_rgba(14,165,233,0.15)] hover:shadow-[0_0_18px_rgba(14,165,233,0.3)] transition-all duration-200 active:scale-95"
+                className="group cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-st-info/15 via-st-info/15 to-indigo-500/15 text-st-info-text hover:text-st-info-text border border-st-info/30 hover:border-st-info/60 shadow-[0_0_12px_rgba(14,165,233,0.15)] hover:shadow-[0_0_18px_rgba(14,165,233,0.3)] transition-all duration-200 active:brightness-90"
               >
                 <Send className="size-4 group-hover:scale-110 transition-transform" />
                 <span>CryptoBot в Telegram</span>

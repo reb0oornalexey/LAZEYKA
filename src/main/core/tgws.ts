@@ -755,20 +755,85 @@ export interface TgwsShareInfo {
   httpLanLink: string | null
 }
 
+/** Адаптеры, через которые телефон до ПК не достучится: VPN, туннели, виртуалки. */
+const VIRTUAL_IFACE =
+  /wintun|wireguard|tap-|tun|sing-box|incy|lazeyka|hyper-v|vethernet|vmware|virtualbox|vbox|wsl|docker|tailscale|zerotier|hamachi|radmin|openvpn|amnezia|loopback|bluetooth|^utun|^bridge|^awdl|^llw|^gif|^stf|^anpi|^ap\d/i
+
+/** Подсеть, похожая на домашнюю/офисную сеть (а не на адрес VPN или CGNAT). */
+function lanRank(ip: string): number {
+  if (ip.startsWith('192.168.')) return 0
+  if (ip.startsWith('10.')) return 1
+  const m = /^172\.(\d+)\./.exec(ip)
+  if (m && +m[1] >= 16 && +m[1] <= 31 && +m[1] !== 19) return 2 // 172.19.x — TUN sing-box
+  return 9
+}
+
+/**
+ * Адреса этого ПК в локальной сети — лучший первым. Раньше брался первый
+ * попавшийся IPv4, и в QR мог попасть адрес VPN-адаптера или Hyper-V.
+ */
 export function getLocalNetworkIps(): string[] {
   const interfaces = os.networkInterfaces()
-  const ips: string[] = []
+  const found: { ip: string; rank: number }[] = []
   for (const name of Object.keys(interfaces)) {
+    if (VIRTUAL_IFACE.test(name)) continue
     for (const iface of interfaces[name] || []) {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        // Skip virtual network adapters if regular 192.168.x.x / 10.x.x.x exists
-        ips.push(iface.address)
-      }
+      if (iface.family !== 'IPv4' || iface.internal) continue
+      const ip = iface.address
+      if (ip.startsWith('169.254.') || ip.startsWith('198.18.') || ip.startsWith('100.64.')) continue
+      const rank = lanRank(ip)
+      if (rank >= 9) continue
+      found.push({ ip, rank })
     }
   }
-  // Sort so standard home subnet 192.168.* comes first
-  ips.sort((a, b) => (a.startsWith('192.168.') ? -1 : b.startsWith('192.168.') ? 1 : 0))
-  return ips
+  return found.sort((a, b) => a.rank - b.rank).map((x) => x.ip)
+}
+
+/**
+ * Открыть прокси для телефона: слушать все адаптеры (0.0.0.0) — тогда работают
+ * и Telegram на этом ПК (127.0.0.1), и телефон по адресу ПК в Wi-Fi из QR.
+ * Если вписать в хост сам адрес Wi-Fi, отваливается Telegram на самом ПК.
+ * На Windows добавляется правило брандмауэра для порта (прокси защищён секретом).
+ */
+/** Закрыть прокси для локальной сети: снова только этот ПК (127.0.0.1). */
+export async function disableTgwsLan(): Promise<TgwsShareInfo> {
+  const cfg = await getAppConfig()
+  if (cfg.tgws && (cfg.tgws.host || '').trim() !== '127.0.0.1') {
+    await patchAppConfig({ tgws: { ...(cfg.tgws as TgwsConfig), host: '127.0.0.1' } })
+    log('info', 'прокси закрыт для локальной сети (127.0.0.1)')
+    if (status.state === 'running' || status.state === 'starting') await restartTgws().catch(() => void 0)
+  }
+  return getTgwsShareLinks()
+}
+
+export async function enableTgwsLan(): Promise<TgwsShareInfo> {
+  const cfg = await getAppConfig()
+  const t = cfg.tgws || { host: '127.0.0.1', port: 1443, secret: '' }
+  const port = t.port || 1443
+  if ((t.host || '127.0.0.1').trim() !== '0.0.0.0') {
+    await patchAppConfig({ tgws: { ...(cfg.tgws as TgwsConfig), host: '0.0.0.0' } })
+    log('info', 'прокси открыт для локальной сети (0.0.0.0) — для подключения телефона')
+  }
+  if (process.platform === 'win32') {
+    const name = `LAZEYKA Telegram proxy ${port}`
+    await new Promise<void>((resolve) => {
+      execFile('netsh', ['advfirewall', 'firewall', 'delete', 'rule', `name=${name}`], { windowsHide: true }, () => {
+        execFile(
+          'netsh',
+          ['advfirewall', 'firewall', 'add', 'rule', `name=${name}`, 'dir=in', 'action=allow', 'protocol=TCP', `localport=${port}`, 'profile=any'],
+          { windowsHide: true },
+          (err) => {
+            if (err) log('warn', `правило брандмауэра не добавлено: ${err.message}`)
+            resolve()
+          }
+        )
+      })
+    })
+  }
+  if (status.state === 'running' || status.state === 'starting') {
+    await restartTgws().catch((e) => log('warn', `перезапуск после открытия для сети: ${e instanceof Error ? e.message : String(e)}`))
+  }
+  return getTgwsShareLinks()
 }
 
 export async function getTgwsShareLinks(): Promise<TgwsShareInfo> {

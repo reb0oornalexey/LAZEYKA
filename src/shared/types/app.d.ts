@@ -72,6 +72,14 @@ interface AppConfig {
   restartAppShortcut?: string
   tgwsToggleShortcut?: string
   zapretToggleShortcut?: string
+  incyToggleShortcut?: string
+  exitlagToggleShortcut?: string
+  incyBestNodeShortcut?: string
+  zapretRestartShortcut?: string
+  /** Короткий системный звук при срабатывании горячей клавиши (слышно в полноэкранной игре). */
+  hotkeySound?: boolean
+  /** Какой звук играть при срабатывании горячей клавиши и сценария. */
+  hotkeySoundId?: string
 
   // ---- GPU / low-level
   disableGPU: boolean

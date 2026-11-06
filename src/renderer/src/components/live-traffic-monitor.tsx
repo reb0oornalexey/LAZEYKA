@@ -70,7 +70,7 @@ const LiveTrafficMonitor: React.FC<{ className?: string }> = ({ className }) => 
   }, [isAnyRunning])
 
   return (
-    <div className={`rounded-2xl border border-border bg-card p-4 ${className ?? ''}`}>
+    <div className={`ui-glow rounded-2xl border border-border bg-card p-4 ${className ?? ''}`}>
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm font-semibold text-foreground">Трафик</div>

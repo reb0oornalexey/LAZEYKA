@@ -334,22 +334,46 @@ export function zapretCtl(command: ZapretCtlCommand, timeoutMs = 40_000): Promis
   })
 }
 
+/** Что именно не готово, когда служба «запускается» (вторая часть ответа ctl.sh status). */
+export let lastZapretCtlDetail = ''
+
 export async function zapretCtlStatus(): Promise<ZapretCtlStatus | 'unavailable'> {
   const r = await zapretCtl('status', 10_000)
   if (!r.ok) return 'unavailable'
-  return r.stdout === 'running' || r.stdout === 'starting' ? r.stdout : 'stopped'
+  // Новый ctl.sh отвечает «starting no-pf» и т. п.; первое слово — состояние.
+  const [state, ...rest] = r.stdout.split(/\s+/)
+  lastZapretCtlDetail = rest.join(' ')
+  return state === 'running' || state === 'starting' ? state : 'stopped'
 }
 
+/**
+ * Строки журнала, которые ничего не объясняют: предупреждения pfctl и сообщения
+ * оболочки о завершении движка. Раньше в ошибку попадали именно они — и
+ * пользователь видел «Killed: 9», хотя это след нашей же команды остановки.
+ */
+const NOISE = /pfctl: Use of -f option|present in the main ruleset|See \/etc\/pf\.conf|ALTQ|Killed: 9|Terminated: 15/i
+
 /** Хвост журнала службы для сообщения об ошибке (файлы 0644, пользователь их читает). */
-export function zapretServiceLogTail(lines = 6): string {
-  for (const name of ['zapret.log', 'engine.log']) {
-    try {
-      const text = readFileSync(path.join(ZAPRET_BASE, name), 'utf-8')
-      const tail = text.split('\n').map((l) => l.trim()).filter(Boolean).slice(-lines)
-      if (tail.length) return tail.join(' | ')
-    } catch {
-      /* нет файла */
-    }
+export function zapretServiceLogTail(lines = 4): string {
+  try {
+    const text = readFileSync(path.join(ZAPRET_BASE, 'zapret.log'), 'utf-8')
+    const all = text.split('\n').map((l) => l.trim()).filter(Boolean)
+    // Сначала — последняя причина, которую записал run.sh («LAZEYKA: остановка: …»).
+    // Только в пределах последнего запуска — старая причина сюда не относится.
+    const lastStart = all.map((l) => /LAZEYKA: запуск движка/.test(l)).lastIndexOf(true)
+    const reason = all.slice(Math.max(0, lastStart)).reverse().find((l) => /LAZEYKA: остановка: /.test(l))
+    if (reason) return reason.replace(/^.*LAZEYKA: остановка:\s*/, '')
+    const tail = all.filter((l) => !NOISE.test(l)).slice(-lines)
+    if (tail.length) return tail.join(' | ')
+  } catch {
+    /* нет файла */
+  }
+  try {
+    const text = readFileSync(path.join(ZAPRET_BASE, 'engine.log'), 'utf-8')
+    const tail = text.split('\n').map((l) => l.trim()).filter((l) => l && !NOISE.test(l)).slice(-lines)
+    if (tail.length) return tail.join(' | ')
+  } catch {
+    /* нет файла */
   }
   return ''
 }

@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$tag = '1.10.1'
+$tag = '1.10.3'
 $url = "https://github.com/Flowseal/zapret-discord-youtube/releases/download/$tag/zapret-discord-youtube-$tag.zip"
 $zipPath = Join-Path $env:TEMP "zapret-$tag.zip"
 $tmpDir = Join-Path $env:TEMP "zapret-$tag-extract"
@@ -17,6 +17,10 @@ Expand-Archive -Path $zipPath -DestinationPath $tmpDir -Force
 Get-ChildItem $dest -Force | ForEach-Object {
     Remove-Item -Recurse -Force $_.FullName
 }
+
+# Since 1.10.3 the zip has a top-level folder (zapret-discord-youtube-<tag>)
+$inner = Get-ChildItem $tmpDir -Directory | Where-Object { $_.Name -like 'zapret-discord-youtube*' } | Select-Object -First 1
+if ($inner -and -not (Test-Path (Join-Path $tmpDir 'service.bat'))) { $tmpDir = $inner.FullName }
 
 # Copy fresh contents
 Get-ChildItem $tmpDir -Force | ForEach-Object {

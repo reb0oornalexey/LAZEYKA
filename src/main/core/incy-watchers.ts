@@ -118,12 +118,44 @@ export function checkSubscriptionExpiry(): void {
   )
 }
 
+let lastTrafficNoticeDay = ''
+
+/**
+ * Трафик подписки на исходе (осталось < 10 %). Данные — из заголовка
+ * subscription-userinfo, который отдают почти все панели (3x-ui, Marzban,
+ * Remnawave). Нет заголовка или безлимит — молчим. Работает при включённом
+ * напоминании о сроке (тот же переключатель в настройках INCY).
+ */
+export function checkSubscriptionTraffic(): void {
+  const settings = loadIncySettings()
+  if ((Number(settings.expireNotifyDays) || 0) <= 0) return
+  const low = loadIncySubscriptions()
+    .filter((s) => typeof s.totalBytes === 'number' && (s.totalBytes as number) > 0 && typeof s.usedBytes === 'number')
+    .map((s) => ({ sub: s, left: (s.totalBytes as number) - (s.usedBytes as number), total: s.totalBytes as number }))
+    .filter((x) => x.left / x.total < 0.1)
+    .sort((a, b) => a.left / a.total - b.left / b.total)
+  if (low.length === 0 || lastTrafficNoticeDay === todayKey()) return
+  lastTrafficNoticeDay = todayKey()
+  const { sub, left, total } = low[0]
+  const gb = (b: number): string => (b / 1024 ** 3).toFixed(b < 10 * 1024 ** 3 ? 1 : 0)
+  showSystemNotification(
+    left <= 0 ? 'LAZEYKA — трафик подписки закончился' : 'LAZEYKA — трафик подписки на исходе',
+    left <= 0
+      ? `У «${sub.title}» израсходован весь трафик (${gb(total)} ГБ). Пополните подписку.`
+      : `У «${sub.title}» осталось ${gb(left)} ГБ из ${gb(total)} ГБ (меньше 10 %).`
+  )
+}
+
 /** Check once at startup, then a few times a day. */
 export function installExpiryWatcher(): void {
   // Not immediately: at launch the subscription on disk may be stale, and a
   // refresh is usually already in flight.
-  setTimeout(checkSubscriptionExpiry, 30_000).unref?.()
-  const timer = setInterval(checkSubscriptionExpiry, 6 * 60 * 60 * 1000)
+  const run = (): void => {
+    checkSubscriptionExpiry()
+    checkSubscriptionTraffic()
+  }
+  setTimeout(run, 30_000).unref?.()
+  const timer = setInterval(run, 6 * 60 * 60 * 1000)
   timer.unref?.()
 }
 

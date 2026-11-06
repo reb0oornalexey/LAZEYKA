@@ -4,12 +4,12 @@ import { toast } from 'sonner'
 import BasePage from '@renderer/components/base/base-page'
 import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
-import { DiagnosticsDialog } from '@renderer/components/diagnostics-dialog'
+import RescueDialog from '@renderer/components/rescue-dialog'
 import { AppVersionButton } from '@renderer/components/changelog-dialog'
 import ZapretIcon from '@renderer/components/zapret-icon'
 import TelegramIcon from '@renderer/components/telegram-icon'
 import LiveTrafficMonitor from '@renderer/components/live-traffic-monitor'
-import { platform } from '@renderer/utils/init'
+import NetSpeedDialog from '@renderer/components/net-speed-dialog'
 import { useTgwsStore } from '@renderer/store/tgws-store'
 import { useZapretStore } from '@renderer/store/zapret-store'
 import { useZapretTestStore } from '@renderer/store/zapret-test-store'
@@ -27,6 +27,7 @@ import {
   incyConnect,
   incyDisconnect,
   incyGetNodes,
+  incyGetSubscription,
   getAppVersion,
   appCheckUpdateNow,
   openExternalUrl,
@@ -37,8 +38,9 @@ import {
 import { POWER_ON_BANNER_STYLE, SUPPORT_TELEGRAM_URL, formatInstalledVersion, cn } from '@renderer/lib/utils'
 import {
   ChevronRight,
+  Gauge,
   Globe,
-  LifeBuoy,
+  Headset,
   Loader2,
   Power,
   RefreshCw,
@@ -92,7 +94,7 @@ function ServiceCard({
   onOpen
 }: ServiceCardProps): React.ReactElement {
   return (
-    <div className="flex min-w-0 flex-col rounded-2xl border border-border bg-card p-4 transition-colors hover:border-primary/35">
+    <div className="flex min-w-0 flex-col ui-card rounded-2xl border border-border bg-card p-4 transition-colors hover:border-primary/35">
       <div className="flex items-center gap-3">
         <button
           type="button"
@@ -136,7 +138,7 @@ function ServiceCard({
           checked={checked}
           disabled={disabled || tone === 'busy'}
           onCheckedChange={onToggle}
-          className="data-[size=default]:h-6 data-[size=default]:w-11 [&>span]:size-[18px]! [&>span[data-state=checked]]:translate-x-[22px]!"
+          className="data-[size=default]:h-6 data-[size=default]:w-11 data-[size=default]:[--sw-thumb:1.125rem]"
         />
       </div>
       <div className="mt-3.5 divide-y divide-border rounded-xl bg-secondary px-3">
@@ -177,8 +179,6 @@ const UpdateNotice: React.FC<UpdateNoticeProps> = ({ title, subtitle, onDetails,
 )
 
 const Home: React.FC = () => {
-  // macOS: Diagnostics («Почему может не работать?») — только для Windows.
-  const isMac = platform === 'darwin'
   const navigate = useNavigate()
   const tgws = useTgwsStore((s) => s.status)
   const zapret = useZapretStore((s) => s.status)
@@ -305,10 +305,29 @@ const Home: React.FC = () => {
 
   // ---- Общие действия ----
   const [diagOpen, setDiagOpen] = useState(false)
+  const [speedOpen, setSpeedOpen] = useState(false)
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
+  // Подписка на исходе (срок ≤ 3 дн. или трафика < 10 %) — заметно на главной.
+  const [subWarn, setSubWarn] = useState<string | null>(null)
   useEffect(() => {
     getAppVersion().then(setAppVersion).catch(() => setAppVersion(null))
+    incyGetSubscription()
+      .then((s) => {
+        if (!s) return
+        const parts: string[] = []
+        if (typeof s.expireAt === 'number') {
+          const days = Math.ceil((s.expireAt - Date.now()) / 86_400_000)
+          if (days <= 0) parts.push('срок истёк')
+          else if (days <= 3) parts.push(`осталось ${days} дн.`)
+        }
+        if (s.totalBytes && s.usedBytes != null && (s.totalBytes - s.usedBytes) / s.totalBytes < 0.1) {
+          const left = Math.max(0, s.totalBytes - s.usedBytes) / 1024 ** 3
+          parts.push(left <= 0 ? 'трафик закончился' : `трафика осталось ${left.toFixed(1)} ГБ`)
+        }
+        if (parts.length) setSubWarn(`Подписка «${s.title}»: ${parts.join(', ')}`)
+      })
+      .catch(() => void 0)
   }, [])
 
   const handleCheckUpdate = async (): Promise<void> => {
@@ -449,7 +468,7 @@ const Home: React.FC = () => {
         {/* Общий статус */}
         <div
           className={cn(
-            'flex flex-wrap items-center gap-4 rounded-2xl border p-5',
+            'ui-glow flex flex-wrap items-center gap-4 rounded-2xl border p-5',
             hero.tone === 'on'
               ? 'border-primary/30 bg-gradient-to-br from-primary/[0.13] via-card to-card'
               : hero.tone === 'part'
@@ -472,16 +491,14 @@ const Home: React.FC = () => {
           <div className="min-w-0 flex-1">
             <h2 className="text-xl font-bold leading-tight text-foreground">{hero.title}</h2>
             <p className="mt-1 text-[13px] text-muted-foreground">{heroText}</p>
-            {!isMac && (
             <button
               type="button"
               onClick={() => setDiagOpen(true)}
               className="mt-1.5 inline-flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-primary"
             >
               <Stethoscope className="size-3" />
-              Почему может не работать?
+              Ничего не открывается? Проверить и исправить
             </button>
-            )}
           </div>
           {incyOn && incyNode ? (
             <div className="flex shrink-0 gap-2">
@@ -583,11 +600,29 @@ const Home: React.FC = () => {
           />
         </div>
 
+        {subWarn && (
+          <button
+            type="button"
+            onClick={() => navigate('/incy')}
+            className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl border border-st-warn/40 bg-st-warn/10 px-4 py-2.5 text-left text-xs font-semibold text-st-warn-text"
+          >
+            <ShieldAlert className="size-4 shrink-0" />
+            <span className="flex-1">{subWarn} — продлите, чтобы VPN не отключился</span>
+            <ChevronRight className="size-4" />
+          </button>
+        )}
+
         <LiveTrafficMonitor />
 
         {/* Быстрые действия */}
-        <div className="grid grid-cols-1 gap-3.5 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-4">
           {[
+            {
+              icon: <Gauge className="size-[18px]" />,
+              title: 'Скорость интернета',
+              sub: incyOn ? 'Через подключённый VPN' : 'Напрямую, без VPN',
+              onClick: () => setSpeedOpen(true)
+            },
             {
               icon: <Target className="size-[18px]" />,
               title: 'Пинг до Faceit',
@@ -611,7 +646,7 @@ const Home: React.FC = () => {
               key={a.title}
               type="button"
               onClick={a.onClick}
-              className="group flex cursor-pointer items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left transition-colors hover:border-primary/35"
+              className="group flex cursor-pointer items-center gap-3 ui-card rounded-xl border border-border bg-card px-4 py-3 text-left transition-colors hover:border-primary/35"
             >
               <span className="text-primary">{a.icon}</span>
               <span className="min-w-0 flex-1">
@@ -623,17 +658,18 @@ const Home: React.FC = () => {
           ))}
         </div>
 
-        <DiagnosticsDialog open={diagOpen} onClose={() => setDiagOpen(false)} />
+        <RescueDialog open={diagOpen} onClose={() => setDiagOpen(false)} />
+        <NetSpeedDialog open={speedOpen} onClose={() => setSpeedOpen(false)} vpnOn={incyOn} />
 
         {/* Версия, обновления, поддержка */}
-        <div className="flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
+        <div className="ml-auto flex w-fit items-center justify-end gap-1 rounded-xl border border-border/50 bg-card/75 p-0.5 text-[11.5px] font-medium text-foreground/85 backdrop-blur-md">
           {appVersion && <AppVersionButton className="px-2 tabular-nums">LAZEYKA v{appVersion}</AppVersionButton>}
           <button
             type="button"
             onClick={() => void openExternalUrl(SUPPORT_TELEGRAM_URL)}
             className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 transition-colors hover:bg-accent hover:text-foreground"
           >
-            <LifeBuoy className="size-3" />
+            <Headset className="size-3" />
             Поддержка
           </button>
         </div>

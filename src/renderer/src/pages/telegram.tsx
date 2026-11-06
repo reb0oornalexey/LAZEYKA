@@ -14,6 +14,8 @@ import {
   tgwsInstallUpdate,
   tgwsDismissUpdate,
   tgwsGetShareLinks,
+  tgwsEnableLan,
+  tgwsDisableLan,
   tgwsPingDataCenters,
   tgwsCheckWorkers,
   incyReapplyTunnel,
@@ -64,7 +66,7 @@ const TelegramPage: React.FC = () => {
   const [link, setLink] = useState('')
   const [shareInfo, setShareInfo] = useState<TgwsShareInfo | null>(null)
   const [showQr, setShowQr] = useState(false)
-  const [qrMode, setQrMode] = useState<'local' | 'lan'>('local')
+  const [enablingLan, setEnablingLan] = useState(false)
   const [dcs, setDcs] = useState<TelegramDCPing[]>([])
   const [pingingDcs, setPingingDcs] = useState(false)
 
@@ -284,20 +286,39 @@ const TelegramPage: React.FC = () => {
     }
   }
 
-  const activeQrLink = qrMode === 'lan' && shareInfo?.lanLink
-    ? shareInfo.lanLink
-    : (shareInfo?.localLink || link)
+  // QR нужен только телефону: ссылка всегда с адресом ПК в Wi-Fi. Ссылка на
+  // 127.0.0.1 в QR телефону бесполезна — поэтому режима «Этот ПК» больше нет.
+  const activeQrLink = shareInfo?.lanLink ?? ''
+  const activeHttpLink = shareInfo?.httpLanLink ?? ''
 
-  const activeHttpLink = qrMode === 'lan' && shareInfo?.httpLanLink
-    ? shareInfo.httpLanLink
-    : (shareInfo?.httpLink || '')
+  const handleEnableLan = async (): Promise<void> => {
+    setEnablingLan(true)
+    try {
+      const info = await tgwsEnableLan()
+      setShareInfo(info)
+      if (info.lanLink) {
+        toast.success('Прокси открыт для телефона', {
+          description: `Адрес ПК в сети: ${info.lanIp}. Отсканируйте QR телефоном (он должен быть в той же Wi-Fi сети).`,
+          style: POWER_ON_TOAST_STYLE
+        })
+      } else {
+        toast.error('Не найдена локальная сеть', {
+          description: 'Подключите ПК к Wi-Fi или кабелю роутера, к которому подключён телефон.'
+        })
+      }
+    } catch (e) {
+      toast.error('Не удалось открыть прокси для телефона', { description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setEnablingLan(false)
+    }
+  }
 
   return (
     <BasePage title="Telegram">
       <ComponentUpdateDialog
         component="tgws"
         open={updateDialogOpen}
-        info={updateInfo}
+        info={updateInfo ?? { installed: tgws?.installedVersion, latest: tgws?.installedVersion, hasUpdate: false }}
         onInstall={installUpdate}
         onLater={dismissUpdate}
         onClose={() => setUpdateDialogOpen(false)}
@@ -305,7 +326,7 @@ const TelegramPage: React.FC = () => {
       <div className="px-4 pb-6 space-y-4">
         {showBanner && updateInfo && (
           <div className={cn(
-            'relative flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 transition',
+            'ui-glow relative flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 transition',
             installing && 'pointer-events-none opacity-80'
           )}>
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/20 text-primary ">
@@ -342,9 +363,14 @@ const TelegramPage: React.FC = () => {
         <SwitcherCard
           icon={TelegramIcon}
           title="Telegram"
-          subtitle={`${tgws?.host ?? '127.0.0.1'}:${tgws?.port ?? 1443}`}
+          subtitle={
+            (tgws?.host ?? '127.0.0.1') === '0.0.0.0'
+              ? `127.0.0.1:${tgws?.port ?? 1443} · открыт для телефона`
+              : `${tgws?.host ?? '127.0.0.1'}:${tgws?.port ?? 1443}`
+          }
           version={updateInfo?.installed ?? tgws?.installedVersion}
           versionFallback="встроенная"
+          onVersionClick={() => setUpdateDialogOpen(true)}
           status={status}
           onToggle={(v) => (v ? tgwsStart() : tgwsStop()).catch(() => void 0)}
           footer={running ? null : 'Нажмите для запуска'}
@@ -428,14 +454,29 @@ const TelegramPage: React.FC = () => {
             {showQr && (
               <div className="rounded-2xl border border-border/80 bg-background/60 p-5 animate-in fade-in zoom-in-95">
                 <div className="flex flex-col md:flex-row items-center gap-6">
-                  <div className="rounded-2xl bg-white p-3.5 shadow-[0_0_25px_rgba(255,255,255,0.15)] shrink-0">
-                    <QRCodeSVG
-                      value={activeQrLink}
-                      size={150}
-                      level="M"
-                      includeMargin={false}
-                    />
-                  </div>
+                  {activeQrLink ? (
+                    <div className="rounded-2xl bg-white p-3.5 shadow-[0_0_25px_rgba(255,255,255,0.15)] shrink-0">
+                      <QRCodeSVG
+                        value={activeQrLink}
+                        size={150}
+                        level="M"
+                        includeMargin={false}
+                      />
+                    </div>
+                  ) : (
+                    <div className="relative flex size-[178px] shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-border/80 bg-card/60">
+                      {/* Размытый «QR» на фоне — понятно, что здесь появится код. */}
+                      <div aria-hidden className="absolute inset-4 grid grid-cols-6 gap-1 opacity-[0.12] blur-[1.5px]">
+                        {Array.from({ length: 36 }, (_, i) => (
+                          <span key={i} className={cn('rounded-[2px]', (i * 7 + (i % 5)) % 3 ? 'bg-foreground' : 'bg-transparent')} />
+                        ))}
+                      </div>
+                      <Button className="relative h-10 rounded-xl px-4 text-xs font-bold shadow-lg" disabled={enablingLan} onClick={() => void handleEnableLan()}>
+                        {enablingLan ? <Loader2 className="size-4 animate-spin" /> : <Smartphone className="size-4" />}
+                        Показать QR
+                      </Button>
+                    </div>
+                  )}
 
                   <div className="flex-1 space-y-3 min-w-0">
                     <div>
@@ -448,39 +489,29 @@ const TelegramPage: React.FC = () => {
                       </p>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setQrMode('lan')}
-                        disabled={!shareInfo?.lanLink}
-                        title={
-                          shareInfo?.lanLink
-                            ? undefined
-                            : 'Прокси слушает только этот ПК. Чтобы подключить телефон, укажите хост 0.0.0.0 в параметрах ниже.'
-                        }
-                        className={cn(
-                          !shareInfo?.lanLink && 'opacity-50 cursor-not-allowed',
-                          'rounded-xl border px-3 py-1.5 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer',
-                          qrMode === 'lan'
-                            ? 'border-primary/50 bg-primary/20 text-primary '
-                            : 'border-border/60 text-muted-foreground hover:bg-foreground/[0.04]'
-                        )}
-                      >
-                        <Wifi className="size-3.5" />
-                        Локальная сеть ({shareInfo?.lanIp || 'Wi-Fi'})
-                      </button>
-                      <button
-                        onClick={() => setQrMode('local')}
-                        className={cn(
-                          'rounded-xl border px-3 py-1.5 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer',
-                          qrMode === 'local'
-                            ? 'border-primary/50 bg-primary/20 text-primary '
-                            : 'border-border/60 text-muted-foreground hover:bg-foreground/[0.04]'
-                        )}
-                      >
-                        Этот ПК (127.0.0.1)
-                      </button>
+                    <div className="flex items-start gap-2 rounded-xl border border-border/60 bg-card/50 px-3 py-2 text-xs text-muted-foreground">
+                      <Wifi className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                      {shareInfo?.lanLink ? (
+                        <span className="flex-1 leading-relaxed">
+                          Адрес ПК в сети: <span className="font-mono font-semibold text-foreground">{shareInfo.lanIp}:{shareInfo.port}</span>. Телефон должен
+                          быть в той же Wi-Fi сети.{' '}
+                          <button
+                            type="button"
+                            className="cursor-pointer font-semibold text-primary hover:underline"
+                            onClick={() => void tgwsDisableLan().then(setShareInfo).catch(() => void 0)}
+                          >
+                            Закрыть доступ для телефона
+                          </button>
+                        </span>
+                      ) : (
+                        <span className="flex-1 leading-relaxed">
+                          Сейчас прокси работает только для этого ПК. «Показать QR» откроет его для устройств в вашей Wi-Fi сети — Telegram на ПК
+                          продолжит работать как раньше.
+                        </span>
+                      )}
                     </div>
 
+                    {activeQrLink && (
                     <div className="flex flex-wrap gap-2 pt-1">
                       <Button
                         size="sm"
@@ -509,6 +540,7 @@ const TelegramPage: React.FC = () => {
                         </Button>
                       )}
                     </div>
+                    )}
                   </div>
                 </div>
               </div>

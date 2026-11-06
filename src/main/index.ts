@@ -31,6 +31,8 @@ import { registerBackgroundScheme, registerBackgroundProtocol, initSystemAppeara
 
 // Lock the userData / cache / log folder names.
 app.setName(is.dev ? 'lazeyka-dev' : 'lazeyka')
+// Звук подтверждения горячих клавиш играет скрытое окно (трей, игра) — без жеста пользователя.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
 export let mainWindow: BrowserWindow | null = null
 

@@ -17,6 +17,63 @@ export const getAppConfig = (): Promise<AppConfig> => invoke('app:getConfig')
 export const patchAppConfig = (patch: Partial<AppConfig>): Promise<void> =>
   invoke('app:patchConfig', patch)
 export const getAppVersion = (): Promise<string> => invoke('app:version')
+// ---- Мастер «Ничего не открывается» --------------------------------------------
+export interface RescueAction {
+  action: string
+  label: string
+  arg?: string
+}
+export interface RescueItem {
+  id: string
+  title: string
+  status: 'ok' | 'warn' | 'fail'
+  message: string
+  fix?: RescueAction
+}
+export interface RescueFixResult {
+  success: boolean
+  message: string
+  undo?: RescueAction
+}
+export const rescueRun = (): Promise<RescueItem[]> => invoke('rescue:run')
+export const rescueFix = (a: RescueAction): Promise<RescueFixResult> => invoke('rescue:fix', a.action, a.arg)
+// ---- Сценарии ----------------------------------------------------------------
+export type ScenarioToggle = 'keep' | 'on' | 'off'
+export interface Scenario {
+  id: string
+  name: string
+  emoji: string
+  icon?: string
+  zapret: ScenarioToggle
+  zapretStrategy?: string
+  incy: ScenarioToggle
+  incyNodeId?: string
+  exitlag: ScenarioToggle
+  exitlagApps?: string[]
+  tgws: ScenarioToggle
+  dns: string
+  hotkey?: string
+}
+export interface ScenarioStep {
+  what: string
+  ok: boolean
+  message?: string
+}
+export const scenariosList = (): Promise<Scenario[]> => invoke('scenarios:list')
+export const scenariosSave = (s: Scenario): Promise<Scenario[]> => invoke('scenarios:save', s)
+export const scenariosDelete = (id: string): Promise<Scenario[]> => invoke('scenarios:delete', id)
+export interface AppIconEntry {
+  name: string
+  path: string
+  icon: string
+  kind: 'game' | 'app'
+}
+export const scenariosListAppIcons = (): Promise<AppIconEntry[]> => invoke('scenarios:listAppIcons')
+export const scenariosSystemIcons = (): Promise<{ id: string; png: string }[]> => invoke('scenarios:systemIcons')
+export const scenariosPickIcon = (): Promise<string | null> => invoke('scenarios:pickIcon')
+export const scenariosApply = (id: string): Promise<ScenarioStep[]> => invoke('scenarios:apply', id)
+/** Перерегистрировать горячие клавиши; возвращает те, что заняты другой программой. */
+export const appReloadShortcuts = (): Promise<string[]> => invoke('app:reloadShortcuts')
 
 // ---- Theme ------------------------------------------------------------------
 export const setNativeTheme = (theme: AppTheme | 'system'): Promise<void> =>
@@ -117,6 +174,8 @@ export interface ZapretUpdateInfo {
   publishedAt?: string
   dismissed?: boolean
 }
+export const zapretInstalledVersion = (): Promise<string | null> =>
+  invoke('zapret:installedVersion')
 export const zapretCheckUpdate = (force = false): Promise<ZapretUpdateInfo> =>
   invoke('zapret:checkUpdate', force)
 export const zapretInstallUpdate = (
@@ -428,6 +487,9 @@ export interface TelegramDCPing {
   status: 'online' | 'slow' | 'offline'
 }
 
+/** Открыть прокси для телефона (0.0.0.0 + брандмауэр) и вернуть ссылки с адресом ПК в сети. */
+export const tgwsEnableLan = (): Promise<TgwsShareInfo> => invoke('tgws:enableLan')
+export const tgwsDisableLan = (): Promise<TgwsShareInfo> => invoke('tgws:disableLan')
 export const tgwsGetShareLinks = (): Promise<TgwsShareInfo> =>
   invoke('tgws:getShareLinks')
 export const tgwsPingDataCenters = (): Promise<TelegramDCPing[]> =>
@@ -484,21 +546,34 @@ export interface CustomDnsInput {
   ipv6?: string[]
   doh?: string
   allowFallback?: boolean
+  site?: string
 }
+export const dnsSetOrder = (ids: string[]): Promise<void> => invoke('dns:setOrder', ids)
 /** Добавить свой DNS-сервер. Возвращает список своих серверов. */
 export const dnsAddCustom = (input: CustomDnsInput): Promise<DohProvider[]> => invoke('dns:addCustom', input)
 export const dnsRemoveCustom = (id: string): Promise<DohProvider[]> => invoke('dns:removeCustom', id)
 
 export const dnsGetProviders = (): Promise<DohProvider[]> =>
   invoke('dns:getProviders')
-export const dnsApplySystem = (ip: string | 'dhcp'): Promise<{ success: boolean; message: string }> =>
+export const dnsApplySystem = (ip: string | 'dhcp'): Promise<{ success: boolean; message: string; needsProfile?: boolean }> =>
   invoke('dns:applySystemDns', ip)
+/** Список серверов сразу, без пинга (пинг — dnsGetProviders). */
+export const dnsProvidersInstant = (): Promise<DohProvider[]> => invoke('dns:providersInstant')
+export const dnsUpdateCustom = (id: string, input: CustomDnsInput): Promise<DohProvider[]> => invoke('dns:updateCustom', id, input)
+/** macOS: пользователь подтвердил, что профиль установлен и включён. */
+export const dnsConfirmMacProfile = (id: string): Promise<void> => invoke('dns:confirmMacProfile', id)
 /** macOS: сгенерировать и открыть DoH-профиль провайдера. */
 export const dnsOpenMacProfile = (id: string): Promise<{ success: boolean; message: string }> =>
   invoke('dns:macProfile', id)
 /** DNS-серверы, которые сейчас стоят на рабочих адаптерах Windows. */
-export const dnsGetSystemState = (): Promise<{ servers: string[]; changedByApp: boolean }> =>
-  invoke('dns:getSystemState')
+export interface SystemDnsState {
+  servers: string[]
+  changedByApp: boolean
+  providerId?: string
+  macProfileReady?: boolean
+  macProfileStale?: boolean
+}
+export const dnsGetSystemState = (): Promise<SystemDnsState> => invoke('dns:getSystemState')
 
 // ---- Smart Game Mode ---------------------------------------------------------
 export interface GameModeStatus {
@@ -767,6 +842,35 @@ export interface IncySpeedTestResult {
   downloadedMB: number
   error?: string
 }
+export type SpeedService = 'cloudflare' | 'ookla' | 'yandex'
+export interface NetSpeedProgress {
+  nodeId?: string
+  phase: 'prepare' | 'ping' | 'download' | 'upload' | 'done' | 'error'
+  mbps?: number
+  pingMs?: number | null
+  downloadMbps?: number | null
+  progress?: number
+  message?: string
+}
+export interface NetSpeedResult {
+  service: SpeedService
+  server: string
+  viaVpn: boolean
+  pingMs: number | null
+  jitterMs: number | null
+  downloadMbps: number | null
+  uploadMbps: number | null
+  downloadedMB: number
+  uploadedMB: number
+  error?: string
+}
+/** Тест скорости интернета; ход — событием `speed:progress`. */
+export const speedRun = (service: SpeedService, economy: boolean): Promise<NetSpeedResult> => invoke('speed:run', service, economy)
+/** Тот же замер, но через выбранный сервер INCY (временное ядро, VPN не рвётся). */
+export const speedRunNode = (nodeId: string, service: SpeedService, economy: boolean): Promise<NetSpeedResult> =>
+  invoke('speed:runNode', nodeId, service, economy)
+/** Скачать и поставить свежий sing-box-lx (кнопка у ошибки AmneziaWG). */
+export const incyUpdateSingBoxNow = (): Promise<{ success: boolean; message?: string }> => invoke('incy:updateSingBoxNow')
 /** Тест скорости через сервер; ход замера приходит событием `incy:speedTestProgress`. */
 export const incySpeedTest = (nodeId: string): Promise<IncySpeedTestResult> => invoke('incy:speedTest', nodeId)
 /** Записать результаты замера пинга в текущий список узлов (слияние по id). */

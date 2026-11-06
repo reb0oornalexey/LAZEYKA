@@ -36,11 +36,13 @@ import { getHwidHeaders } from './incy-hwid'
 import { showSystemNotification } from '../utils/notifications'
 import { isMacTelegramEntry, macEntriesRegex, normalizeMacPerAppList } from '../utils/mac-apps'
 import { getAllBypassDomains } from './split-tunneling'
+import { adapterDnsForTunnel } from './dns-doh'
 import { setSystemProxy, clearSystemProxy } from '../utils/system-proxy'
 import { logToFile } from '../utils/file-logger'
 import { registerChild, unregisterChild } from '../utils/child-registry'
 import { getAppConfig } from '../config'
-import { httpViaCore, physicalSourceIp, tcpRtt, icmpRtt } from './core-probe'
+import { httpViaCore, physicalSourceIp, tcpRtt, icmpRtt, socksConnect } from './core-probe'
+import tls from 'node:tls'
 import {
   MacServiceRequiredError,
   applyCoreViaDaemon,
@@ -574,7 +576,11 @@ export function resetSymptoms(ips: string[]): void {
 
 function noteSymptoms(clean: string): void {
   const now = Date.now()
-  const reset = /->([\d.]+):(\d+): An existing connection was forcibly closed by the remote host/.exec(clean)
+  // Текст ошибки зависит от языка Windows и от ОС: раньше ловилась только
+  // английская фраза, и на русской Windows и macOS автопереключение не
+  // срабатывало никогда.
+  const reset =
+    /->([\d.]+):(\d+):.*(?:forcibly closed|connection reset by peer|принудительно разорвал|разорвал существующее подключение|wsarecv: .*(?:reset|разорв))/i.exec(clean)
   if (reset && nodeServerIps.has(reset[1])) {
     symptomHits.reset = [...symptomHits.reset.filter((t) => now - t < 60_000), now]
     if (!symptomWarned.reset && symptomHits.reset.length >= 5) {
@@ -874,6 +880,12 @@ let sessionTunnelSig: string | null = null
  * соединения (голос в TeamSpeak/Discord, игра) не рвутся.
  */
 let sessionHotExitLag = false
+/**
+ * В сессии есть сервер `system-dns` (DNS сетевого адаптера пользователя) для
+ * трафика мимо VPN в режиме ExitLag. Если ExitLag включили на лету в сессии
+ * без него — переподключаемся, иначе прямой трафик резолвился бы не тем DNS.
+ */
+let sessionHasSystemDns = false
 let sessionMode: 'tun' | 'system_proxy' | 'only_proxy' | null = null
 const PER_APP_KEYS = ['perAppProxy', 'perAppMode', 'perAppProcesses']
 
@@ -909,6 +921,7 @@ function tunnelOutdated(): boolean {
     // сам режим (например, ExitLag выключили, а сохранён «Системный прокси»)
     // или что-то помимо списка приложений.
     if (effectiveConnectionMode(s) !== sessionMode) return true
+    if (Boolean(s.perAppProxy) && s.perAppMode !== 'bypass_only' && !sessionHasSystemDns) return true
     return tunnelSig(s, true) !== sessionTunnelSig
   }
   return tunnelSig(s) !== sessionTunnelSig
@@ -1050,11 +1063,11 @@ let lastFailoverAt = 0
  * автовыбора. Сначала быстрый замер задержки, затем трём лучшим — настоящий
  * запрос через узел: переходим на первый, через который трафик реально идёт.
  */
-async function runFailover(reason: string): Promise<void> {
+async function runFailover(reason: string, force = false): Promise<void> {
   const s = loadIncySettings()
-  if (!s.autoFailover || failoverRunning || isConnecting) return
+  if ((!s.autoFailover && !force) || failoverRunning || isConnecting) return
   if (currentStatus.state !== 'running' || !currentStatus.activeNodeId) return
-  if (Date.now() - lastFailoverAt < 120_000) return
+  if (!force && Date.now() - lastFailoverAt < 120_000) return
   failoverRunning = true
   lastFailoverAt = Date.now()
   const from = currentStatus.activeNodeId
@@ -1124,6 +1137,100 @@ async function runFailover(reason: string): Promise<void> {
   } finally {
     failoverRunning = false
   }
+}
+
+// ---- Лёгкая проверка туннеля для автопереключения ---------------------------
+//
+// По логам ядра видно только «громкий» сбой (обрывы, таймауты DNS). Сервер,
+// который просто молча перестал отвечать, ошибок не даёт — и автопереключение
+// не срабатывало. Раз в 20 с — одно TLS-рукопожатие через уже работающий
+// туннель (несколько сотен байт, без новых процессов); три неудачи подряд —
+// автопереключение. Только при включённом автопереключении и поднятом VPN.
+
+const HEALTH_INTERVAL_MS = 20_000
+let healthTimer: NodeJS.Timeout | null = null
+let healthFails = 0
+let healthBusy = false
+
+async function probeTunnel(port: number): Promise<boolean> {
+  let sock: net.Socket | null = null
+  try {
+    sock = await socksConnect(port, 'www.gstatic.com', 443, 7000)
+    const s = sock
+    await new Promise<void>((resolve, reject) => {
+      const t = tls.connect({ socket: s, servername: 'www.gstatic.com', ALPNProtocols: ['http/1.1'] })
+      const timer = setTimeout(() => {
+        t.destroy()
+        reject(new Error('timeout'))
+      }, 7000)
+      t.once('secureConnect', () => {
+        clearTimeout(timer)
+        t.destroy()
+        resolve()
+      })
+      t.once('error', (e) => {
+        clearTimeout(timer)
+        reject(e)
+      })
+    })
+    return true
+  } catch {
+    return false
+  } finally {
+    sock?.destroy()
+  }
+}
+
+async function healthTick(): Promise<void> {
+  if (healthBusy) return
+  const s = loadIncySettings()
+  if (!s.autoFailover || isConnecting || failoverRunning || currentStatus.state !== 'running' || !currentStatus.activeNodeId) {
+    healthFails = 0
+    return
+  }
+  // С логином на прокси-порт проверять нечем — остаются признаки из лога.
+  if (s.socksAuth) return
+  healthBusy = true
+  try {
+    if (await probeTunnel(s.mixedPort || 20808)) {
+      healthFails = 0
+      return
+    }
+    healthFails++
+    if (healthFails >= 3) {
+      healthFails = 0
+      void runFailover('узел не отвечает (3 проверки подряд)')
+    }
+  } finally {
+    healthBusy = false
+  }
+}
+
+/** Проходит ли трафик через поднятый туннель. null — VPN не подключён или проверить нечем. */
+export async function incyTunnelAlive(): Promise<boolean | null> {
+  if (currentStatus.state !== 'running') return null
+  const s = loadIncySettings()
+  if (s.socksAuth) return null
+  return probeTunnel(s.mixedPort || 20808)
+}
+
+/** «Мастер»: перейти на рабочий узел сейчас, даже если автопереключение выключено. */
+export async function forceIncyFailover(): Promise<string> {
+  const from = currentStatus.activeNodeId
+  await runFailover('проверка из мастера «Ничего не открывается»', true)
+  if (currentStatus.activeNodeId && currentStatus.activeNodeId !== from) {
+    const n = loadIncyNodes().find((x) => x.id === currentStatus.activeNodeId)
+    return `Подключено к «${n?.name ?? currentStatus.activeNodeId}»`
+  }
+  throw new Error('Рабочий узел не найден — проверьте подписку или выберите узел вручную')
+}
+
+/** Запускается при подключении; сам ничего не делает, пока автопереключение выключено. */
+function ensureHealthWatch(): void {
+  healthFails = 0
+  if (healthTimer) return
+  healthTimer = setInterval(() => void healthTick(), HEALTH_INTERVAL_MS)
+  healthTimer.unref?.()
 }
 
 /** Переподключить туннель, если он поднят (настройки вне INCY, например Telegram). */
@@ -3796,6 +3903,14 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // so choosing Quad9 or Xbox DNS did nothing.
     const dnsPair = resolveDnsPair(settings)
 
+    // ExitLag: всё, что идёт мимо VPN, резолвится DNS-ом сетевого адаптера
+    // пользователя (его собственным — из LAZEYKA или выставленным вручную),
+    // как будто VPN нет. Раньше такой трафик шёл через встроенный local-dns
+    // (8.8.8.8), и DNS пользователя игнорировался.
+    const systemDns = isExitLagWhitelist && mode === 'tun' ? await adapterDnsForTunnel().catch(() => null) : null
+    sessionHasSystemDns = Boolean(systemDns)
+    if (systemDns) appendLog(`ExitLag: трафик мимо VPN резолвится через DNS вашего адаптера — ${systemDns}`)
+
     // A DNS server whose address is a hostname (`https://dns.google/dns-query`,
     // `tls://dns.quad9.net`) cannot resolve itself — sing-box rejects the whole
     // config with "missing address_resolver". Every such server needs a
@@ -3896,6 +4011,15 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
           },
           { tag: 'dns-bootstrap', address: bootstrapIp, detour: 'direct' }
         ]
+    if (systemDns) {
+      dnsServersModern.push(buildModernDnsServer('system-dns', systemDns, null, needsResolver(systemDns)))
+      dnsServersLegacy.push({
+        tag: 'system-dns',
+        address: systemDns,
+        detour: 'direct',
+        ...(needsResolver(systemDns) ? { address_resolver: 'dns-bootstrap' } : {})
+      } as any)
+    }
     const dnsServers: any[] = [...dnsServersModern]
     const dnsRules: any[] = []
 
@@ -4064,7 +4188,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       // То же самое через rule-set: из списка ExitLag — remote-dns, всё
       // остальное (в белом списке) — local-dns; выключен — правила пустые.
       dnsRules.push({ rule_set: ['lz-exitlag-vpn'], server: 'remote-dns' })
-      dnsRules.push({ rule_set: ['lz-exitlag-direct'], server: 'local-dns' })
+      dnsRules.push({ rule_set: ['lz-exitlag-direct'], server: systemDns ? 'system-dns' : 'local-dns' })
     } else if (perAppMatcher) {
       if (settings.perAppMode === 'bypass_only') {
         // Blacklist: bypassed apps resolve via local-dns
@@ -4074,6 +4198,8 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         dnsRules.push({ ...perAppMatcher, server: 'remote-dns' })
       }
     }
+    // ExitLag без rule-set (старое ядро): по умолчанию — DNS адаптера.
+    if (systemDns && isExitLagWhitelist && !hotExitLag) config.dns.final = 'system-dns'
 
     // FakeIP is intentionally NOT wired up.
     //
@@ -4227,11 +4353,20 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     // Только литеральные адреса: доменное имя тут пришлось бы резолвить, а
     // резолвить нечем — это и есть bootstrap.
     {
-      const directDnsIps = [...new Set([dnsPair.local, bootstrapIp])]
+      const directDnsIps = [...new Set([dnsPair.local, bootstrapIp, ...(systemDns ? [systemDns] : [])])]
         .filter((a) => net.isIP(a))
         .map((ip) => `${ip}/${net.isIPv6(ip) ? 128 : 32}`)
       if (directDnsIps.length > 0) {
         config.route.rules.push({ ip_cidr: directDnsIps, outbound: 'direct' })
+      }
+      // DNS адаптера через DoH (https://хост/…): соединение к его хосту — тоже напрямую.
+      if (systemDns && systemDns.includes('://')) {
+        try {
+          const h = new URL(systemDns).hostname.replace(/^\[|\]$/g, '')
+          if (h && !net.isIP(h)) config.route.rules.push({ domain: [h], outbound: 'direct' })
+        } catch {
+          /* кривой шаблон — без правила */
+        }
       }
     }
 
@@ -4493,6 +4628,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
       })
       if (tunnelOutdated()) scheduleTunnelReapply()
       appendLog(`Успешно подключено к ${target.name} (ядро Xray)`)
+      ensureHealthWatch()
       showSystemNotification(
         'INCY Proxy подключен',
         `Активен узел: ${target.name} (${target.protocol.toUpperCase()}, Xray)`
@@ -4707,6 +4843,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
         exitLagApps: isExitLagWhitelist ? perAppList : []
       })
       appendLog(`Успешно подключено к ${target.name}`)
+      ensureHealthWatch()
       showSystemNotification('INCY Proxy подключен', `Активен узел: ${target.name} (${target.protocol.toUpperCase()})`)
       if (tunnelOutdated()) scheduleTunnelReapply()
       return daemonStatus
@@ -4798,6 +4935,7 @@ export async function connectIncyNode(nodeId?: string): Promise<IncyStatus> {
     })
 
     appendLog(`Успешно подключено к ${target.name}`)
+    ensureHealthWatch()
     showSystemNotification('INCY Proxy подключен', `Активен узел: ${target.name} (${target.protocol.toUpperCase()})`)
     // Настройки поменяли, пока шло подключение, — применяем их сразу.
     if (tunnelOutdated()) scheduleTunnelReapply()

@@ -14,6 +14,24 @@ CONF_FILE=/var/run/lazeyka-zapret.conf
 ENGINE_PID=
 WATCHDOG_PID=
 
+# LAZEYKA: каждая остановка пишет в zapret.log время и причину — раньше в журнале
+# было только «Killed: 9», и понять, кто и почему остановил движок, было нельзя.
+log() { /bin/echo "$(/bin/date '+%Y-%m-%d %H:%M:%S') LAZEYKA: $*"; }
+fail() { log "остановка: $*"; exit 1; }
+
+# Мягкая остановка движка: TERM, до 3 с ожидания, только потом KILL.
+stop_engine_pid() {
+    P=$1
+    [ -n "$P" ] || return 0
+    kill "$P" >/dev/null 2>&1 || return 0
+    N=0
+    while kill -0 "$P" 2>/dev/null && [ "$N" -lt 30 ]; do sleep 0.1; N=$((N + 1)); done
+    if kill -0 "$P" 2>/dev/null; then
+        log "движок не завершился за 3 с — принудительно (KILL)"
+        kill -9 "$P" >/dev/null 2>&1 || true
+    fi
+}
+
 # DATA_ROOT приходит из plist (его пишет root при установке), но проверяем всё равно:
 # рабочая папка приложения LAZEYKA в профиле пользователя (lazeyka-dev — dev-сборка).
 case "$DATA_ROOT" in
@@ -50,15 +68,28 @@ cleanup() {
     trap - EXIT INT TERM HUP
     clear_intercept
     if [ -n "$WATCHDOG_PID" ]; then kill "$WATCHDOG_PID" >/dev/null 2>&1 || true; fi
-    if [ -n "$ENGINE_PID" ]; then kill "$ENGINE_PID" >/dev/null 2>&1 || true; fi
     if [ -n "$WATCHDOG_PID" ]; then wait "$WATCHDOG_PID" >/dev/null 2>&1 || true; fi
+    stop_engine_pid "$ENGINE_PID"
     if [ -n "$ENGINE_PID" ]; then wait "$ENGINE_PID" >/dev/null 2>&1 || true; fi
     release_pf_token
 }
 
-trap cleanup EXIT INT TERM HUP
+trap cleanup EXIT
+# TERM от launchd (остановка/перезапуск из приложения) — штатный выход с кодом 0:
+# KeepAlive тогда не перезапускает задачу сам, перезапуск делает ctl.sh.
+trap 'log "остановка по сигналу (команда из приложения)"; exit 0' INT TERM HUP
 clear_intercept
-/usr/bin/pkill -9 -x utunws >/dev/null 2>&1 || true
+# Движок от прошлого запуска (если остался) — мягко, затем принудительно, и ждём,
+# пока освободится utun50: иначе новый движок падал с «open utun: Resource busy».
+if /usr/bin/pgrep -x utunws >/dev/null 2>&1; then
+    log "найден движок от прошлого запуска — останавливаю"
+    /usr/bin/pkill -TERM -x utunws >/dev/null 2>&1 || true
+    N=0
+    while /usr/bin/pgrep -x utunws >/dev/null 2>&1 && [ "$N" -lt 30 ]; do sleep 0.1; N=$((N + 1)); done
+    /usr/bin/pkill -9 -x utunws >/dev/null 2>&1 || true
+fi
+N=0
+while /sbin/ifconfig utun50 >/dev/null 2>&1 && [ "$N" -lt 30 ]; do sleep 0.1; N=$((N + 1)); done
 
 # LAZEYKA: «route get default» при включённом INCY TUN вернул бы туннель (utunN):
 # sing-box на macOS ставит маршруты 0/1 и 128/1 поверх настоящего default.
@@ -75,14 +106,14 @@ phys_default() {
 DEF4=$(phys_default inet)
 GATEWAY=${DEF4%% *}
 PHYSICAL_IFACE=${DEF4##* }
-if [ -z "$PHYSICAL_IFACE" ] || [ -z "$GATEWAY" ]; then exit 1; fi
+if [ -z "$PHYSICAL_IFACE" ] || [ -z "$GATEWAY" ]; then fail "нет маршрута по умолчанию через физический адаптер (нет сети?)"; fi
 # LAZEYKA: имя интерфейса попадёт в правило pf — пропускаем только вид en0 / bridge0.
-if ! printf '%s\n' "$PHYSICAL_IFACE" | /usr/bin/grep -Eq '^[a-z]+[0-9]+$'; then exit 1; fi
+if ! printf '%s\n' "$PHYSICAL_IFACE" | /usr/bin/grep -Eq '^[a-z]+[0-9]+$'; then fail "странное имя интерфейса: $PHYSICAL_IFACE"; fi
 /sbin/ping -c 1 -t 1 "$GATEWAY" >/dev/null 2>&1 || true
 GATEWAY_MAC=$(/usr/sbin/arp -n "$GATEWAY" | /usr/bin/awk '/ at /{print $4; exit}')
 case "$GATEWAY_MAC" in
     *:*:*:*:*:*) ;;
-    *) exit 1 ;;
+    *) fail "не удалось узнать MAC-адрес шлюза $GATEWAY" ;;
 esac
 
 GATEWAY6_MAC=
@@ -101,7 +132,7 @@ read_state() {
     /usr/bin/head -c 64 "$1" | /usr/bin/tr -d '[:space:]'
 }
 
-if [ -L "$DATA_ROOT" ] || [ -L "$DATA_ROOT/lists" ] || [ ! -d "$DATA_ROOT/lists" ]; then exit 1; fi
+if [ -L "$DATA_ROOT" ] || [ -L "$DATA_ROOT/lists" ] || [ ! -d "$DATA_ROOT/lists" ]; then fail "нет рабочей папки списков"; fi
 
 STRATEGY=$(read_state "$DATA_ROOT/selected-strategy")
 if ! printf '%s\n' "$STRATEGY" | /usr/bin/grep -Eq '^general(-[a-z0-9]+)*$' || [ ! -f "$BASE/strategies/$STRATEGY.conf.in" ]; then
@@ -113,16 +144,16 @@ fi
 # Чтобы подмена файла ссылкой не позволила вытащить через список чужой файл
 # (например, /etc/master.passwd), исходники читаются С ПРАВАМИ ВЛАДЕЛЬЦА папки, а не root.
 OWNER_UID=$(/usr/bin/stat -f %u "$DATA_ROOT" 2>/dev/null || true)
-case "$OWNER_UID" in ''|0|*[!0-9]*) exit 1 ;; esac
+case "$OWNER_UID" in ''|0|*[!0-9]*) fail "не удалось определить владельца рабочей папки" ;; esac
 RUNTIME_LISTS="$BASE/lists"
 /bin/mkdir -p "$RUNTIME_LISTS"
 /usr/sbin/chown root:wheel "$RUNTIME_LISTS"
 /bin/chmod 755 "$RUNTIME_LISTS"
 for NAME in list-general.txt list-general-user.txt list-google.txt list-exclude.txt list-exclude-user.txt ipset-all.txt ipset-exclude.txt ipset-exclude-user.txt; do
     SOURCE_LIST="$DATA_ROOT/lists/$NAME"
-    if [ -L "$SOURCE_LIST" ] || [ ! -f "$SOURCE_LIST" ]; then exit 1; fi
+    if [ -L "$SOURCE_LIST" ] || [ ! -f "$SOURCE_LIST" ]; then fail "нет списка $NAME"; fi
     /bin/rm -f "$RUNTIME_LISTS/$NAME.tmp"
-    /usr/bin/sudo -n -u "#$OWNER_UID" /bin/cat -- "$SOURCE_LIST" >"$RUNTIME_LISTS/$NAME.tmp" || exit 1
+    /usr/bin/sudo -n -u "#$OWNER_UID" /bin/cat -- "$SOURCE_LIST" >"$RUNTIME_LISTS/$NAME.tmp" || fail "не удалось прочитать список $NAME"
     /usr/sbin/chown root:wheel "$RUNTIME_LISTS/$NAME.tmp"
     /bin/chmod 644 "$RUNTIME_LISTS/$NAME.tmp"
     /bin/mv -f "$RUNTIME_LISTS/$NAME.tmp" "$RUNTIME_LISTS/$NAME"
@@ -141,13 +172,16 @@ export ZAPRET_IFACE="$PHYSICAL_IFACE"
 export ZAPRET_GATEWAY_MAC="$GATEWAY_MAC"
 export ZAPRET_GATEWAY6_MAC="$GATEWAY6_MAC"
 export ZAPRET_UTUN_UNIT=51
+/bin/echo "--- $(/bin/date '+%Y-%m-%d %H:%M:%S') запуск, стратегия $STRATEGY, $PHYSICAL_IFACE via $GATEWAY" >>"$BASE/engine.log"
+log "запуск движка: стратегия $STRATEGY, интерфейс $PHYSICAL_IFACE, шлюз $GATEWAY"
 "$BASE/bin/utunws" "@$CONF_FILE" >>"$BASE/engine.log" 2>&1 &
 ENGINE_PID=$!
 
 I=0
 while ! /sbin/ifconfig utun50 >/dev/null 2>&1; do
     I=$((I + 1))
-    if ! kill -0 "$ENGINE_PID" 2>/dev/null || [ "$I" -gt 100 ]; then exit 1; fi
+    if ! kill -0 "$ENGINE_PID" 2>/dev/null; then ENGINE_PID=; fail "движок завершился сам при старте (см. engine.log)"; fi
+    if [ "$I" -gt 100 ]; then fail "движок не создал utun50 за 10 с"; fi
     sleep 0.1
 done
 /sbin/ifconfig utun50 10.77.0.1 10.77.0.2 netmask 255.255.255.255 up
@@ -165,16 +199,30 @@ fi
 # и заворачивая в utunws пакеты, которые должны идти в прокси. С «on» обработка DPI
 # происходит только там, где пакет реально выходит в сеть через физический адаптер.
 # Остальное — как у Flowseal: user { >root } не трогает трафик самого root (sing-box lxd, utunws).
-printf '%s\n' \
+if ! printf '%s\n' \
   "pass out quick on $PHYSICAL_IFACE route-to (utun50 10.77.0.2) inet proto tcp from any to any port {80,443,2053,2083,2087,2096,8443} user { >root } no state" \
   "pass out quick on $PHYSICAL_IFACE route-to (utun50 10.77.0.2) inet proto udp from any to any port {443,19294:19344,50000:50100} user { >root } no state" \
-  | /sbin/pfctl -a "$ANCHOR" -f -
+  | /sbin/pfctl -a "$ANCHOR" -f - 2>&1 | /usr/bin/grep -v -e 'Use of -f option' -e 'present in the main ruleset' -e 'See /etc/pf.conf' -e 'ALTQ' -e '^$'; then
+    : # предупреждения pfctl выше отфильтрованы — это не ошибки
+fi
+if ! /sbin/pfctl -a "$ANCHOR" -sr 2>/dev/null | /usr/bin/grep -q route-to; then fail "pf не принял правила перехвата"; fi
+log "работает"
 
+# LAZEYKA: смена сети — повод перезапуститься (KeepAlive поднимет заново), но только
+# если она держится 3 проверки подряд (~6 с). Раньше хватало одного «мигания»
+# маршрута (Wi-Fi роуминг, переподключение другого VPN), и Zapret перезапускался.
+MISMATCH=0
 while kill -0 "$ENGINE_PID" 2>/dev/null; do
     sleep 2
     CUR=$(phys_default inet)
     CURRENT_GATEWAY=${CUR%% *}
     CURRENT_IFACE=${CUR##* }
-    if [ "$CURRENT_IFACE" != "$PHYSICAL_IFACE" ] || [ "$CURRENT_GATEWAY" != "$GATEWAY" ]; then exit 1; fi
+    if [ "$CURRENT_IFACE" != "$PHYSICAL_IFACE" ] || [ "$CURRENT_GATEWAY" != "$GATEWAY" ]; then
+        MISMATCH=$((MISMATCH + 1))
+        if [ "$MISMATCH" -ge 3 ]; then fail "сменилась сеть: было $PHYSICAL_IFACE via $GATEWAY, стало ${CURRENT_IFACE:-?} via ${CURRENT_GATEWAY:-?} — перезапуск"; fi
+    else
+        MISMATCH=0
+    fi
 done
-exit 1
+ENGINE_PID=
+fail "движок завершился сам (см. engine.log)"

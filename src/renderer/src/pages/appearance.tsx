@@ -203,7 +203,7 @@ const Appearance: React.FC = () => {
       <div ref={root} className="relative h-full w-full max-w-full min-w-0 overflow-hidden px-4">
         <div className={cn('grid h-full min-w-0 gap-4', wide ? 'grid-cols-[minmax(0,1fr)_minmax(320px,44%)]' : 'grid-cols-1')}>
           <div className="@container flex min-h-0 min-w-0 flex-col">
-            <div className="mb-2 flex shrink-0 gap-0.5 rounded-xl border border-border bg-card p-0.5" role="tablist">
+            <div className="mb-2 flex shrink-0 gap-0.5 ui-card rounded-xl border border-border bg-card p-0.5" role="tablist">
               {TABS.map((t) => (
                 <button
                   key={t.id}

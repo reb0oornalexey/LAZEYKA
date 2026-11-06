@@ -29,15 +29,17 @@ job_loaded() {
     /bin/launchctl print "system/$LABEL" >/dev/null 2>&1
 }
 
+# Первое слово — состояние (running / starting / stopped), дальше — что именно не готово.
 do_status() {
     if ! job_loaded; then echo stopped; return 0; fi
-    if /usr/bin/pgrep -x utunws >/dev/null 2>&1 \
-        && /sbin/ifconfig utun50 >/dev/null 2>&1 \
-        && /sbin/pfctl -a "$ANCHOR" -sr 2>/dev/null | /usr/bin/grep -q route-to; then
-        echo running
-    else
-        echo starting
-    fi
+    if ! /usr/bin/pgrep -x utunws >/dev/null 2>&1; then echo 'starting no-engine'; return 0; fi
+    if ! /sbin/ifconfig utun50 >/dev/null 2>&1; then echo 'starting no-utun'; return 0; fi
+    if ! /sbin/pfctl -a "$ANCHOR" -sr 2>/dev/null | /usr/bin/grep -q route-to; then echo 'starting no-pf'; return 0; fi
+    echo running
+}
+
+job_pid() {
+    /bin/launchctl print "system/$LABEL" 2>/dev/null | /usr/bin/awk '$1=="pid" && $2=="=" {print $3; exit}'
 }
 
 do_start() {
@@ -61,7 +63,26 @@ do_start() {
             sleep 0.5
         done
     fi
-    /bin/launchctl kickstart -k "system/$LABEL" >/dev/null 2>&1 || { /bin/sh "$BASE/stop.sh"; echo 'launchctl kickstart failed' >&2; return 1; }
+    # LAZEYKA: уже работающий run.sh гасим мягко (TERM → он сам снимает pf и движок),
+    # а не через kickstart -k: тот убивал supervisor, и движок оставался сиротой
+    # до pkill -9 в следующем запуске.
+    PID=$(job_pid)
+    case "$PID" in
+        ''|*[!0-9]*) ;;
+        *)
+            /bin/launchctl kill SIGTERM "system/$LABEL" >/dev/null 2>&1 || true
+            I=0
+            while [ "$I" -lt 50 ]; do
+                NEW=$(job_pid)
+                [ "$NEW" = "$PID" ] || break
+                sleep 0.1
+                I=$((I + 1))
+            done
+            ;;
+    esac
+    /bin/launchctl kickstart "system/$LABEL" >/dev/null 2>&1 \
+        || /bin/launchctl kickstart -k "system/$LABEL" >/dev/null 2>&1 \
+        || { /bin/sh "$BASE/stop.sh"; echo 'launchctl kickstart failed' >&2; return 1; }
     return 0
 }
 

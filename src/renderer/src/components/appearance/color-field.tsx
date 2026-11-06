@@ -63,7 +63,7 @@ export const ColorField = memo(function ColorField({ tokenKey: key, label, hint,
             className="flex min-w-0 max-w-[calc(100%-1.5rem)] cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1 text-left hover:bg-accent/60"
           >
             <span className="relative shrink-0">
-              <Swatch color={swatchBg} className="h-5 w-8 rounded-md border border-border" />
+              <Swatch color={swatchBg} className="h-5 w-8 rounded-md shadow-sm" />
               {issue && (
                 <Tooltip>
                   <TooltipTrigger asChild>

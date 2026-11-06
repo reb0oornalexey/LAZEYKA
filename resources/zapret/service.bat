@@ -1,5 +1,5 @@
 @echo off
-set "LOCAL_VERSION=1.10.1"
+set "LOCAL_VERSION=1.10.3"
 
 :: External commands
 if "%~1"=="status_zapret" (
@@ -163,7 +163,7 @@ if !errorlevel!==0 (
     call :PrintRed "Bypass (winws.exe) is NOT running."
 )
 
-pause
+if not defined NO_UPDATE_CHECK pause
 goto menu
 
 :test_service
@@ -221,7 +221,7 @@ if !errorlevel!==0 (
 net stop "WinDivert14" >nul 2>&1
 sc delete "WinDivert14" >nul 2>&1
 
-pause
+if not defined NO_UPDATE_CHECK pause
 goto menu
 
 
@@ -262,7 +262,7 @@ if "!choice!"=="0" (
 set "selectedFile=!file%choice%!"
 if not defined selectedFile (
     echo Invalid choice, exiting...
-    pause
+    if not defined NO_UPDATE_CHECK pause
     goto menu
 )
 
@@ -361,7 +361,7 @@ for %%F in ("!file%choice%!") do (
 )
 reg add "HKLM\System\CurrentControlSet\Services\zapret" /v zapret-discord-youtube /t REG_SZ /d "!filename!" /f
 
-pause
+if not defined NO_UPDATE_CHECK pause
 goto menu
 
 
@@ -391,7 +391,7 @@ if "%LOCAL_VERSION%"=="%GITHUB_VERSION%" (
     echo Latest version installed: %LOCAL_VERSION%
     
     if "%1"=="soft" exit 
-    pause
+    if not defined NO_UPDATE_CHECK pause
     goto menu
 ) 
 
@@ -403,7 +403,7 @@ start "" "%GITHUB_DOWNLOAD_URL%"
 
 
 if "%1"=="soft" exit 
-pause
+if not defined NO_UPDATE_CHECK pause
 goto menu
 
 
@@ -412,6 +412,10 @@ goto menu
 :service_diagnostics
 chcp 437 > nul
 cls
+
+:: Zapret path
+call :PrintGreen "Zapret is installed in: '%~dp0'"
+echo:
 
 :: Base Filtering Engine
 sc query BFE | findstr /I "RUNNING" > nul
@@ -514,6 +518,30 @@ if !errorlevel!==0 (
     call :PrintRed "Try to uninstall or disable SmartByte through services.msc"
 ) else (
     call :PrintGreen "SmartByte check passed"
+)
+echo:
+
+:: Cyrillic path
+powershell -NoProfile -Command "if ('%~dp0' -match '[\u0430-\u044F\u0410-\u042F\u0451\u0401]') { exit 0 } else { exit 1 }"
+if !errorlevel!==0 (
+    call :PrintYellow "[?] The path where Zapret is installed contains Cyrillic characters"
+    call :PrintYellow "If bypass doesn't work, try to move Zapret to another directory, for example in C:\zapret"
+) else (
+    call :PrintGreen "Cyrillic path check passed"
+)
+echo:
+
+:: OneDrive
+if defined OneDrive (
+    echo %~dp0\ | findstr /I /C:"%OneDrive%\\" > nul
+    if !errorlevel!==0 (
+        call :PrintRed "[X] Zapret is installed in a OneDrive folder"
+        call :PrintRed "If bypass doesn't work, try to move Zapret to another directory, for example in C:\zapret"
+    ) else (
+        call :PrintGreen "OneDrive check passed"
+    )
+) else (
+    call :PrintGreen "OneDrive check passed"
 )
 echo:
 
@@ -698,7 +726,7 @@ if /i "!CHOICE!"=="Y" (
 )
 echo:
 
-pause
+if not defined NO_UPDATE_CHECK pause
 goto menu
 
 
@@ -707,35 +735,51 @@ goto menu
 chcp 437 > nul
 
 set "gameFlagFile=%~dp0utils\game_filter.enabled"
+set "GameFilterMode=disabled"
+set "GameFilterTCPRange=1024-65535"
+set "GameFilterUDPRange=1024-65535"
+set "GameFilterStatus=disabled"
+set "GameFilter=12"
+set "GameFilterTCP=12"
+set "GameFilterUDP=12"
 
-if not exist "%gameFlagFile%" (
-    set "GameFilterStatus=disabled"
-    set "GameFilter=12"
-    set "GameFilterTCP=12"
-    set "GameFilterUDP=12"
-    exit /b
+if not exist "%gameFlagFile%" exit /b
+
+set "GameFilterTCPCandidate="
+set "GameFilterUDPCandidate="
+for /f "usebackq tokens=1,* delims==" %%A in ("%gameFlagFile%") do (
+    if /i "%%A"=="mode" set "GameFilterMode=%%B"
+    if /i "%%A"=="all" set "GameFilterMode=all"
+    if /i "%%A"=="udp" (
+        if "%%B"=="" (set "GameFilterMode=udp") else set "GameFilterUDPCandidate=%%B"
+    )
+    if /i "%%A"=="tcp" (
+        if "%%B"=="" (set "GameFilterMode=tcp") else set "GameFilterTCPCandidate=%%B"
+    )
 )
 
-set "GameFilterMode="
-for /f "usebackq delims=" %%A in ("%gameFlagFile%") do (
-    if not defined GameFilterMode set "GameFilterMode=%%A"
-)
+call :validate_game_filter_range "%GameFilterTCPCandidate%"
+if defined ValidatedGameFilterRange set "GameFilterTCPRange=%ValidatedGameFilterRange%"
+call :validate_game_filter_range "%GameFilterUDPCandidate%"
+if defined ValidatedGameFilterRange set "GameFilterUDPRange=%ValidatedGameFilterRange%"
 
 if /i "%GameFilterMode%"=="all" (
     set "GameFilterStatus=enabled (TCP and UDP)"
-    set "GameFilter=1024-65535"
-    set "GameFilterTCP=1024-65535"
-    set "GameFilterUDP=1024-65535"
+    set "GameFilter=%GameFilterTCPRange%"
+    set "GameFilterTCP=%GameFilterTCPRange%"
+    set "GameFilterUDP=%GameFilterUDPRange%"
 ) else if /i "%GameFilterMode%"=="tcp" (
     set "GameFilterStatus=enabled (TCP)"
-    set "GameFilter=1024-65535"
-    set "GameFilterTCP=1024-65535"
+    set "GameFilter=%GameFilterTCPRange%"
+    set "GameFilterTCP=%GameFilterTCPRange%"
     set "GameFilterUDP=12"
-) else (
+) else if /i "%GameFilterMode%"=="udp" (
     set "GameFilterStatus=enabled (UDP)"
-    set "GameFilter=1024-65535"
+    set "GameFilter=%GameFilterUDPRange%"
     set "GameFilterTCP=12"
-    set "GameFilterUDP=1024-65535"
+    set "GameFilterUDP=%GameFilterUDPRange%"
+) else (
+    set "GameFilterMode=disabled"
 )
 exit /b
 
@@ -743,38 +787,115 @@ exit /b
 :game_switch
 chcp 437 > nul
 cls
+call :game_switch_status
 
-echo Select game filter mode:
-echo   0. Disable
-echo   1. TCP and UDP
-echo   2. TCP only
-echo   3. UDP only
+echo Select game filter option:
+if "%GameFilterMode%"=="disabled"   (echo   1. * Disable) else      echo   1.   Disable
+if "%GameFilterMode%"=="all"        (echo   2. * TCP and UDP) else  echo   2.   TCP and UDP
+if "%GameFilterMode%"=="tcp"        (echo   3. * TCP) else          echo   3.   TCP
+if "%GameFilterMode%"=="udp"        (echo   4. * UDP) else          echo   4.   UDP
+echo.
+echo   5. Change TCP port range (current: %GameFilterTCPRange%)
+echo   6. Change UDP port range (current: %GameFilterUDPRange%)
+echo   7. Change TCP and UDP port ranges
+echo.
+echo.  0. Exit
 echo.
 set "GameFilterChoice=0"
-set /p "GameFilterChoice=Select option (0-3, default: 0): "
+set /p "GameFilterChoice=Select option (0-7, default: 0): "
 if "%GameFilterChoice%"=="" set "GameFilterChoice=0"
 
-if "%GameFilterChoice%"=="0" (
-    if exist "%gameFlagFile%" (
-        del /f /q "%gameFlagFile%"
-    ) else (
-        goto menu
-    )
-) else if "%GameFilterChoice%"=="1" (
-    echo all>"%gameFlagFile%"
+if "%GameFilterChoice%"=="1" (
+    set "GameFilterMode=disabled"
 ) else if "%GameFilterChoice%"=="2" (
-    echo tcp>"%gameFlagFile%"
+    set "GameFilterMode=all"
 ) else if "%GameFilterChoice%"=="3" (
-    echo udp>"%gameFlagFile%"
+    set "GameFilterMode=tcp"
+) else if "%GameFilterChoice%"=="4" (
+    set "GameFilterMode=udp"
+) else if "%GameFilterChoice%"=="5" (
+    call :change_game_filter_range tcp
+) else if "%GameFilterChoice%"=="6" (
+    call :change_game_filter_range udp
+) else if "%GameFilterChoice%"=="7" (
+    call :change_game_filter_range all
 ) else (
-    echo Invalid choice, exiting...
-    pause
     goto menu
 )
 
+echo.
+call :save_game_filter_settings
 call :PrintYellow "Restart the zapret to apply the changes"
-pause
-goto menu
+if not defined NO_UPDATE_CHECK pause
+goto game_switch
+
+
+:change_game_filter_range
+set "GameFilterRangeInput="
+
+echo.
+echo Changing ports for %~1 (example: 1024-1934,1936-65535, default: 1024-65535)
+set /p "GameFilterRangeInput=Enter ports/ranges: "
+call :validate_game_filter_range "%GameFilterRangeInput%"
+if not defined ValidatedGameFilterRange (
+    call :PrintRed "Invalid input. Please enter valid ports/ranges."
+    if not defined NO_UPDATE_CHECK pause
+    goto game_switch
+)
+
+if /i "%~1"=="tcp" set "GameFilterTCPRange=%ValidatedGameFilterRange%"
+if /i "%~1"=="udp" set "GameFilterUDPRange=%ValidatedGameFilterRange%"
+if /i "%~1"=="all" (
+    set "GameFilterTCPRange=%ValidatedGameFilterRange%"
+    set "GameFilterUDPRange=%ValidatedGameFilterRange%"
+)
+exit /b
+
+
+:validate_game_filter_range
+set "ValidatedGameFilterRange="
+setlocal EnableDelayedExpansion
+set "GameFilterRangeToValidate=%~1"
+set "GameFilterRangeToValidate=!GameFilterRangeToValidate: =!"
+if not defined GameFilterRangeToValidate exit /b
+for %%A in ("!GameFilterRangeToValidate:,=" "!") do (
+    call :gf_validate_item "%%~A"
+    if not defined GameFilterRangeItemValid exit /b
+)
+endlocal & set "ValidatedGameFilterRange=%GameFilterRangeToValidate%"
+exit /b
+
+
+:gf_validate_item
+set "GameFilterRangeItemValid="
+setlocal EnableDelayedExpansion
+set "GameFilterRangeItem=%~1"
+
+echo(!GameFilterRangeItem!| findstr /r /x /c:"[1-9][0-9]*" /c:"[1-9][0-9]*-[1-9][0-9]*" > nul || exit /b
+for /f "tokens=1,2 delims=-" %%A in ("!GameFilterRangeItem!") do (
+    set "GameFilterRangeStart=%%A"
+    set "GameFilterRangeEnd=%%B"
+)
+if not defined GameFilterRangeEnd set "GameFilterRangeEnd=!GameFilterRangeStart!"
+
+if not "!GameFilterRangeStart:~5,1!"=="" exit /b
+if not "!GameFilterRangeEnd:~5,1!"=="" exit /b
+set /a GameFilterRangeStartNumber=GameFilterRangeStart, GameFilterRangeEndNumber=GameFilterRangeEnd
+if !GameFilterRangeStartNumber! gtr 65535 exit /b
+if !GameFilterRangeEndNumber! gtr 65535 exit /b
+if !GameFilterRangeStartNumber! gtr !GameFilterRangeEndNumber! exit /b
+
+endlocal & set "GameFilterRangeItemValid=1"
+exit /b
+
+
+:save_game_filter_settings
+>"%gameFlagFile%" (
+    echo mode=%GameFilterMode%
+    echo tcp=%GameFilterTCPRange%
+    echo udp=%GameFilterUDPRange%
+)
+exit /b
 
 
 :: CHECK UPDATES SWITCH =================
@@ -803,7 +924,7 @@ if not exist "%checkUpdatesFlag%" (
     del /f /q "%checkUpdatesFlag%"
 )
 
-pause
+if not defined NO_UPDATE_CHECK pause
 goto menu
 
 
@@ -823,7 +944,7 @@ set "current_game_fake=(not found)"
 
 if not exist "%BIN_PATH%" (
     echo Error: bin folder not found.
-    pause
+    if not defined NO_UPDATE_CHECK pause
     goto menu
 )
 
@@ -844,7 +965,7 @@ popd
 
 if !fake_count! EQU 0 (
     echo No .bin files were found in the bin folder.
-    pause
+    if not defined NO_UPDATE_CHECK pause
     goto menu
 )
 
@@ -890,7 +1011,7 @@ if "!fake_type!"=="1" (
     set "active_file=%BIN_PATH%ACTIVE_GAME_UDP.bin"
 ) else (
     echo Invalid fake type.
-    pause
+    if not defined NO_UPDATE_CHECK pause
     cls
     goto replace_active_fakes_prompt
 )
@@ -899,7 +1020,7 @@ set "source_file="
 for /l %%N in (1,1,!fake_count!) do if "%%N"=="!fake_number!" set "source_file=!fake_file%%N!"
 if not defined source_file (
     echo Invalid fake file number.
-    pause
+    if not defined NO_UPDATE_CHECK pause
     cls
     goto replace_active_fakes_prompt
 )
@@ -915,7 +1036,7 @@ if errorlevel 1 (
         if "!fake_type!"=="2" set "current_game_fake=!fake_name%%N!"
     )
 )
-pause
+if not defined NO_UPDATE_CHECK pause
 cls
 goto replace_active_fakes_prompt
 
@@ -976,13 +1097,13 @@ if "%IPsetStatus%"=="loaded" (
         ren "%backupFile%" "ipset-all.txt"
     ) else (
         echo Error: no backup to restore. Update list from service menu first
-        pause
+        if not defined NO_UPDATE_CHECK pause
         goto menu
     )
     
 )
 
-pause
+if not defined NO_UPDATE_CHECK pause
 goto menu
 
 
@@ -999,9 +1120,9 @@ echo Updating ipset-all...
 if exist "%SystemRoot%\System32\curl.exe" (
     curl --version | find "libcurl/7"
     if !errorlevel!==0 (
-        curl --ssl-no-revoke -L -o "%listFile%" "%url%"
+        curl --ssl-no-revoke -L -f -o "%listFile%" "%url%"
     ) else (
-        curl --ssl-revoke-best-effort -L -o "%listFile%" "%url%"
+        curl --ssl-revoke-best-effort -L -f -o "%listFile%" "%url%"
     )
 ) else (
     powershell -NoProfile -Command ^
@@ -1015,7 +1136,7 @@ if exist "%SystemRoot%\System32\curl.exe" (
 
 echo Finished
 
-pause
+if not defined NO_UPDATE_CHECK pause
 goto menu
 
 
@@ -1035,7 +1156,7 @@ set "requestUrl=%hostsUrl%?t=%cacheBuster%"
 echo Checking hosts file...
 
 if exist "%SystemRoot%\System32\curl.exe" (
-    curl -L -s -o "%tempFile%" "%requestUrl%"
+    curl -L -s -f -o "%tempFile%" "%requestUrl%"
 ) else (
     powershell -NoProfile -Command ^
         "$url = '%requestUrl%';" ^
@@ -1046,7 +1167,7 @@ if exist "%SystemRoot%\System32\curl.exe" (
 if not exist "%tempFile%" (
     call :PrintRed "Failed to download hosts file from repository"
     call :PrintYellow "Copy hosts file manually from %hostsUrl%"
-    pause
+    if not defined NO_UPDATE_CHECK pause
     goto menu
 )
 
@@ -1084,7 +1205,7 @@ if "%needsUpdate%"=="1" (
 )
 
 echo:
-pause
+if not defined NO_UPDATE_CHECK pause
 goto menu
 
 
@@ -1099,14 +1220,14 @@ if %errorLevel% neq 0 (
     echo PowerShell 3.0 or newer is required.
     echo Please upgrade PowerShell and rerun this script.
     echo.
-    pause
+    if not defined NO_UPDATE_CHECK pause
     goto menu
 )
 
 echo Starting configuration tests in PowerShell window...
 echo.
 start "" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0utils\test zapret.ps1"
-pause
+if not defined NO_UPDATE_CHECK pause
 goto menu
 
 
@@ -1172,7 +1293,7 @@ where %1 >nul 2>&1
 if %errorLevel% neq 0 (
     echo [ERROR] %1 not found in PATH
     echo Fix your PATH variable with instructions here https://github.com/Flowseal/zapret-discord-youtube/issues/7490
-    pause
+    if not defined NO_UPDATE_CHECK pause
     exit /b 1
 )
 exit /b 0
@@ -1184,7 +1305,7 @@ if not exist "%~dp0bin\" set "extracted=0"
 
 if "%extracted%"=="0" (
     echo Zapret must be extracted from archive first or bin folder not found for some reason
-    pause
+    if not defined NO_UPDATE_CHECK pause
     exit
 )
 exit /b 0

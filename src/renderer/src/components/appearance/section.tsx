@@ -27,7 +27,7 @@ export const SectionCard: React.FC<{
   className?: string
   children: React.ReactNode
 }> = ({ icon: Icon, title, tip, right, className, children }) => (
-  <section className={cn('rounded-xl border border-border bg-card p-3 text-card-foreground', className)}>
+  <section className={cn('ui-glow rounded-xl border border-border bg-card p-3 text-card-foreground', className)}>
     <div className="mb-2 flex items-center gap-1.5">
       <Icon className="size-4 text-primary" />
       <h3 className="text-[13px] font-semibold text-[color:var(--text-title)]">{title}</h3>

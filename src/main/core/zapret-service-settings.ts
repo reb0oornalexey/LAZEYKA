@@ -77,6 +77,11 @@ export function normalizeGamePorts(value: unknown): string | null {
   return merged.map(([a, b]) => (a === b ? String(a) : `${a}-${b}`)).join(',')
 }
 
+/** Версия Zapret из service.bat (LOCAL_VERSION) — для встроенной сборки, у которой в настройках версии нет. */
+export function bundledZapretVersion(): string | undefined {
+  return readServiceBat()?.match(/set\s+"?LOCAL_VERSION=([^"\r\n]+)"?/i)?.[1]?.trim() || undefined
+}
+
 function readServiceBat(): string | null {
   try {
     const f = path.join(zapretBundleDir(), 'service.bat')
@@ -695,9 +700,22 @@ export async function updateZapretHostsFile(): Promise<{ success: boolean; messa
 
   const currentContent = readFileSync(hostsPath, 'utf-8')
   const marker = '# --- Zapret Discord / YouTube hosts ---'
-  const newContent = currentContent.includes(marker)
-    ? currentContent.split(marker)[0].trimEnd() + `\n\n${marker}\n` + remoteText
-    : currentContent.trimEnd() + `\n\n${marker}\n` + remoteText
+  // Копия на случай отката — рядом с hosts.
+  try { writeFileSync(`${hostsPath}.lazeyka-backup`, currentContent, 'utf-8') } catch { /* не критично */ }
+  // Старые записи Flowseal вне нашего блока (их добавлял service.bat без метки)
+  // убираем — иначе устаревшие адреса продолжали действовать поверх новых.
+  // Чужие строки пользователя не трогаем.
+  const head = (currentContent.includes(marker) ? currentContent.split(marker)[0] : currentContent)
+    .split(/\r?\n/)
+    .filter((raw) => {
+      const line = raw.replace(/#.*/, '').trim()
+      if (!line) return true
+      const [ip, ...names] = line.split(/\s+/)
+      if (!ip || ['0.0.0.0', '127.0.0.1', '::1'].includes(ip) || names.length === 0) return true
+      return !names.every((n) => isFlowsealHostName(n))
+    })
+    .join('\r\n')
+  const newContent = head.trimEnd() + `\r\n\r\n${marker}\r\n` + remoteText.replace(/\r?\n/g, '\r\n')
 
   writeFileSync(hostsPath, newContent, 'utf-8')
   return { success: true, message: 'Файл hosts успешно синхронизирован с Flowseal' }
@@ -994,8 +1012,33 @@ const HOSTS_WATCH: [string, (h: string) => boolean][] = [
   ['steam', (h) => h.includes('steam')]
 ]
 
+/**
+ * Записи, которые ставит Flowseal (service.bat «Update hosts» или наш блок) —
+ * в том числе из старых версий его hosts: голосовые серверы Discord вида
+ * finland10000.discord.media и адреса GitHub / Telegram. Это не «чужая подмена».
+ */
+const FLOWSEAL_HOST_NAMES = new Set([
+  'github.com', 'objects.githubusercontent.com', 'raw.githubusercontent.com', 'release-assets.githubusercontent.com',
+  'private-user-images.githubusercontent.com', 'avatars.githubusercontent.com', 'camo.githubusercontent.com',
+  'cloud.githubusercontent.com', 'gist.githubusercontent.com', 'media.githubusercontent.com', 'discord.com',
+  'api.telegram.org', 'core.telegram.org', 'desktop.telegram.org', 'macos.telegram.org', 'my.telegram.org',
+  'oauth.telegram.org', 'td.telegram.org', 'telegram.org', 'telegram.me', 'telegram.dog', 'telegram.space',
+  't.me', 'oauth.tg.dev', 'cdn.telesco.pe', 'web.telegram.org'
+])
+
+export function isFlowsealHostName(host: string): boolean {
+  const h = host.toLowerCase()
+  return (
+    FLOWSEAL_HOST_NAMES.has(h) ||
+    /^[a-z]+\d+\.discord\.media$/.test(h) ||
+    /\.web\.telegram\.org$/.test(h) ||
+    /\.telesco\.pe$/.test(h) ||
+    /^[a-z0-9-]+\.githubusercontent\.com$/.test(h)
+  )
+}
+
 /** Домены из hosts, которые перенаправлены на чужой IP (блок Flowseal и блокировки на 0.0.0.0/127.0.0.1 пропускаются). */
-export function findHostsRedirects(content: string, known: Set<string> = new Set()): string[] {
+export function findHostsRedirects(content: string, known: Set<string> = new Set(), flowseal?: string[]): string[] {
   const marker = '# --- Zapret Discord / YouTube hosts ---'
   const own = content.indexOf(marker)
   const text = own >= 0 ? content.slice(0, own) : content
@@ -1012,7 +1055,13 @@ export function findHostsRedirects(content: string, known: Set<string> = new Set
       const host = n.toLowerCase()
       // Строка из актуального hosts Flowseal (добавлена через service.bat без нашей метки).
       if (known.has(`${ip} ${host}`)) continue
-      if (HOSTS_WATCH.some(([, test]) => test(host))) found.add(host)
+      if (!HOSTS_WATCH.some(([, test]) => test(host))) continue
+      // Запись Flowseal (часто — из его старой версии): отдельный, мягкий пункт.
+      if (isFlowsealHostName(host)) {
+        flowseal?.push(host)
+        continue
+      }
+      found.add(host)
     }
   }
   return [...found]
@@ -1021,6 +1070,7 @@ export function findHostsRedirects(content: string, known: Set<string> = new Set
 async function checkHostsRedirects(): Promise<DiagnosticItem> {
   const hostsPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'drivers', 'etc', 'hosts')
   let list: string[] = []
+  const flowseal: string[] = []
   // Строки из hosts Flowseal не считаем подменой (без сети — только встроенные исключения).
   const known = new Set<string>()
   try {
@@ -1035,9 +1085,23 @@ async function checkHostsRedirects(): Promise<DiagnosticItem> {
     /* офлайн */
   }
   try {
-    if (existsSync(hostsPath)) list = findHostsRedirects(readFileSync(hostsPath, 'utf-8'), known)
+    if (existsSync(hostsPath)) list = findHostsRedirects(readFileSync(hostsPath, 'utf-8'), known, flowseal)
   } catch {
     /* нет доступа к hosts — не считаем проблемой */
+  }
+  if (list.length === 0 && flowseal.length > 0) {
+    const uniq = [...new Set(flowseal)]
+    return {
+      id: 'hosts_redirects',
+      category: 'network',
+      title: 'Старые записи Flowseal в hosts',
+      status: 'warn',
+      message:
+        `В hosts остались записи из прошлой версии Zapret (Flowseal): ${uniq.slice(0, 3).join(', ')}${uniq.length > 3 ? ` и ещё ${uniq.length - 3}` : ''}. ` +
+        'Адреса в них могли устареть. «Исправить» заменит их актуальными (копия hosts сохранится рядом).',
+      fixAction: 'update_hosts',
+      fixLabel: 'Заменить актуальными'
+    }
   }
   if (list.length === 0) {
     return {
@@ -1346,6 +1410,14 @@ export async function fixDiagnosticIssue(action: string): Promise<{ success: boo
 
   if (action === 'update_hosts') {
     return updateZapretHostsFile()
+  }
+
+  if (action === 'restore_hosts') {
+    const hostsPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'drivers', 'etc', 'hosts')
+    const bak = `${hostsPath}.lazeyka-backup`
+    if (!existsSync(bak)) throw new Error('Копии hosts нет — откатывать нечего')
+    writeFileSync(hostsPath, readFileSync(bak, 'utf-8'), 'utf-8')
+    return { success: true, message: 'Файл hosts возвращён к копии до исправления' }
   }
 
   if (action === 'clear_discord_cache') {

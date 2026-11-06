@@ -1,7 +1,7 @@
 import React from 'react'
 import { Switch } from '@renderer/components/ui/switch'
 import { cn } from '@renderer/lib/utils'
-import { Loader2 } from 'lucide-react'
+import { ChevronDown, History, Loader2 } from 'lucide-react'
 
 interface SwitcherCardProps {
   icon: React.ComponentType<{ className?: string }>
@@ -19,6 +19,8 @@ interface SwitcherCardProps {
    * и пустое место читалось как «версия потерялась».
    */
   versionFallback?: string
+  /** Клик по версии — окно со всеми версиями компонента (выбор любой). */
+  onVersionClick?: () => void
   disabled?: boolean
 }
 
@@ -41,6 +43,7 @@ const SwitcherCard: React.FC<SwitcherCardProps> = ({
   className,
   version,
   versionFallback,
+  onVersionClick,
   disabled = false
 }) => {
   const [pending, setPending] = React.useState<null | boolean>(null)
@@ -91,7 +94,7 @@ const SwitcherCard: React.FC<SwitcherCardProps> = ({
         <div className="flex-1 min-w-0">
           <div className="text-base font-bold tracking-tight text-foreground truncate">{title}</div>
           {subtitle && (
-            <div className="text-xs truncate mt-0.5 text-muted-foreground">
+            <div className={cn('text-xs font-medium truncate mt-0.5', on ? 'text-foreground/85' : 'text-muted-foreground')}>
               {subtitle}
             </div>
           )}
@@ -103,16 +106,32 @@ const SwitcherCard: React.FC<SwitcherCardProps> = ({
             onCheckedChange={handleChange}
           />
           {(version || versionFallback) && (
-            <div
-              className="text-[10px] font-mono text-muted-foreground/70 tabular-nums"
+            <button
+              type="button"
+              disabled={!onVersionClick}
+              onClick={(e) => {
+                e.stopPropagation()
+                onVersionClick?.()
+              }}
+              className={cn(
+                'tabular-nums',
+                onVersionClick
+                  ? 'group/ver inline-flex cursor-pointer items-center gap-1 rounded-lg border border-primary/50 bg-background/55 px-2 py-1 text-[11px] font-bold text-foreground shadow-sm backdrop-blur-sm transition-colors hover:border-primary hover:bg-background/75 [&_svg]:text-primary'
+                  : 'text-[10px] font-mono text-muted-foreground/70 rounded-md px-1.5 py-0.5 -mr-1.5'
+              )}
               title={
-                version
-                  ? undefined
-                  : 'Ядро из установщика — номер появится после первого обновления через LAZEYKA'
+                onVersionClick
+                  ? 'Все версии — можно поставить любую'
+                  : version
+                    ? undefined
+                    : 'Ядро из установщика — номер появится после первого обновления через LAZEYKA'
               }
             >
-              {version ? `v${version}` : versionFallback}
-            </div>
+              {onVersionClick && <History className="size-3" />}
+              <span className={onVersionClick ? 'font-mono' : undefined}>{version ? `v${version}` : versionFallback}</span>
+              {onVersionClick && <span className="text-[10px] font-medium opacity-80">· сменить</span>}
+              {onVersionClick && <ChevronDown className="size-3 transition-transform group-hover/ver:translate-y-px" />}
+            </button>
           )}
         </div>
       </div>

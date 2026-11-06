@@ -156,7 +156,7 @@ export function WarpCard({ nodes, selectedNodeId, onNodes, onImportText, onPickF
           )}
         >
           <div className="font-semibold flex items-center gap-1.5">
-            <Bot className="h-3.5 w-3.5" /> WARP из бота (как в Tunor)
+            <Bot className="h-3.5 w-3.5" /> WARP из бота
           </div>
           <ol className="list-decimal pl-4 space-y-0.5 text-muted-foreground text-[11px]">
             <li>

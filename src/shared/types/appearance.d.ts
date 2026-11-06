@@ -3,6 +3,10 @@ type AppearanceMode = 'light' | 'dark'
 type AppearanceFit = 'cover' | 'contain' | 'tile'
 type AppearanceDensity = 'compact' | 'normal' | 'comfortable'
 type AppearanceAnimations = 'on' | 'off' | 'auto'
+/** Вид элементов управления (кнопки, переключатели, карточки). */
+type AppearanceButtonStyle = 'classic' | 'tactile' | 'glass' | 'keys' | 'pill'
+type AppearanceSwitchStyle = 'classic' | 'glow' | 'square' | 'rocker'
+type AppearanceCardStyle = 'classic' | 'raised' | 'glass' | 'outline' | 'neon' | 'flat'
 
 /** Не цветовые настройки оформления + фон. */
 interface AppearanceSettings {
@@ -16,6 +20,16 @@ interface AppearanceSettings {
   radius: number
   density: AppearanceDensity
   animations: AppearanceAnimations
+  /** Вид кнопок, переключателей и карточек (вкладка «Интерфейс»). */
+  buttonStyle: AppearanceButtonStyle
+  switchStyle: AppearanceSwitchStyle
+  cardStyle: AppearanceCardStyle
+  /** Глубина теней карточек и кнопок (0–1). */
+  uiShadow: number
+  /** Толщина рамок карточек, px (0–3). */
+  uiBorder: number
+  /** Размер кнопок. */
+  buttonSize: 'compact' | 'normal' | 'large'
   /** Ширина бокового меню, px (180–280). */
   sidebarWidth: number
   /** Имя файла в папке backgrounds (не путь!). Пусто — без картинки. */

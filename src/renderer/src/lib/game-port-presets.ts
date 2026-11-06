@@ -13,6 +13,7 @@ export interface GamePortPreset {
 }
 
 export const GAME_PORT_PRESETS: GamePortPreset[] = [
+  { id: 'discord', name: 'Discord (голос и видео)', udp: '19294-19344,50000-65535', tcp: '2053,2083,2087,2096,8443', hint: 'Голосовые каналы, звонки, стримы и демонстрация экрана' },
   { id: 'steam', name: 'CS2 / Dota 2 / Deadlock', udp: '3478,4379-4380,27000-27100', tcp: '27015-27050', hint: 'Игры Valve и Steam (матчмейкинг, SDR-релеи, голос)' },
   { id: 'faceit', name: 'FACEIT', udp: '27000-28999', tcp: '27015-27050', hint: 'Серверы FACEIT для CS2 (диапазон с запасом)' },
   { id: 'valorant', name: 'Valorant', udp: '7000-8000,8180-8181', tcp: '2099,5222-5223,8088,8393-8400', hint: 'Riot: игра + чат/клиент' },

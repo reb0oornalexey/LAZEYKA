@@ -22,6 +22,7 @@ import {
   ensureZapretMacDataRoot,
   installedPayloadVersion,
   isSudoDenied,
+  lastZapretCtlDetail,
   notifyZapretMacService,
   zapretCtl,
   zapretCtlStatus,
@@ -192,8 +193,11 @@ function startMonitor(host: ZapretMacHost): void {
     void zapretCtlStatus().then((st) => {
       if (stopping || !monitor) return
       if (st === 'running') { failures = 0; return }
-      // Служба перезапускается сама (KeepAlive при смене сети): даём ей несколько проверок.
-      if (++failures < 3) return
+      // Служба перезапускается сама (KeepAlive при смене сети, до ~15 с) и sudo
+      // иногда отвечает с задержкой: «запускается» и «нет ответа» терпим дольше,
+      // чем «остановлена». Раньше хватало трёх любых неудач подряд (15 с).
+      failures += st === 'stopped' ? 2 : 1
+      if (failures < 6) return
       stopMonitor()
       weStarted = false
       const tail = zapretServiceLogTail()
@@ -206,6 +210,14 @@ function startMonitor(host: ZapretMacHost): void {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
+/** Пояснение к «starting …» из ctl.sh status. */
+function describeCtlDetail(d: string): string {
+  if (d.includes('no-engine')) return 'движок не запущен'
+  if (d.includes('no-utun')) return 'движок не создал интерфейс utun50'
+  if (d.includes('no-pf')) return 'pf не принял правила перехвата'
+  return ''
+}
+
 /** Ждём, пока служба поднимет движок и правила pf. */
 async function waitRunning(timeoutMs: number): Promise<'running' | 'stopped' | 'timeout'> {
   const deadline = Date.now() + timeoutMs
@@ -213,13 +225,15 @@ async function waitRunning(timeoutMs: number): Promise<'running' | 'stopped' | '
   while (Date.now() < deadline) {
     const st = await zapretCtlStatus()
     if (st === 'running') return 'running'
-    // «stopped» сразу после kickstart бывает на долю секунды — считаем только повторы.
-    if (st === 'stopped' || st === 'unavailable') {
-      if (++stoppedSeen >= 4) return 'stopped'
+    // «stopped» сразу после kickstart бывает на долю секунды — считаем только
+    // повторы. «Нет ответа» от sudo — не «остановлена»: раньше четыре таких
+    // ответа подряд (~5–8 с) и давали «выключается через 5–10 секунд».
+    if (st === 'stopped') {
+      if (++stoppedSeen >= 6) return 'stopped'
     } else {
       stoppedSeen = 0
     }
-    await sleep(500)
+    await sleep(700)
   }
   return 'timeout'
 }
@@ -288,12 +302,15 @@ export async function startZapretMac(host: ZapretMacHost): Promise<void> {
     host.log('error', msg)
     throw new Error(msg)
   }
-  const st = await waitRunning(20_000)
+  const st = await waitRunning(30_000)
   if (st !== 'running') {
-    await zapretCtl('stop', 15_000).catch(() => null)
+    // Причину читаем ДО остановки: сама остановка дописывает в журнал свои строки,
+    // и раньше в ошибку всегда попадало «Killed: 9» от нашей же команды.
     const tail = zapretServiceLogTail()
+    const detail = st === 'timeout' ? describeCtlDetail(lastZapretCtlDetail) : ''
+    await zapretCtl('stop', 15_000).catch(() => null)
     const msg =
-      (st === 'stopped' ? 'Движок Zapret завершился сразу после запуска' : 'Движок Zapret не поднялся за 20 секунд') +
+      (st === 'stopped' ? 'Движок Zapret завершился сразу после запуска' : `Движок Zapret не поднялся за 30 секунд${detail ? ` (${detail})` : ''}`) +
       (tail ? `: ${tail}` : '. Выключите другие VPN с туннелированием и проверьте сеть.')
     host.setStatus({ state: 'error', pid: undefined, lastError: msg })
     host.log('error', msg)

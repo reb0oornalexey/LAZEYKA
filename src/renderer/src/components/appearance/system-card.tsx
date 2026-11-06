@@ -16,6 +16,16 @@ export const SystemCard: React.FC = () => {
   const accentAvailable = useAppearanceStore((s) => s.systemAccent !== null)
   const setSystem = useAppearanceStore((s) => s.setSystem)
 
+  // Акцент Windows спрашиваем при открытии карточки: раньше он запрашивался,
+  // только если переключатель уже был включён при запуске, — иначе
+  // переключатель оставался серым и «не работал».
+  React.useEffect(() => {
+    if (useAppearanceStore.getState().systemAccent !== null) return
+    appearanceGetSystem()
+      .then((i) => useAppearanceStore.getState().setSystemInfo(i))
+      .catch(() => undefined)
+  }, [])
+
   const options = (mode: AppearanceMode): { id: string; name: string }[] => [
     ...BUILTIN_PRESETS.filter((p) => p.mode === mode).map((p) => ({ id: p.id, name: p.name })),
     ...custom.filter((c) => c.mode === mode).map((c) => ({ id: c.id, name: c.name }))

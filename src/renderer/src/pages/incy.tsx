@@ -42,8 +42,11 @@ import {
 } from 'lucide-react'
 import BasePage from '@renderer/components/base/base-page'
 import AutoSelectCard from '@renderer/components/auto-select-card'
+import SplitTunnelingCard from '@renderer/components/split-tunneling-card'
+import VelvetRecommendation from '@renderer/components/velvet-recommendation'
+import NetSpeedDialog from '@renderer/components/net-speed-dialog'
 import { WarpCard } from '@renderer/components/warp-card'
-import SpeedTestCard from '@renderer/components/speed-test-card'
+import { Gauge } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -97,6 +100,7 @@ import {
   type IncyStatus,
   type IncyStats
 } from '@renderer/utils/ipc'
+import { incyUpdateSingBoxNow } from '@renderer/utils/ipc'
 import { decodeQrFromDataUrl } from '@renderer/utils/qr-scanner'
 import { useIncyStore } from '@renderer/store/incy-store'
 import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
@@ -1247,6 +1251,7 @@ export default function IncyPage(): React.ReactElement {
   const [loadingImport, setLoadingImport] = useState(false)
   const [loadingRefresh, setLoadingRefresh] = useState(false)
   const [testingPings, setTestingPings] = useState(false)
+  const [speedOpen, setSpeedOpen] = useState(false)
   const [pingingNodeIds, setPingingNodeIds] = useState<Set<string>>(new Set())
   const [coreMemory, setCoreMemory] = useState<CoreMemoryUsage | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
@@ -1606,6 +1611,10 @@ export default function IncyPage(): React.ReactElement {
   }
 
   const handleSelectNode = async (nodeId: string): Promise<void> => {
+    // Подсвечиваем выбор сразу, не дожидаясь ответа main-процесса: пока шёл
+    // IPC (а при поднятом туннеле — ещё и переподключение), строка выглядела
+    // ненажатой, и по ней кликали ещё раз.
+    setStatus((s) => ({ ...s, selectedNodeId: nodeId }))
     try {
       const next = await incySelectNode(nodeId)
       setStatus(next)
@@ -1669,6 +1678,37 @@ export default function IncyPage(): React.ReactElement {
       await Promise.all(Array.from({ length: 5 }, worker))
       await incySaveLatencies(results)
       toast.success('Замер задержки серверов завершён')
+      // «Подключаться к лучшему после замера» работает и для замера в INCY,
+      // а не только в оптимизаторе ExitLag. Переключаемся, только если лучший
+      // узел заметно быстрее текущего — иначе каждый замер дёргал бы туннель.
+      if (settings?.routeAutoConnectBest && targetNodes.length > 1) {
+        const words = String(settings.autoSelectExcludeKeywords ?? '')
+          .split(/[,;\n]+/)
+          .map((w) => w.trim().toLowerCase())
+          .filter(Boolean)
+        const excluded = new Set(settings.autoSelectExcludedKeys ?? [])
+        const allowed = (n: IncyNode): boolean =>
+          !excluded.has(`${n.name}|${n.server}:${n.port}`) &&
+          !words.some((w) => `${n.name} ${n.description ?? ''}`.toLowerCase().includes(w))
+        const byId = new Map(targetNodes.map((n) => [n.id, n]))
+        const best = results
+          .filter((r) => r.latencyMs != null && byId.has(r.id) && allowed(byId.get(r.id)!))
+          .sort((a, b) => a.latencyMs! - b.latencyMs!)[0]
+        const curId = status.state === 'running' ? status.activeNodeId : status.selectedNodeId
+        const cur = results.find((r) => r.id === curId)
+        const muchBetter =
+          best && best.id !== curId && (cur?.latencyMs == null || (best.latencyMs! < cur.latencyMs * 0.7 && cur.latencyMs - best.latencyMs! > 30))
+        if (best && muchBetter) {
+          const name = byId.get(best.id)!.name
+          if (status.state === 'running') {
+            toast.info(`Переключаю на лучший узел: ${name} (${best.latencyMs} мс)`)
+            setStatus(await incyConnect(best.id))
+          } else {
+            setStatus(await incySelectNode(best.id))
+            toast.info(`Выбран лучший узел: ${name} (${best.latencyMs} мс)`)
+          }
+        }
+      }
     } catch { /* ignore */ } finally {
       setPingingNodeIds(new Set())
       setTestingPings(false)
@@ -2430,6 +2470,25 @@ export default function IncyPage(): React.ReactElement {
                         {status.lastError}
                       </div>
                     )}
+                    {!isBusy && hasError && /AmneziaWG|sing-box-lx/.test(status.lastError ?? '') && (
+                      <Button
+                        size="sm"
+                        className="mt-1"
+                        onClick={() => {
+                          const id = toast.loading('Скачиваю ядро sing-box-lx…')
+                          incyUpdateSingBoxNow()
+                            .then((r) =>
+                              r.success
+                                ? toast.success('Ядро обновлено — подключитесь ещё раз', { id, description: r.message })
+                                : toast.error('Ядро не обновилось', { id, description: r.message })
+                            )
+                            .catch((e) => toast.error('Ядро не обновилось', { id, description: e instanceof Error ? e.message : String(e) }))
+                        }}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Обновить ядро сейчас
+                      </Button>
+                    )}
                   </div>
 
                   {/* Quick Split / Global mode selector */}
@@ -2464,10 +2523,32 @@ export default function IncyPage(): React.ReactElement {
               onPatch={(patch) => handleUpdateSettings(patch, true)}
             />
 
-            <SpeedTestCard
-              node={activeOrSelectedNode}
-              label={activeOrSelectedNode ? cleanServerName(activeOrSelectedNode.name) : ''}
-            />
+            {/* Тест скорости: выбор сервера (или текущее подключение) и сервиса
+                замера — то же окно, что на главной. */}
+            <div className="flex flex-wrap items-center gap-3 ui-card rounded-xl border border-border bg-card p-4">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary">
+                <Gauge className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold">Тест скорости</div>
+                <div className="truncate text-xs text-muted-foreground">
+                  {nodes.length
+                    ? `Через любой сервер подписки или текущее подключение · Яндекс, Speedtest, Cloudflare`
+                    : 'Серверов пока нет — можно проверить интернет напрямую. Добавьте подписку, чтобы мерить через VPN.'}
+                </div>
+              </div>
+              <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => setSpeedOpen(true)}>
+                <Gauge className="h-3.5 w-3.5" />
+                Проверить
+              </Button>
+              <NetSpeedDialog
+                open={speedOpen}
+                onClose={() => setSpeedOpen(false)}
+                vpnOn={isConnected}
+                nodes={nodes}
+                initialNodeId={activeOrSelectedNode?.id ?? null}
+              />
+            </div>
 
             {/* ТЕКУЩАЯ ПОДПИСКА (Subscription Card) */}
             <div className="space-y-2">
@@ -2610,13 +2691,15 @@ export default function IncyPage(): React.ReactElement {
                   </CardContent>
                 </Card>
               ) : (
-                <div className="p-4 rounded-xl border border-dashed border-border bg-card/30 text-center space-y-2">
-                  <div className="text-xs text-muted-foreground">Подписка пока не добавлена</div>
-                  <Button size="sm" onClick={() => setActiveTab('servers')} className="text-xs h-7 gap-1">
-                    <Plus className="h-3.5 w-3.5" /> Добавить подписку
+                <div className="p-4 rounded-xl border border-dashed border-border bg-card/30 text-center space-y-3">
+                  <div className="text-xs text-muted-foreground">Подписка пока не добавлена — нет VPN?</div>
+                  <VelvetRecommendation className="text-left" />
+                  <Button size="sm" variant="outline" onClick={() => setActiveTab('servers')} className="text-xs h-7 gap-1">
+                    <Plus className="h-3.5 w-3.5" /> У меня есть подписка — добавить
                   </Button>
                 </div>
               )}
+              {subscription && <VelvetRecommendation variant="hint" className="px-1 pt-0.5" />}
             </div>
 
             {/* ДРУГИЕ ПРОВАЙДЕРЫ.
@@ -2912,6 +2995,8 @@ export default function IncyPage(): React.ReactElement {
               onPickFile={handleImportConfFile}
             />
 
+            <VelvetRecommendation variant="hint" className="px-1" />
+
             {/* Filter Pills and Search — наверху, над всеми подписками */}
             <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-1">
               <div className="flex items-center gap-1.5 w-full sm:w-auto flex-wrap">
@@ -3197,12 +3282,15 @@ export default function IncyPage(): React.ReactElement {
 
             <GeoCategoriesCard settings={settings} onUpdate={handleUpdateSettings} />
 
+            {/* Сайты напрямую, мимо VPN — переехали сюда из общих «Настроек». */}
+            <SplitTunnelingCard />
+
             {/* Режим приложений настраивается на вкладке ExitLag — здесь раньше
                 была её полная копия. */}
             <button
               type="button"
               onClick={() => navigate('/exitlag')}
-              className="group flex w-full cursor-pointer items-center justify-between gap-3 rounded-2xl border border-border bg-card px-5 py-4 text-left transition-colors hover:border-primary/35"
+              className="group flex w-full cursor-pointer items-center justify-between gap-3 ui-card rounded-2xl border border-border bg-card px-5 py-4 text-left transition-colors hover:border-primary/35"
             >
               <span className="flex items-center gap-3">
                 <span className="flex size-9 items-center justify-center rounded-xl bg-secondary text-primary">

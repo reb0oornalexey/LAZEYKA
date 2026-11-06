@@ -25,7 +25,10 @@ function stableUuid(seed: string): string {
 
 export function buildDohProfile(p: DohProvider): string {
   if (!p.url) throw new Error('У этого DNS нет адреса DoH — профиль не нужен')
-  const slug = p.id.replace(/[^a-z0-9-]/gi, '').toLowerCase() || 'custom'
+  // Один и тот же идентификатор для любого сервера: новый профиль ЗАМЕНЯЕТ
+  // прежний. Раньше у каждого сервера был свой — в «VPN и фильтры» копились
+  // профили, macOS включала один из них, и выбранный DNS «не работал».
+  const slug = 'active'
   const addrs = [p.ip, p.secondaryIp, ...(p.ipv6 ?? [])].filter((a): a is string => !!a)
   const title = `${p.name} (DoH) — LAZEYKA`
   const addrXml = addrs.length
@@ -92,15 +95,15 @@ export async function openMacDohProfile(p: DohProvider): Promise<{ success: bool
   try {
     const dir = path.join(dataDir(), 'dns-profiles')
     mkdirSync(dir, { recursive: true })
-    const file = path.join(dir, `LAZEYKA-DNS-${p.id.replace(/[^a-z0-9-]/gi, '') || 'custom'}.mobileconfig`)
+    const file = path.join(dir, `LAZEYKA-DNS-${(p.id.replace(/[^a-z0-9-]/gi, '') || 'custom').slice(0, 40)}.mobileconfig`)
     writeFileSync(file, buildDohProfile(p), 'utf-8')
     const err = await shell.openPath(file)
     if (err) return { success: false, message: `Не удалось открыть профиль: ${err}` }
     return {
       success: true,
       message:
-        'Профиль загружен. Откройте «Системные настройки» → «Основные» → «Управление устройством» (или «Профили»), ' +
-        'дважды щёлкните профиль LAZEYKA и нажмите «Установить». Затем в «Сеть» → «VPN и фильтры» выберите у него «Включено».'
+        'Профиль загружен. Установите его в «Системных настройках» и включите в «Сеть» → «VPN и фильтры». ' +
+        'Старый профиль LAZEYKA (если был) заменится этим.'
     }
   } catch (e) {
     return { success: false, message: e instanceof Error ? e.message : String(e) }

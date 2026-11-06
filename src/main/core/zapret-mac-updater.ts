@@ -6,6 +6,7 @@
  * GitHub, Mach-O движок) и ставится в службу через системное окно пароля: без
  * пароля любой процесс пользователя мог бы подменить бинарник, который работает от root.
  */
+import { fetchWithMirror } from '../utils/mirror'
 import { createHash } from 'node:crypto'
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -152,7 +153,7 @@ export async function installMacUpdate(
 
   let buf: Buffer
   try {
-    const res = await fetch(assetUrl, { headers: { 'User-Agent': 'LAZEYKA-Updater' } })
+    const res = await fetchWithMirror(assetUrl, { headers: { 'User-Agent': 'LAZEYKA-Updater' } })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     buf = Buffer.from(await res.arrayBuffer())
   } catch (e) {

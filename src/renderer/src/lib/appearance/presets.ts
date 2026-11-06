@@ -30,7 +30,13 @@ export const DEFAULT_SETTINGS: AppearanceSettings = {
   bgGradientTo: '#1b2a4a',
   bgGradientAngle: 135,
   bgAnimate: true,
-  bgPauseOnBlur: true
+  bgPauseOnBlur: true,
+  buttonStyle: 'classic',
+  switchStyle: 'classic',
+  cardStyle: 'classic',
+  uiShadow: 0.6,
+  uiBorder: 1,
+  buttonSize: 'normal'
 }
 
 export interface Seed {

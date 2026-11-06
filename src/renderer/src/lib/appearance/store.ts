@@ -3,6 +3,7 @@ import { DEFAULT_PRESET_ID, DEFAULT_SETTINGS, getBuiltinPreset } from './presets
 import { effectiveTokens, resolveAppearance, type AppearanceSnapshot } from './resolve'
 import { VALID_KEYS } from './tokens'
 import { isSafeCssValue } from './color'
+import { appearanceGetSystem } from '@renderer/utils/ipc'
 
 const HISTORY_LIMIT = 20
 const COALESCE_MS = 900
@@ -117,6 +118,13 @@ export const useAppearanceStore = create<AppearanceState>((set, get) => {
     setSystem: (patch) => {
       set((s) => ({ system: { ...s.system, ...patch } }))
       get().setSystemInfo({ dark: get().systemDark ?? true, accent: get().systemAccent })
+      // Акцент/тему Windows ещё не спрашивали (при запуске оба переключателя были
+      // выключены) — спросить сейчас, иначе включение ничего не меняло.
+      if ((patch.accent || patch.follow) && (get().systemAccent == null || get().systemDark == null)) {
+        void appearanceGetSystem()
+          .then((i) => get().setSystemInfo(i))
+          .catch(() => undefined)
+      }
     },
     // Событие от системы: тема Windows / акцент изменились (опроса нет).
     setSystemInfo: ({ dark, accent }) => {

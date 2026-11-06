@@ -11,7 +11,7 @@ import {
   HelpCircle,
   Sparkles,
   CheckCircle2,
-  LifeBuoy,
+  Headset,
   ChevronDown,
   Rocket,
   ScrollText,
@@ -25,6 +25,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/u
 import { Badge } from '@renderer/components/ui/badge'
 import BasePage from '@renderer/components/base/base-page'
 import UsersStats from '@renderer/components/users-stats'
+import VelvetRecommendation from '@renderer/components/velvet-recommendation'
 import { cn } from '@renderer/lib/utils'
 
 /**
@@ -97,6 +98,15 @@ const MODULES: ModuleInfo[] = [
         name: 'Конструктор стратегий',
         what: 'Ручная сборка своей стратегии, если ни одна готовая не подошла. Для тех, кто понимает, что делает.',
         when: 'Крайний случай. Сначала попробуйте автоподбор.'
+      },
+      {
+        name: 'Любая версия Zapret',
+        what: 'Нажмите на номер версии на карточке Zapret — откроется список всех версий с описанием изменений. Можно поставить любую, в том числе откатиться на старую.',
+        when: 'Если после обновления стало хуже.'
+      },
+      {
+        name: 'Свои порты (Game Filter)',
+        what: 'Готовые наборы портов для игр и Discord (голос, звонки, стримы) или свои диапазоны.'
       }
     ],
     tip: 'Zapret работает только на этом компьютере и только для программ на нём. Телефон, приставка и телевизор через него не пойдут.',
@@ -149,6 +159,19 @@ const MODULES: ModuleInfo[] = [
       {
         name: 'Свои правила',
         what: 'Указать конкретный сайт или подсеть и решить: напрямую, через туннель или заблокировать. Ваши правила главнее всех готовых списков.'
+      },
+      {
+        name: 'Сайты напрямую',
+        what: 'Раздельное туннелирование по сайтам: банки, Госуслуги, все .RU и свои домены — мимо VPN. Вкладка «Маршрутизация».'
+      },
+      {
+        name: 'Автопереключение узла',
+        what: 'Если сервер перестал отвечать, приложение само переходит на рабочий из разрешённых. Проверка лёгкая — пара сотен байт раз в 20 секунд.',
+        when: 'Включите в карточке «Автовыбор» на главной вкладке INCY.'
+      },
+      {
+        name: 'Тест скорости сервера',
+        what: 'Настоящий замер скачивания и отдачи через выбранный сервер, не разрывая текущее подключение.'
       }
     ],
     tip: 'Подписка обновляется сама. Если серверы пропали — нажмите обновление на карточке подписки.',
@@ -169,9 +192,9 @@ const MODULES: ModuleInfo[] = [
         what: 'Кнопка открывает Telegram и сама прописывает в нём прокси. Ничего вводить руками не нужно.'
       },
       {
-        name: 'QR-код',
-        what: 'Тот же прокси для телефона: отсканируйте код в приложении Telegram на смартфоне.',
-        when: 'Если телефон в одной сети Wi-Fi с компьютером.'
+        name: 'QR-код для телефона',
+        what: 'Нажмите «Открыть для телефона» — прокси станет доступен в домашней сети, а в QR появится адрес компьютера. Отсканируйте его камерой телефона. Telegram на компьютере продолжит работать.',
+        when: 'Телефон должен быть в той же сети Wi-Fi, а компьютер — включён.'
       }
     ],
     tip: 'Компьютер должен быть включён — телефон подключается через него.',
@@ -200,22 +223,70 @@ const MODULES: ModuleInfo[] = [
   {
     icon: <Lock className="h-5 w-5 text-st-ok-text" />,
     title: 'Шифрованный DNS',
-    where: 'Настройки → DNS',
+    where: 'Вкладка «DNS»',
     badge: 'Приватность',
     badgeVariant: 'secondary',
     simple:
       'DNS — это телефонная книга интернета: по названию сайта находит его адрес. Обычно эти запросы видит провайдер и может подменять ответы. Шифрование закрывает их и убирает часть блокировок само по себе.',
     features: [
       {
-        name: 'Выбор сервера',
-        what: 'Cloudflare, Google, Quad9 или Xbox DNS. Рядом с каждым показана задержка — берите самый быстрый.'
+        name: 'Готовые серверы',
+        what: 'DNS-AI и MagicDNS (открывают нейросети), AdGuard (режет рекламу), Cloudflare, Google, Quad9, Xbox DNS. Рядом — задержка.'
+      },
+      {
+        name: 'Свой сервер',
+        what: 'Добавьте адреса IPv4/IPv6 и шаблон DoH; добавленный можно изменить или удалить.'
       },
       {
         name: 'Применить в системе',
-        what: 'Настройка прописывается в Windows и работает для всех программ, а не только для браузера.'
+        what: 'Настройка прописывается в систему и работает для всех программ. «Сбросить» возвращает DNS, который стоял до LAZEYKA.'
+      },
+      {
+        name: 'macOS',
+        what: 'Шифрование включается профилем: LAZEYKA создаёт его сама и показывает, где установить. Это нужно сделать один раз.'
       }
     ],
-    tip: 'Иногда одного шифрованного DNS достаточно, чтобы сайт открылся, — попробуйте до включения VPN.'
+    tip: 'В режиме ExitLag всё, что идёт мимо VPN, использует этот DNS — как будто VPN нет.'
+  },
+  {
+    icon: <Gamepad2 className="h-5 w-5 text-st-warn-text" />,
+    title: 'ExitLag и оптимизатор',
+    where: 'Вкладки «ExitLag» и «Оптимизатор»',
+    badge: 'Для игр',
+    badgeVariant: 'outline',
+    simple:
+      'ExitLag пускает через VPN только выбранные программы (например, игру или браузер), остальное работает как обычно. Оптимизатор подбирает узел с лучшим пингом до игровых серверов (FACEIT, Valve и др.).',
+    features: [
+      { name: 'Список приложений', what: 'Добавьте игру или программу — только она пойдёт через VPN.' },
+      { name: 'Оптимизатор', what: 'Замеряет маршрут через каждый узел и подсказывает лучший; может сам подключиться к нему.' }
+    ]
+  },
+  {
+    icon: <Sparkles className="h-5 w-5 text-primary" />,
+    title: 'Сценарии и горячие клавиши',
+    where: 'Вкладка «Сценарии», «Настройки» → «Горячие клавиши»',
+    badge: 'Удобство',
+    badgeVariant: 'outline',
+    simple:
+      'Сценарий включает нужное одной кнопкой: например «Игры» — Zapret со своей стратегией, ExitLag для игры и VPN с выбранным узлом. Горячие клавиши включают и выключают VPN, Zapret и Telegram из любой программы.',
+    features: [
+      { name: 'Сценарии', what: 'Каждый пункт можно оставить как есть, включить или выключить; для Zapret — выбрать стратегию, для VPN — узел, для DNS — сервер.' },
+      { name: 'Горячие клавиши', what: 'Нажмите «Назначить» и зажмите сочетание — клавиши подсветятся на экране. Можно назначить клавишу любому сценарию, переключению ExitLag, переходу на лучший узел и перезапуску Zapret. Звук подтверждает срабатывание — удобно в полноэкранной игре.' },
+      { name: 'Ограничение', what: 'Сочетание должно содержать обычную клавишу (букву, цифру, F1–F24): одни Alt + Shift система как горячую клавишу не регистрирует.' }
+    ]
+  },
+  {
+    icon: <BarChart2 className="h-5 w-5 text-cyan-400" />,
+    title: 'Скорость и «Ничего не открывается»',
+    where: 'Главная',
+    badge: 'Проверка',
+    badgeVariant: 'outline',
+    simple:
+      'Тест скорости как у всех спидтестов: через VPN, если он подключён, иначе напрямую; сервис на выбор — Яндекс, Speedtest или Cloudflare. Мастер «Ничего не открывается» по шагам проверяет интернет, DNS, сайты и VPN и предлагает исправление.',
+    features: [
+      { name: 'Исправить и откатить', what: 'Без вашего нажатия мастер ничего не меняет, а у изменений есть кнопка «Откатить».' },
+      { name: 'Полный замер', what: 'По умолчанию расход трафика ограничен; «Полный замер» снимает лимит.' }
+    ]
   },
   {
     icon: <Bot className="h-5 w-5 text-st-warn-text" />,
@@ -313,13 +384,22 @@ const MODULES: ModuleInfo[] = [
     where: 'Вкладка «Настройки»',
     badge: 'Внешний вид и запуск',
     badgeVariant: 'outline',
-    simple: 'Поведение самой программы: тема, автозапуск, трей, язык.',
+    simple: 'Поведение самой программы: автозапуск, трей, горячие клавиши, резервные копии. Внешний вид — на вкладке «Оформление».',
     features: [
-      { name: 'Тема', what: 'Тёмная или светлая.' },
-      { name: 'Автозапуск', what: 'Запускать LAZEYKA при входе в Windows.' },
-      { name: 'Сворачивать в трей', what: 'При закрытии окна приложение остаётся работать в трее у часов.' },
-      { name: 'Проверять обновления', what: 'Сообщать о новых версиях самого приложения.' }
+      { name: 'Автозапуск', what: 'Запускать LAZEYKA при входе в систему (Windows или macOS), можно без окна.' },
+      { name: 'Иконка в трее', what: 'Приложение остаётся работать в трее у часов.' },
+      { name: 'Горячие клавиши', what: 'Включение VPN, Zapret и Telegram из любой программы.' },
+      { name: 'Проверять обновления', what: 'Сообщать о новых версиях; если GitHub тормозит, обновление скачается с зеркала SourceForge.' }
     ]
+  },
+  {
+    icon: <Rocket className="h-5 w-5 text-pink-400" />,
+    title: 'Оформление',
+    where: 'Вкладка «Оформление»',
+    badge: 'Внешний вид',
+    badgeVariant: 'outline',
+    simple: 'Тема, цвета, готовые пресеты, свой фон (картинка или анимация) с размытием и затемнением — с живым предпросмотром.',
+    features: [{ name: 'Свой фон', what: 'Размытие и затемнение действуют только на фон, интерфейс остаётся чётким.' }]
   }
 ]
 
@@ -468,8 +548,8 @@ const About: React.FC = () => {
                               {f.what}
                             </p>
                             {f.when && (
-                              <p className="text-[11px] text-primary/90 leading-relaxed mt-1 pl-5.5">
-                                Когда: {f.when}
+                              <p className="mt-1.5 ml-5.5 rounded-md bg-primary/10 px-2 py-1 text-[11px] font-medium leading-relaxed text-foreground/90">
+                                <span className="font-bold text-primary [filter:brightness(1.35)]">Когда:</span> {f.when}
                               </p>
                             )}
                           </div>
@@ -528,7 +608,13 @@ const About: React.FC = () => {
               },
               {
                 q: 'Где взять подписку для INCY Proxy?',
-                a: 'Приложение не продаёт доступ и не имеет своих серверов. Ссылку на подписку выдаёт сторонний продавец VPN — LAZEYKA только работает с ней.'
+                a: (
+                  <>
+                    Приложение не продаёт доступ и не имеет своих серверов — ссылку на подписку выдаёт продавец VPN, а
+                    LAZEYKA работает с ней.
+                    <VelvetRecommendation className="mt-2" />
+                  </>
+                )
               },
               {
                 q: 'Мои данные куда-то отправляются?',
@@ -551,7 +637,7 @@ const About: React.FC = () => {
           <CardContent className="p-4 flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-3 min-w-0">
               <div className="p-2 rounded-xl bg-primary/15 border border-primary/30 text-primary shrink-0">
-                <LifeBuoy className="size-5" />
+                <Headset className="size-5" />
               </div>
               <div className="min-w-0">
                 <div className="text-sm font-bold text-foreground">Не нашли ответ?</div>
@@ -564,9 +650,9 @@ const About: React.FC = () => {
             <button
               type="button"
               onClick={() => navigate('/support')}
-              className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-primary/15 text-primary border border-primary/40 hover:border-primary/70 hover:bg-primary/20 transition-all active:scale-95 shrink-0"
+              className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-primary text-primary-foreground border border-primary hover:brightness-110 transition-all active:brightness-90 shrink-0"
             >
-              <LifeBuoy className="size-4" />
+              <Headset className="size-4" />
               <span>Открыть поддержку</span>
             </button>
           </CardContent>

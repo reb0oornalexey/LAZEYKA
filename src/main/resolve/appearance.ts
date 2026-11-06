@@ -71,7 +71,13 @@ const DEFAULTS: AppearanceSettings = {
   bgGradientTo: '#1b2a4a',
   bgGradientAngle: 135,
   bgAnimate: true,
-  bgPauseOnBlur: true
+  bgPauseOnBlur: true,
+  buttonStyle: 'classic',
+  switchStyle: 'classic',
+  cardStyle: 'classic',
+  uiShadow: 0.6,
+  uiBorder: 1,
+  buttonSize: 'normal'
 }
 
 const FONT_IDS = ['onest', 'system', 'segoe', 'arial', 'verdana', 'tahoma', 'trebuchet', 'georgia', 'consolas', 'custom']
@@ -128,7 +134,13 @@ export function sanitizeSettings(raw: unknown): AppearanceSettings {
     bgGradientTo: safeColor(r.bgGradientTo, DEFAULTS.bgGradientTo),
     bgGradientAngle: num(r.bgGradientAngle, 0, 360, DEFAULTS.bgGradientAngle),
     bgAnimate: r.bgAnimate !== false,
-    bgPauseOnBlur: r.bgPauseOnBlur !== false
+    bgPauseOnBlur: r.bgPauseOnBlur !== false,
+    buttonStyle: oneOf(r.buttonStyle, ['classic', 'tactile', 'glass', 'keys', 'pill'] as const, 'classic'),
+    switchStyle: oneOf(r.switchStyle, ['classic', 'glow', 'square', 'rocker'] as const, 'classic'),
+    cardStyle: oneOf(r.cardStyle, ['classic', 'raised', 'glass', 'outline', 'neon', 'flat'] as const, 'classic'),
+    uiShadow: num(r.uiShadow, 0, 1, 0.6),
+    uiBorder: num(r.uiBorder, 0, 3, 1),
+    buttonSize: oneOf(r.buttonSize, ['compact', 'normal', 'large'] as const, 'normal')
   }
 }
 

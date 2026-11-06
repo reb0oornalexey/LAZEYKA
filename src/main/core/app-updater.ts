@@ -10,6 +10,7 @@ import { dataDir, exeDir } from '../utils/dirs'
 import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 import { appLog } from '../utils/app-logger'
+import { sourceforgeUrlFor, MIRROR_MIN_BYTES_PER_SEC, MIRROR_PROBE_MS } from '../utils/mirror'
 
 import { fetchLatestGithubRelease, fetchGithubReleases, type GhRelease } from '../utils/github-release'
 
@@ -328,6 +329,12 @@ async function downloadToFile(
   let received = 0
   let total: number | null = null
   let lastError: unknown = null
+  // Зеркало SourceForge: если GitHub медленный (или не отдаёт файл) —
+  // переходим туда и качаем с нуля (докачка между разными серверами опасна).
+  let currentUrl = url
+  const mirrorUrl = sourceforgeUrlFor(url)
+  let onMirror = false
+  let slow = false
 
   // Попытки считаются не подряд, а «впустую». Соединение, которое рвётся
   // каждые двадцать мегабайт, при жёстком лимите в четыре попытки никогда бы
@@ -365,7 +372,7 @@ async function downloadToFile(
       if (received > 0) headers.Range = `bytes=${received}-`
 
       armStall()
-      const res = await fetch(url, { headers, signal: controller.signal })
+      const res = await fetch(currentUrl, { headers, signal: controller.signal, redirect: 'follow' })
 
       // Докачку попросили, но сервер отдал файл целиком — начинаем заново,
       // иначе в файл дописались бы байты с начала и он стал бы мусором.
@@ -378,10 +385,19 @@ async function downloadToFile(
       if (Number.isFinite(len) && len > 0) total = received + len
 
       const ws = createWriteStream(dest, { flags: received > 0 ? 'a' : 'w' })
+      const attemptStart = Date.now()
+      const attemptFrom = received
       try {
         for await (const chunk of Readable.fromWeb(res.body as never)) {
           armStall()
           received += (chunk as Buffer).length
+          if (!onMirror && mirrorUrl) {
+            const ms = Date.now() - attemptStart
+            if (ms > MIRROR_PROBE_MS && (received - attemptFrom) / (ms / 1000) < MIRROR_MIN_BYTES_PER_SEC) {
+              slow = true
+              throw new Error(`GitHub качает слишком медленно (${Math.round((received - attemptFrom) / 1024 / (ms / 1000))} КБ/с)`)
+            }
+          }
           if (!ws.write(chunk)) await once(ws, 'drain')
           onProgress(received, total)
         }
@@ -404,6 +420,16 @@ async function downloadToFile(
         const err = new Error('Загрузка отменена') as Error & { cancelled?: boolean }
         err.cancelled = true
         throw err
+      }
+
+      if (!onMirror && mirrorUrl && (slow || fruitless >= 1 || /HTTP (4|5)\d\d/.test(String(e)))) {
+        appLog('warn', `[update] ${e instanceof Error ? e.message : String(e)} — переключаюсь на зеркало SourceForge`)
+        onMirror = true
+        currentUrl = mirrorUrl
+        received = 0
+        total = null
+        fruitless = 0
+        continue
       }
 
       if (received > receivedBefore) {

@@ -1,3 +1,4 @@
+import { fetchWithMirror } from '../utils/mirror'
 import { existsSync, mkdirSync, writeFileSync, rmSync, renameSync, readdirSync, readFileSync, cpSync } from 'fs'
 import path from 'path'
 import { spawn } from 'child_process'
@@ -353,7 +354,7 @@ export async function installTgwsUpdate(
 
   let buf: Buffer
   try {
-    const res = await fetch(assetUrl, { headers: { 'User-Agent': REQUEST_HEADERS['User-Agent'] } })
+    const res = await fetchWithMirror(assetUrl, { headers: { 'User-Agent': REQUEST_HEADERS['User-Agent'] } })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     buf = Buffer.from(await res.arrayBuffer())
   } catch (e) {

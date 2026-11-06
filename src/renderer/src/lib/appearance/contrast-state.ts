@@ -110,6 +110,7 @@ const hexOf = (c: Rgba): string => formatColor({ r: c.r, g: c.g, b: c.b, a: c.a 
  * у фона — светлота фона. Контраст считается против фактического фона.
  */
 export function autoFixToken(key: string, pair: ContrastPair): void {
+  releaseSystemAccent(key)
   const s = useAppearanceStore.getState()
   const eff = effOf(s)
   const bd = backdrop(s, eff)
@@ -127,17 +128,40 @@ export function autoFixToken(key: string, pair: ContrastPair): void {
   }
 }
 
-/** «Исправить всё»: правим цвета текста/акцентов (колонка fg) по каждой плохой паре. */
+/** Токены, которые перекрывает акцент Windows (его правки иначе не видны). */
+const ACCENT_KEYS = new Set(['primary', 'primary-foreground', 'ring', 'sidebar-primary', 'sidebar-primary-foreground', 'sidebar-ring'])
+
+/** Если правим цвет акцента, а включён акцент Windows, — переносим его в свой цвет, иначе правка не видна. */
+function releaseSystemAccent(key: string): void {
+  const s = useAppearanceStore.getState()
+  if (!ACCENT_KEYS.has(key) || !s.system.accent || !s.systemAccent) return
+  const acc = s.systemAccent
+  s.setSystem({ accent: false })
+  if (!s.tokens.primary) useAppearanceStore.getState().setToken('primary', acc)
+}
+
+function pairRatio(pair: ContrastPair): number | null {
+  const s = useAppearanceStore.getState()
+  return ratioOf(s, effOf(s), pair)
+}
+
+/**
+ * «Исправить всё»: по каждой плохой паре сначала правим цвет текста/акцента;
+ * если это не помогло (цвет перекрыт или упёрся в предел) — правим фон пары.
+ */
 export function autoFixAll(): void {
-  for (let pass = 0; pass < 2; pass++) {
+  for (let pass = 0; pass < 4; pass++) {
     const list = failingList(useAppearanceStore.getState())
     if (list.length === 0) return
-    // Для одного и того же текстового цвета берём самый тёмный/светлый вариант из нужных.
-    const done = new Set<string>()
     for (const f of list) {
-      if (done.has(f.pair.fg)) continue
-      done.add(f.pair.fg)
+      const before = pairRatio(f.pair)
+      if (before == null || before >= f.pair.min) continue
+      releaseSystemAccent(f.pair.fg)
       autoFixToken(f.pair.fg, f.pair)
+      const after = pairRatio(f.pair)
+      if (after != null && after >= f.pair.min) continue
+      releaseSystemAccent(f.pair.bg)
+      autoFixToken(f.pair.bg, f.pair)
     }
   }
 }
