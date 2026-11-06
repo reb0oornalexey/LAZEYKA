@@ -99,8 +99,10 @@ jobs:
         if: steps.cfg.outputs.skip != '1'
         run: |
           LINK="https://sourceforge.net/projects/$SF_PROJECT/files/$TAG/"
-          BODY=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body)
-          if ! printf '%s' "$BODY" | grep -q "sourceforge.net/projects/$SF_PROJECT"; then
-            printf '%s\n\n---\n🪞 **Зеркало (если GitHub медленный):** [SourceForge](%s)\n' "$BODY" "$LINK" > notes.md
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
-          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body > body.md
+          # Уже есть плашка — ничего не делаем.
+          if grep -q '\[!TIP\]' body.md && grep -q "sourceforge.net/projects/$SF_PROJECT" body.md; then exit 0; fi
+          # Старый вид («🪞 Зеркало …» под чертой) убираем, ставим плашку как у Flowseal.
+          perl -0pi -e 's/\n*-{3,}\s*\n+\S*\s*\*\*Зеркало[^\n]*\n?//g' body.md
+          printf '\n\n> [!TIP]\n> Не можете скачать?\n> Воспользуйтесь зеркалом: %s\n' "$LINK" >> body.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file body.md
