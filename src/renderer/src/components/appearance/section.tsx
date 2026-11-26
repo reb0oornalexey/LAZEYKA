@@ -3,20 +3,24 @@ import { ChevronDown, Info, RotateCcw } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useUiState } from '@renderer/lib/appearance/ui-state'
+import { hintText, useHintMode } from '@renderer/lib/hint-mode'
 
-/** Маленькая «i» с пояснением — вместо абзацев текста. */
-export const InfoTip: React.FC<{ text: React.ReactNode; className?: string }> = ({ text, className }) => (
-  <Tooltip>
-    <TooltipTrigger asChild>
-      <span tabIndex={0} className={cn('inline-flex cursor-help text-muted-foreground hover:text-foreground', className)}>
-        <Info className="size-3.5" />
-      </span>
-    </TooltipTrigger>
-    <TooltipContent side="top" className="max-w-64 text-xs">
-      {text}
-    </TooltipContent>
-  </Tooltip>
-)
+/** Маленькая «i» с пояснением — вместо абзацев текста. В режиме «короткие подсказки» — первая фраза. */
+export const InfoTip: React.FC<{ text: React.ReactNode; className?: string }> = ({ text, className }) => {
+  const mode = useHintMode()
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span tabIndex={0} className={cn('inline-flex cursor-help text-muted-foreground hover:text-foreground', className)}>
+          <Info className="size-3.5" />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-64 text-xs">
+        {typeof text === 'string' ? hintText(text, mode) : text}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
 
 /** Карточка раздела: значок + заголовок + (i) с описанием. */
 export const SectionCard: React.FC<{
@@ -27,8 +31,8 @@ export const SectionCard: React.FC<{
   className?: string
   children: React.ReactNode
 }> = ({ icon: Icon, title, tip, right, className, children }) => (
-  <section className={cn('ui-glow rounded-xl border border-border bg-card p-3 text-card-foreground', className)}>
-    <div className="mb-2 flex items-center gap-1.5">
+  <section className={cn('ui-glow rounded-xl border border-border bg-card p-4 text-card-foreground', className)}>
+    <div className="mb-3 flex min-h-6 items-center gap-1.5">
       <Icon className="size-4 text-primary" />
       <h3 className="text-[13px] font-semibold text-[color:var(--text-title)]">{title}</h3>
       {tip && <InfoTip text={tip} />}
@@ -133,19 +137,21 @@ export function Segmented<T extends string>({
   onChange
 }: {
   value: T
-  options: { id: T; label: string }[]
+  options: { id: T; label: React.ReactNode; title?: string }[]
   onChange: (v: T) => void
 }): React.JSX.Element {
   return (
-    <div className="inline-flex rounded-lg border border-border bg-background p-0.5">
+    <div className="lz-control-surface inline-flex rounded-lg border p-0.5">
       {options.map((o) => (
         <button
           key={o.id}
           type="button"
+          title={o.title}
+          aria-pressed={value === o.id}
           onClick={() => onChange(o.id)}
           className={cn(
-            'h-7 cursor-pointer rounded-md px-2.5 text-xs font-medium transition-colors',
-            value === o.id ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+            'flex h-7 cursor-pointer items-center gap-1 rounded-md px-2.5 text-xs font-medium whitespace-nowrap transition-colors [&_svg]:size-3.5',
+            value === o.id ? 'bg-primary text-primary-foreground' : 'lz-control-option'
           )}
         >
           {o.label}
@@ -181,7 +187,7 @@ export const ResetButton: React.FC<{ onClick: () => void; label?: string; disabl
     type="button"
     onClick={onClick}
     disabled={disabled}
-    className="flex h-6 cursor-pointer items-center gap-1 rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+    className="lz-control-surface lz-control-option flex min-h-7 shrink-0 cursor-pointer items-center gap-1 rounded-lg border px-2 text-[11px] font-semibold transition-colors disabled:pointer-events-none disabled:opacity-40"
   >
     <RotateCcw className="size-3" /> {label}
   </button>

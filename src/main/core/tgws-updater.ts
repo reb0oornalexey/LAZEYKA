@@ -1,4 +1,5 @@
-import { fetchWithMirror } from '../utils/mirror'
+import { fetchWithMirror, normalizeSha256, sha256Hex } from '../utils/mirror'
+import { appLog } from '../utils/app-logger'
 import { existsSync, mkdirSync, writeFileSync, rmSync, renameSync, readdirSync, readFileSync, cpSync } from 'fs'
 import path from 'path'
 import { spawn } from 'child_process'
@@ -100,6 +101,7 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
   hydrateCacheFromDisk()
   const cfg = await getAppConfig()
   const installed = installedVersion(cfg.tgws?.installedVersion)
+  if (process.platform === 'linux') return { installed, hasUpdate: false }
   const dismissedTag = cfg.tgws?.dismissedUpdateTag
 
   if (!force && cache && Date.now() - cache.at < CACHE_TTL_MS && cache.data.latest) {
@@ -269,6 +271,8 @@ interface PypiFile {
   url: string
   packagetype?: string
   yanked?: boolean
+  /** PyPI отдаёт суммы файлов в том же ответе JSON. */
+  digests?: { sha256?: string }
 }
 
 async function fetchPypiWheel(dist: string, version?: string): Promise<{ file: PypiFile; version: string }> {
@@ -291,7 +295,11 @@ async function installWheelFromPypi(dist: string, version: string | undefined, d
   const { file, version: v } = await fetchPypiWheel(dist, version)
   const res = await fetch(file.url, { headers: { 'User-Agent': REQUEST_HEADERS['User-Agent'] } })
   if (!res.ok) throw new Error(`${file.filename}: HTTP ${res.status}`)
-  const zip = new AdmZip(Buffer.from(await res.arrayBuffer()))
+  const wheel = Buffer.from(await res.arrayBuffer())
+  // Колесо лежит на CDN (files.pythonhosted.org), сумма — в ответе pypi.org.
+  const want = normalizeSha256(file.digests?.sha256)
+  if (want && sha256Hex(wheel) !== want) throw new Error(`${file.filename}: контрольная сумма не совпала с PyPI`)
+  const zip = new AdmZip(wheel)
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) continue
     const rel = entry.entryName.replace(/\\/g, '/')
@@ -336,6 +344,12 @@ async function ensureDependencies(
   return err
 }
 
+/** Архив исходников тега Flowseal/tg-ws-proxy — ссылку строит сам main по тегу из ответа GitHub. */
+export function tgwsArchiveUrl(tag: string): string | null {
+  if (!/^[\w.+-]{1,64}$/.test(tag) || tag.includes('..')) return null
+  return `https://github.com/${REPO}/archive/refs/tags/${tag}.zip`
+}
+
 /**
  * Установить новую версию Flowseal tg-ws-proxy.
  *
@@ -343,14 +357,28 @@ async function ensureDependencies(
  * проверяется импортом во встроенном Python и атомарно подменяет прежний
  * (с откатом при ошибке). Раньше tray-бинарник записывался поверх рабочего
  * без проверки и без возможности отката.
+ *
+ * Ссылку из окна программы не используем: тег берётся из ответа API релизов,
+ * полученного самим main-процессом. Контрольной суммы у архива исходников
+ * GitHub не публикует (поле `digest` есть только у загруженных файлов
+ * релиза), поэтому проверить файл с зеркала не с чем — см. отчёт.
  */
 export async function installTgwsUpdate(
-  assetUrl: string,
-  expectedVersion?: string,
+  requestedUrl: string,
+  _expectedVersion?: string,
   onProgress?: (msg: string) => void
 ): Promise<{ installedVersion?: string; sizeBytes: number }> {
-  if (!assetUrl) throw new Error('Пустая ссылка на обновление')
+  if (process.platform === 'linux') throw new Error('Telegram-прокси обновляется вместе с LAZEYKA')
   if (!tgwsCliPaths()) throw new Error('Встроенный Python для TgWsProxy не найден — переустановите LAZEYKA')
+  let info = await checkTgwsUpdate(false)
+  if (!info.latest) info = await checkTgwsUpdate(true)
+  const tag = info.assetUrl ? /\/archive\/refs\/tags\/([^/]+)\.zip$/.exec(info.assetUrl)?.[1] : undefined
+  const assetUrl = tag ? tgwsArchiveUrl(tag) : null
+  if (!assetUrl) throw new Error('Не удалось получить ссылку на обновление TgWsProxy из релизов GitHub')
+  if (requestedUrl && requestedUrl !== assetUrl) {
+    appLog('warn', 'tgws-updater: ссылка из окна не совпала с ответом GitHub — используется ссылка из ответа GitHub')
+  }
+  const expectedVersion = info.latest ?? tag?.replace(/^v/i, '')
 
   let buf: Buffer
   try {

@@ -58,7 +58,7 @@ const UsersStats: React.FC = () => {
             <Stat
               icon={<UserCheck className="size-5" />}
               label="Ваш номер"
-              value={`#${fmt(num)}`}
+              value={<span data-sensitive="id">{`#${fmt(num)}`}</span>}
               hint="каким по счёту вы установили LAZEYKA"
             />
           )}

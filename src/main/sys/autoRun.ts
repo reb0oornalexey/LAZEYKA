@@ -1,4 +1,9 @@
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { mkdir, rm } from 'node:fs/promises'
+import path from 'node:path'
+import { homedir } from 'node:os'
+import { writeFileAtomic } from '../utils/atomic-write'
 import { app } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import { exePath } from '../utils/dirs'
@@ -92,8 +97,25 @@ function buildTaskXml(exePathRaw: string): string {
 </Task>`
 }
 
+function linuxAutoRunFile(): string {
+  const config = process.env.XDG_CONFIG_HOME
+  const directory = config && path.isAbsolute(config) ? config : path.join(homedir(), '.config')
+  return path.join(directory, 'autostart', 'com.lazeyka.app.desktop')
+}
+
 export async function enableAutoRun(): Promise<void> {
   if (is.dev) return
+  if (process.platform === 'linux') {
+    const executable = exePath()
+    if (/[\r\n]/.test(executable)) throw new Error('Путь запуска содержит перенос строки')
+    // Exec разбирается после десериализации значения формата desktop entry.
+    const quoted = executable.replace(/[\\"$`]/g, '\\$&').replace(/%/g, '%%').replace(/\\/g, '\\\\')
+    const entry = ['[Desktop Entry]', 'Type=Application', 'Name=LAZEYKA', 'Exec="' + quoted + '"', 'Terminal=false', ''].join('\n')
+    const file = linuxAutoRunFile()
+    await mkdir(path.dirname(file), { recursive: true })
+    writeFileAtomic(file, entry)
+    return
+  }
   if (process.platform === 'darwin') {
     // macOS: штатный Login Item; openAsHidden запускает приложение без окна.
     app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true })
@@ -124,6 +146,10 @@ export async function enableAutoRun(): Promise<void> {
 
 export async function disableAutoRun(): Promise<void> {
   if (is.dev) return
+  if (process.platform === 'linux') {
+    await rm(linuxAutoRunFile(), { force: true })
+    return
+  }
   if (process.platform === 'darwin') {
     app.setLoginItemSettings({ openAtLogin: false })
     return
@@ -135,6 +161,7 @@ export async function disableAutoRun(): Promise<void> {
 
 export async function isAutoRun(): Promise<boolean> {
   if (is.dev) return false
+  if (process.platform === 'linux') return existsSync(linuxAutoRunFile())
   if (process.platform === 'darwin') return app.getLoginItemSettings().openAtLogin
   const r = await runSchtasks(['/Query', '/TN', TASK_NAME])
   return r.code === 0

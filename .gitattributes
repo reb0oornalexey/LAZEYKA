@@ -1,1 +1,7 @@
 build/*.plist text eol=lf
+build/linux/*.service text eol=lf
+build/linux/*.policy text eol=lf
+build/linux/*.py text eol=lf
+build/linux/prerm text eol=lf
+build/linux/zapret/*.sh text eol=lf
+build/linux/zapret/*.py text eol=lf

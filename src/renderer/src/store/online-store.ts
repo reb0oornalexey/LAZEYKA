@@ -19,12 +19,14 @@ export const useOnlineStore = create<OnlineStore>((set) => ({
 export const selectInstallNum = (s: OnlineStore): number | null => s.stats?.num ?? s.savedNum
 
 let listener: ((event: unknown, payload: OnlineStats | null) => void) | null = null
+// Отписка — функцией, которую вернул on(): removeListener через мост не находит слушателя.
+let offIpc: (() => void) | null = null
 
 /** Один раз подписывается на `app:onlineCount` и подтягивает текущее значение. */
 export const attachOnlineStore = (): (() => void) => {
-  if (listener) window.electron.ipcRenderer.removeListener('app:onlineCount', listener)
+  offIpc?.()
   listener = (_e, payload) => useOnlineStore.getState().setStats(payload ?? null)
-  window.electron.ipcRenderer.on('app:onlineCount', listener)
+  offIpc = window.electron.ipcRenderer.on('app:onlineCount', listener)
   appGetOnlineCount()
     .then((r) => useOnlineStore.getState().setStats(r ?? null))
     .catch(() => void 0)
@@ -33,7 +35,8 @@ export const attachOnlineStore = (): (() => void) => {
     .catch(() => void 0)
   return () => {
     if (listener) {
-      window.electron.ipcRenderer.removeListener('app:onlineCount', listener)
+      offIpc?.()
+      offIpc = null
       listener = null
     }
   }

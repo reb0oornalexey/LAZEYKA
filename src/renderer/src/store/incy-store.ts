@@ -18,17 +18,20 @@ export const useIncyStore = create<IncyStore>((set) => ({
 }))
 
 let listener: ((event: unknown, payload: IncyStatus) => void) | null = null
+// Отписка — функцией, которую вернул on(): removeListener через мост не находит слушателя.
+let offIpc: (() => void) | null = null
 
 export const attachIncyStore = (): (() => void) => {
   window.electron.ipcRenderer.removeAllListeners('incy:status')
   listener = (_e, payload) => useIncyStore.getState().setStatus(payload)
-  window.electron.ipcRenderer.on('incy:status', listener)
+  offIpc = window.electron.ipcRenderer.on('incy:status', listener)
   incyGetStatus()
     .then((s) => useIncyStore.getState().setStatus(s))
     .catch(() => void 0)
   return () => {
     if (listener) {
-      window.electron.ipcRenderer.removeListener('incy:status', listener)
+      offIpc?.()
+      offIpc = null
       listener = null
     }
   }

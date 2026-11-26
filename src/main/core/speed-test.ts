@@ -62,10 +62,29 @@ const DOWNLOAD_STREAMS = 6
 const UPLOAD_STREAMS = 4
 const ECONOMY_CAP = 200 * 1024 * 1024
 
-let running = false
+let run: AbortController | null = null
+
+export function stopNetSpeedTest(): boolean {
+  if (!run || run.signal.aborted) return false
+  run.abort(new Error('Замер остановлен'))
+  return true
+}
+
+async function withSpeedRun<T>(action: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  if (run) throw new Error('Замер уже идёт')
+  const controller = new AbortController()
+  run = controller
+  try {
+    return await action(controller.signal)
+  } finally {
+    run = null
+    currentNodeId = undefined
+  }
+}
 let currentNodeId: string | undefined
 
 function send(p: NetSpeedProgress): void {
+  if (run?.signal.aborted) return
   const msg = currentNodeId ? { ...p, nodeId: currentNodeId } : p
   for (const w of BrowserWindow.getAllWindows()) {
     if (!w.isDestroyed()) w.webContents.send('speed:progress', msg)
@@ -87,10 +106,12 @@ function viaSocksPort(): number | null {
 }
 
 async function openTls(ep: Endpoint, socksPort: number | null): Promise<tls.TLSSocket> {
+  const signal = run?.signal
+  signal?.throwIfAborted()
   const raw = socksPort
-    ? await socksConnect(socksPort, ep.host, ep.port, 10_000)
+    ? await socksConnect(socksPort, ep.host, ep.port, 10_000, signal)
     : await new Promise<net.Socket>((resolve, reject) => {
-        const s = net.createConnection({ host: ep.host, port: ep.port })
+        const s = net.createConnection({ host: ep.host, port: ep.port, signal })
         s.setTimeout(10_000, () => {
           s.destroy()
           reject(new Error('таймаут соединения'))
@@ -103,6 +124,13 @@ async function openTls(ep: Endpoint, socksPort: number | null): Promise<tls.TLSS
       })
   return new Promise((resolve, reject) => {
     const t = tls.connect({ socket: raw, servername: ep.host, ALPNProtocols: ['http/1.1'] })
+    const abort = (): void => { t.destroy() }
+    signal?.addEventListener('abort', abort, { once: true })
+    t.once('close', () => {
+      signal?.removeEventListener('abort', abort)
+      reject(signal?.reason ?? new Error('TLS-соединение закрыто'))
+    })
+    if (signal?.aborted) abort()
     t.setTimeout(12_000, () => {
       t.destroy()
       reject(new Error('таймаут TLS'))
@@ -296,7 +324,7 @@ async function measurePing(plan: Plan, socksPort: number | null): Promise<{ ping
   const sock = await openTls(plan.ping, socksPort)
   const samples: number[] = []
   try {
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 8 && !run?.signal.aborted; i++) {
       const t0 = performance.now()
       await httpRequest(sock, plan.ping.host, 'GET', plan.ping.path, null, () => void 0, () => false)
       samples.push(performance.now() - t0)
@@ -335,7 +363,7 @@ async function measureDownload(plan: Plan, socksPort: number | null, economy: bo
   const warm = start + WARMUP_SECONDS * 1000
   let total = 0
   let afterWarm = 0
-  const stop = (): boolean => performance.now() > end || (economy && total > ECONOMY_CAP)
+  const stop = (): boolean => Boolean(run?.signal.aborted) || performance.now() > end || (economy && total > ECONOMY_CAP)
   const tick = setInterval(() => {
     const now = performance.now()
     const secs = (now - Math.max(warm, start)) / 1000
@@ -378,7 +406,7 @@ async function measureUpload(plan: Plan, socksPort: number | null, economy: bool
   let total = 0
   let afterWarm = 0
   const body = Buffer.alloc(plan.upload.chunk, 0x61)
-  const stop = (): boolean => performance.now() > end || (economy && total > ECONOMY_CAP / 2)
+  const stop = (): boolean => Boolean(run?.signal.aborted) || performance.now() > end || (economy && total > ECONOMY_CAP / 2)
   const tick = setInterval(() => {
     const now = performance.now()
     const secs = (now - warm) / 1000
@@ -426,32 +454,34 @@ async function measureUpload(plan: Plan, socksPort: number | null, economy: bool
 export async function runNodeSpeedTest(nodeId: string, service: SpeedService, economy = false): Promise<NetSpeedResult> {
   const node = loadIncyNodes().find((n) => n.id === nodeId)
   if (!node) throw new Error('Сервер не найден в списке')
-  if (running) throw new Error('Замер уже идёт')
-  currentNodeId = nodeId
-  try {
-    return await withCoreSlot(async () => {
+  return withSpeedRun((signal) => {
+    currentNodeId = nodeId
+    return withCoreSlot(async () => {
+      signal.throwIfAborted()
       let tc: TempCore | null = null
       try {
         send({ phase: 'prepare', message: 'Подключаюсь к серверу (VPN не разрывается)…' })
-        tc = await startTempCore(node)
-        const r = await runNetSpeedTest(service, economy, { socksPort: tc.port, viaVpn: true })
+        tc = await startTempCore(node, signal)
+        signal.throwIfAborted()
+        const r = await measureSpeed(service, economy, signal, { socksPort: tc.port, viaVpn: true })
         return { ...r, server: r.server ? `${node.name} → ${r.server}` : node.name }
       } finally {
         tc?.stop()
       }
     })
-  } finally {
-    currentNodeId = undefined
-  }
+  })
 }
 
-export async function runNetSpeedTest(
+export function runNetSpeedTest(service: SpeedService, economy = false): Promise<NetSpeedResult> {
+  return withSpeedRun((signal) => measureSpeed(service, economy, signal))
+}
+
+async function measureSpeed(
   service: SpeedService,
-  economy = false,
+  economy: boolean,
+  signal: AbortSignal,
   via?: { socksPort: number; viaVpn: boolean }
 ): Promise<NetSpeedResult> {
-  if (running) throw new Error('Замер уже идёт')
-  running = true
   const socksPort = via ? via.socksPort : viaSocksPort()
   const viaVpn = via ? via.viaVpn : getIncyStatus().state === 'running'
   const base: NetSpeedResult = {
@@ -468,24 +498,27 @@ export async function runNetSpeedTest(
   try {
     send({ phase: 'prepare', message: 'Выбираю сервер…' })
     const plan = await planFor(service, socksPort)
+    signal.throwIfAborted()
     base.server = plan.server
     const { ping, jitter } = await measurePing(plan, socksPort)
+    signal.throwIfAborted()
     base.pingMs = ping
     base.jitterMs = jitter
     const dl = await measureDownload(plan, socksPort, economy, ping)
+    signal.throwIfAborted()
     base.downloadMbps = dl.mbps == null ? null : Math.round(dl.mbps * 10) / 10
     base.downloadedMB = Math.round((dl.bytes / 1048576) * 10) / 10
     const ul = await measureUpload(plan, socksPort, economy, ping, base.downloadMbps)
+    signal.throwIfAborted()
     base.uploadMbps = ul.mbps == null ? null : Math.round(ul.mbps * 10) / 10
     base.uploadedMB = Math.round((ul.bytes / 1048576) * 10) / 10
     if (base.downloadMbps == null && base.uploadMbps == null) throw new Error('Сервер замера не ответил — попробуйте другой сервис')
     send({ phase: 'done', pingMs: base.pingMs, downloadMbps: base.downloadMbps, mbps: base.uploadMbps ?? undefined })
     return base
   } catch (e) {
+    if (signal.aborted) throw signal.reason
     const msg = e instanceof Error ? e.message : String(e)
     send({ phase: 'error', message: msg })
     return { ...base, error: msg }
-  } finally {
-    running = false
   }
 }

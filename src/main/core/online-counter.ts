@@ -8,6 +8,7 @@
  * публичный адрес. Выключается в настройках («Показывать, сколько людей
  * онлайн»): тогда не отправляется ничего.
  */
+import { isTestEnvironment } from '../utils/test-env'
 import { BrowserWindow } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -157,9 +158,12 @@ async function ping(): Promise<boolean> {
       failures = 0
       return true
     }
+    // Сервер ответил, но занят (временный сбой хранилища Cloudflare) — сеть в порядке.
+    if (data && typeof data.error === 'string') throw Object.assign(new Error(`сервер занят (${data.error})`), { serverAnswered: true })
     throw new Error('пустой ответ')
   } catch (e) {
     failures++
+    const answered = Boolean((e as { serverAnswered?: boolean } | null)?.serverAnswered)
     const cause = e instanceof Error && (e as Error & { cause?: { code?: string } }).cause?.code
     logToFile({
       time: Date.now(),
@@ -168,7 +172,8 @@ async function ping(): Promise<boolean> {
       payload: `счётчик онлайна недоступен: ${e instanceof Error ? e.message : String(e)}${cause ? ` (${cause})` : ''}` +
         (failures <= 3 ? ' — повтор через минуту' : '')
     })
-    void hintZapret()
+    // Подсказка Zapret нужна, только если до сервера не достучаться: на ответ «занят» не перезапускаем Zapret.
+    if (!answered) void hintZapret()
     return false
   }
 }
@@ -187,7 +192,7 @@ function schedule(delay: number): void {
  * перезапускается Zapret, и соединения в этот момент рвутся.
  */
 export function startOnlineCounter(): void {
-  if (!ONLINE_COUNTER_URL) return
+  if (!ONLINE_COUNTER_URL || isTestEnvironment()) return
   schedule(60_000 + Math.round(Math.random() * 30_000))
 }
 
@@ -204,7 +209,7 @@ export function getSavedInstallNum(): number | null {
 
 /** Сразу перепроверить (после смены настройки). */
 export function refreshOnlineCounter(): void {
-  if (ONLINE_COUNTER_URL) schedule(500)
+  if (ONLINE_COUNTER_URL && !isTestEnvironment()) schedule(500)
 }
 
 export function isOnlineCounterConfigured(): boolean {

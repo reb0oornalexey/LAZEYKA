@@ -3,14 +3,34 @@ import { toast } from 'sonner'
 import BasePage from '@renderer/components/base/base-page'
 import AutoSelectCard from '@renderer/components/auto-select-card'
 import ValveRegionsCard from '@renderer/components/valve-regions-card'
-import SiteCheckCard from '@renderer/components/site-check-card'
-import { Card, CardHeader, CardTitle, CardContent } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
-import { Badge } from '@renderer/components/ui/badge'
 import { Input } from '@renderer/components/ui/input'
-import { Switch } from '@renderer/components/ui/switch'
-import { Target, Copy, Zap, RefreshCw, Trophy, MapPin, ShieldPlus, Route, Gauge } from 'lucide-react'
-import { cn } from '@renderer/lib/utils'
+import {
+  ArrowRight,
+  Copy,
+  Gauge,
+  Globe,
+  Loader2,
+  MapPin,
+  RefreshCw,
+  Route,
+  Server,
+  Settings2,
+  ShieldCheck,
+  ShieldPlus,
+  Sparkles,
+  Stethoscope,
+  Target,
+  Trophy,
+  Zap
+} from 'lucide-react'
+import { EmptyState, LzHero, LzPanel, LzSectionHead, Segmented, StatChip, type LzTone, type SegmentedItem } from '@renderer/components/lz'
+import { Rows, SettingsGroup, SwitchRow } from '@renderer/components/settings/setting-row'
+import { ProtocolTag } from '@renderer/components/incy/signal'
+import RouteRace from '@renderer/components/optimizer/route-race'
+import { useTourTab } from '@renderer/lib/tour-focus'
+import { useNavigate } from 'react-router-dom'
+import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
 import { useIncyStore } from '@renderer/store/incy-store'
 import {
   incyGetSettings,
@@ -32,49 +52,55 @@ import {
   type RouteOptimizerProgress
 } from '@renderer/utils/ipc'
 
-const POWER_ON_BANNER_STYLE = {
-  background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.1) 100%)',
-  border: '1px solid rgba(16, 185, 129, 0.5)',
-  color: '#34d399'
-}
-
 function cleanServerName(name: string): string {
   return name.replace(/^\[.*?\]\s*/, '').trim() || name
 }
 
-/** Пинг · джиттер · потери одной строкой. Потери > 0 и большой джиттер подсвечиваются. */
+/** Пинг, джиттер и потери одной строкой. Потери > 0 и большой джиттер подсвечиваются. */
 function StatTriple({
   stats,
   fallbackPing,
-  highlight
+  highlight,
+  compact
 }: {
   stats?: RoutePathStats
   fallbackPing?: number | null
   highlight?: boolean
+  /** Внутри чипа: без крупного шрифта. */
+  compact?: boolean
 }): React.ReactElement {
   const ping = stats?.pingMs ?? fallbackPing ?? null
-  if (ping == null) return <span className="font-mono text-sm font-bold text-muted-foreground">—</span>
+  if (ping == null) return <span className="text-[13px] font-semibold text-muted-foreground">—</span>
   const approx = stats?.method === 'estimate' ? '≈' : ''
   return (
-    <span className="inline-flex items-baseline gap-2 font-mono">
-      <span className={cn('text-base font-black', highlight ? 'text-st-ok-text' : 'text-foreground')}>
+    <span className="inline-flex items-baseline gap-2 tabular-nums">
+      <span className={cn(compact ? 'text-[13.5px] font-semibold' : 'text-[16px] font-extrabold', highlight ? 'text-primary' : 'text-foreground')}>
         {approx}
-        {ping} мс
+        {ping}
+        <span className="ml-0.5 text-[11px] font-normal text-muted-foreground">мс</span>
       </span>
       {stats && stats.jitterMs != null && (
-        <span className={cn('text-[10px]', stats.jitterMs > 8 ? 'text-st-warn-text' : 'text-muted-foreground')} title="Джиттер">
+        <span className={cn('text-[11px]', stats.jitterMs > 8 ? 'text-st-warn-text' : 'text-muted-foreground')} title="Джиттер (разброс)">
           ±{stats.jitterMs}
         </span>
       )}
       {stats && stats.lossPct != null && stats.method !== 'estimate' && (
-        <span className={cn('text-[10px]', stats.lossPct > 0 ? 'text-destructive' : 'text-muted-foreground')} title="Потери">
-          {stats.lossPct}% потерь
+        <span className={cn('text-[11px]', stats.lossPct > 0 ? 'text-st-err-text' : 'text-muted-foreground')} title="Потери">
+          {stats.lossPct}%
         </span>
       )}
-      {stats?.method === 'icmp' && <span className="text-[9px] text-muted-foreground">ICMP</span>}
+      {stats?.method === 'icmp' && !compact && <span className="text-[10px] text-muted-foreground">ICMP</span>}
     </span>
   )
 }
+
+type OptTab = 'nodes' | 'path' | 'valve' | 'settings'
+const OPT_TABS: SegmentedItem<OptTab>[] = [
+  { id: 'nodes', label: 'Узлы', icon: Server, title: 'Пинг до сервера через каждый узел подписки' },
+  { id: 'path', label: 'Путь', icon: Route, title: 'Трассировка и пинг под нагрузкой: где набирается задержка' },
+  { id: 'valve', label: 'Регионы Valve', icon: Globe, title: 'Пинг до датацентров Valve и блокировка лишних регионов' },
+  { id: 'settings', label: 'Настройки', icon: Settings2, title: 'Автоподключение, Zapret и автовыбор узла' }
+]
 
 /**
  * Оптимизатор маршрута Faceit / CS2 — отдельная вкладка (раньше жил внутри
@@ -82,6 +108,7 @@ function StatTriple({
  * быстрый узел подписки; лучший узел — по пингу, джиттеру и потерям.
  */
 export default function OptimizerPage(): React.ReactElement {
+  const navigate = useNavigate()
   const status = useIncyStore((s) => s.status)
   const isConnected = status.state === 'running'
 
@@ -102,6 +129,8 @@ export default function OptimizerPage(): React.ReactElement {
     }
   }, [])
   const [selectingNodeId, setSelectingNodeId] = useState<string | null>(null)
+  const [tab, setTab] = useState<OptTab>('nodes')
+  useTourTab<OptTab>('/optimizer', setTab)
 
   // ---- Диагностика пути: трассировка и пинг под нагрузкой ----
   const [trace, setTrace] = useState<TraceResult | null>(null)
@@ -269,389 +298,443 @@ export default function OptimizerPage(): React.ReactElement {
     }
   }
 
+  const res = gamePingResult
+  const bestNode = res?.nodes.find((n) => n.isBest) ?? null
+  const bestMs = bestNode ? (bestNode.path?.pingMs ?? bestNode.totalPing ?? null) : null
+  const directMs = res ? (res.direct?.pingMs ?? res.directPing ?? null) : null
+  const bestIsCurrent = Boolean(bestNode && isConnected && status.activeNodeId === bestNode.nodeId)
+  const activeNode = nodes.find((n) => n.id === status.activeNodeId)
+  const heroTone: LzTone = measuringGamePing ? 'busy' : res ? 'on' : 'off'
+  const heroTitle = measuringGamePing
+    ? 'Замеряю пути до сервера…'
+    : !res
+      ? 'Найдите быстрый путь до сервера'
+      : bestNode
+        ? `Быстрее через ${cleanServerName(bestNode.nodeName)}`
+        : 'Напрямую быстрее всего'
+  const heroText = measuringGamePing
+    ? `${optimizerProgress?.stage ?? 'Подготовка'}. Ход замера пишется во вкладку «Логи».`
+    : !res
+      ? 'Скопируйте строку connect IP:порт из комнаты Faceit или консоли CS2 и нажмите «Замерить пинг»: по 20 игровых запросов напрямую и через каждый быстрый узел.'
+      : bestNode
+        ? `${bestMs ?? bestNode.totalPing} мс против ${directMs ?? '—'} мс напрямую${typeof bestNode.savingMs === 'number' && bestNode.savingMs > 0 && !res.directViaTunnel ? `, на ${bestNode.savingMs} мс быстрее` : ''}.`
+        : 'Ни один узел не дал пинг ниже прямого подключения. Для этой игры VPN не нужен.'
+
   return (
     <BasePage title="Оптимизатор маршрута">
-      <div className="px-4 pb-8 space-y-4">
-        {/* FACEIT / CS2 GAME SERVER ROUTE OPTIMIZER */}
-        <Card className="cyber-card border-primary/30 bg-gradient-to-br from-card/90 via-card/70 to-primary/5 shadow-md">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="h-8 w-8 rounded-lg bg-primary/20 border border-primary/40 flex items-center justify-center">
-                  <Target className="h-4 w-4 text-primary" />
-                </div>
-                <div>
-                  <CardTitle className="text-sm font-bold flex items-center gap-2">
-                    Оптимизатор маршрута Faceit / CS2
-                    <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-primary/50 text-primary font-mono uppercase">
-                      Игровой пинг
-                    </Badge>
-                  </CardTitle>
-                  <p className="text-[11px] text-muted-foreground mt-0.5">
-                    Реальный пинг, джиттер и потери до игрового сервера — напрямую и через каждый ваш узел
-                  </p>
-                </div>
-              </div>
-            </div>
-          </CardHeader>
-
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <Input
-                    value={gameServerTarget}
-                    onChange={(e) => setGameServerTarget(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') void addTargetToZapret(gameServerTarget)
-                    }}
-                    placeholder="connect 162.19.141.22:27015 или 162.19.141.22..."
-                    className="text-xs font-mono pr-20"
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    type="button"
-                    onClick={() => { void handlePasteGameServerFromClipboard() }}
-                    className="absolute right-1 top-1 h-7 px-2 text-[11px] text-primary hover:bg-primary/10 gap-1"
-                  >
-                    <Copy className="h-3 w-3" /> Вставить
-                  </Button>
-                </div>
+      <div className="mx-auto flex w-full max-w-[1080px] flex-col lz-page-gap lz-page-x pb-5">
+        <LzHero
+          data-tour="optimizer-console"
+          tone={heroTone}
+          visual={<RouteRace bestMs={bestMs} directMs={directMs} measuring={measuringGamePing} progress={optimizerProgress} />}
+          title={<span className="line-clamp-2" data-sensitive={bestNode ? 'node' : undefined}>{heroTitle}</span>}
+          text={heroText}
+          extra={
+            <div className="mt-1 flex w-full flex-wrap items-center gap-2">
+              <div className="relative min-w-[260px] flex-1">
+                <Input
+                  data-sensitive="ip"
+                  value={gameServerTarget}
+                  onChange={(e) => setGameServerTarget(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void addTargetToZapret(gameServerTarget)
+                  }}
+                  placeholder="connect 162.19.141.22:27015 или 162.19.141.22"
+                  className="h-9 rounded-xl border-foreground/[0.1] bg-foreground/[0.035] pr-24 text-[13px] tabular-nums"
+                />
                 <Button
                   size="sm"
+                  variant="ghost"
                   type="button"
+                  onClick={() => void handlePasteGameServerFromClipboard()}
+                  className="absolute top-1 right-1 h-7 gap-1 rounded-lg px-2 text-[11.5px] text-primary hover:bg-primary/10"
+                >
+                  <Copy className="size-3" /> Вставить
+                </Button>
+              </div>
+              <Button
+                size="sm"
+                type="button"
+                variant="outline"
+                onClick={() => void addTargetToZapret(gameServerTarget)}
+                disabled={addingToZapret || !gameServerTarget.trim()}
+                className="h-9 shrink-0 gap-1.5 rounded-xl text-xs"
+                title="Добавить IP сервера в список Zapret (без замера)"
+              >
+                {addingToZapret ? <RefreshCw className="size-3.5 animate-spin" /> : <ShieldPlus className="size-3.5" />}
+                В Zapret
+              </Button>
+            </div>
+          }
+          actions={
+            <>
+              <Button
+                size="lg"
+                type="button"
+                onClick={() => void handleMeasureGamePing()}
+                disabled={measuringGamePing || !gameServerTarget.trim()}
+                className="h-11 rounded-xl px-5 text-[14px]"
+              >
+                {measuringGamePing ? <Loader2 className="size-4 animate-spin" /> : <Zap className="size-4" />}
+                {measuringGamePing ? 'Замеряю…' : res ? 'Замерить ещё раз' : 'Замерить пинг'}
+              </Button>
+              {bestNode && !measuringGamePing && (
+                <Button
                   variant="outline"
-                  onClick={() => void addTargetToZapret(gameServerTarget)}
-                  disabled={addingToZapret || !gameServerTarget.trim()}
-                  className="text-xs h-9 shrink-0 gap-1.5 font-semibold"
-                  title="Добавить IP сервера в список Zapret (без замера)"
+                  size="lg"
+                  onClick={() => void handleSelectNodeAndConnect(bestNode.nodeId)}
+                  disabled={selectingNodeId === bestNode.nodeId || bestIsCurrent}
+                  className="h-10 rounded-xl px-5 text-[13px]"
                 >
-                  {addingToZapret ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <ShieldPlus className="h-3.5 w-3.5" />}
-                  В Zapret
+                  {selectingNodeId === bestNode.nodeId ? <RefreshCw className="size-4 animate-spin" /> : <Trophy className="size-4" />}
+                  {bestIsCurrent ? 'Лучший подключён' : 'Подключить лучший'}
                 </Button>
-                <Button
-                  size="sm"
-                  type="button"
-                  onClick={() => void handleMeasureGamePing()}
-                  disabled={measuringGamePing || !gameServerTarget.trim()}
-                  className="text-xs h-9 shrink-0 gap-1.5 font-semibold"
-                >
-                  <Zap className="h-3.5 w-3.5" />
-                  {measuringGamePing ? 'Замер...' : 'Замерить пинг'}
-                </Button>
-              </div>
-
-              <label className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-card/50 px-3 py-2 cursor-pointer">
-                <span className="text-[11px] leading-snug">
-                  <span className="font-semibold text-foreground">Автоподключение к лучшему узлу</span>
-                  <span className="block text-muted-foreground">
-                    После замера сразу переключиться на лучший узел из разрешённых для автовыбора (см. «Автовыбор узла»).
-                    Выключено — только подсказка.
-                  </span>
-                </span>
-                <Switch
-                  checked={Boolean(settings?.routeAutoConnectBest)}
-                  onCheckedChange={(v) => void handleUpdateSettings({ routeAutoConnectBest: v })}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-card/50 px-3 py-2 cursor-pointer">
-                <span className="text-[11px] leading-snug">
-                  <span className="font-semibold text-foreground">Добавлять IP сервера в Zapret при вставке</span>
-                  <span className="block text-muted-foreground">
-                    Кнопка «Вставить» (или Enter) только кладёт IP — без connect и порта — в наш список на вкладке
-                    Zapret, замер не запускается. Пинг меряется отдельно кнопкой «Замерить пинг». Работающий Zapret
-                    перезапустится на пару секунд.
-                  </span>
-                </span>
-                <Switch
-                  checked={settings?.optimizerAddToZapret !== false}
-                  onCheckedChange={(v) => void handleUpdateSettings({ optimizerAddToZapret: v })}
-                />
-              </label>
-              <p className="text-[10px] text-muted-foreground leading-relaxed">
-                Скопируйте строку <span className="font-mono text-foreground">connect IP:порт</span> из комнаты матча
-                Faceit или из консоли CS2 и нажмите «Вставить» — сервер попадёт в Zapret. «Замерить пинг» — по 20
-                игровых запросов (A2S) напрямую и через каждый быстрый узел подписки: пинг, джиттер и потери. Ход
-                замера пишется во вкладку «Логи».
-              </p>
-              {measuringGamePing && optimizerProgress && (
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
-                    <span>{optimizerProgress.stage}</span>
-                    <span>
-                      {optimizerProgress.done}/{optimizerProgress.total}
-                    </span>
-                  </div>
-                  <div className="h-1 rounded-full bg-border/50 overflow-hidden">
-                    <div
-                      className="h-full bg-primary transition-all duration-300"
-                      style={{
-                        width: `${optimizerProgress.total ? Math.round((optimizerProgress.done / optimizerProgress.total) * 100) : 0}%`
-                      }}
-                    />
-                  </div>
-                </div>
               )}
+            </>
+          }
+          footer={
+            <div className="flex flex-wrap items-stretch gap-2">
+              <StatChip
+                icon={<MapPin />}
+                tone={res ? 'on' : 'off'}
+                label="Сервер"
+                value={res ? `${res.geo.city ? `${res.geo.city}, ` : ''}${res.geo.country || res.targetIp}` : 'не замерен'}
+                aside={
+                  res ? (
+                    <span data-sensitive="ip" className="shrink-0 rounded-md bg-foreground/[0.06] px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground">
+                      {res.targetIp}:{res.targetPort}
+                    </span>
+                  ) : undefined
+                }
+                className="min-w-[220px] flex-1"
+              />
+              <StatChip
+                icon={<Route />}
+                label={res?.directViaTunnel ? 'Напрямую (через VPN)' : 'Напрямую'}
+                value={res ? <StatTriple stats={res.direct} fallbackPing={res.directPing} compact /> : '—'}
+              />
+              <StatChip
+                icon={<Sparkles />}
+                tone={settings?.routeAutoConnectBest ? 'on' : 'off'}
+                label="Автоподключение"
+                value={settings?.routeAutoConnectBest ? 'к лучшему узлу' : 'только подсказка'}
+                title="Изменить в «Настройках» оптимизатора"
+                onClick={() => setTab('settings')}
+              />
+              <StatChip
+                icon={<ShieldCheck />}
+                tone={isConnected ? 'on' : 'off'}
+                label="VPN INCY"
+                value={isConnected ? 'подключён' : 'выключен'}
+                aside={
+                  isConnected && activeNode ? (
+                    <span data-sensitive="node" className="max-w-[130px] shrink truncate rounded-md bg-primary/12 px-1.5 py-0.5 text-[11px] font-semibold text-primary">
+                      {cleanServerName(activeNode.name)}
+                    </span>
+                  ) : undefined
+                }
+                title="Открыть INCY"
+                onClick={() => navigate('/incy')}
+              />
             </div>
+          }
+        />
 
-            {/* Results */}
-            {gamePingResult && (
-              <div className="select-text space-y-3 p-3.5 rounded-xl border border-primary/30 bg-primary/5 animate-in fade-in duration-200">
-                {/* Header */}
-                <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-border/40 text-xs">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-semibold text-foreground truncate">
-                      <MapPin className="inline h-3.5 w-3.5 mr-1 text-primary align-[-2px]" />{gamePingResult.geo.city ? `${gamePingResult.geo.city}, ` : ''}
-                      {gamePingResult.geo.country || gamePingResult.targetIp}
-                    </span>
-                    <span className="text-[10px] font-mono text-muted-foreground">
-                      {gamePingResult.targetIp}:{gamePingResult.targetPort}
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-muted-foreground flex items-center gap-2 font-mono">
-                    <span>Напрямую{gamePingResult.directViaTunnel ? ' (через VPN)' : ''}:</span>
-                    <StatTriple stats={gamePingResult.direct} fallbackPing={gamePingResult.directPing} />
-                  </div>
-                </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-3">
+          <Segmented
+            items={OPT_TABS.map((t) => ({ ...t, label: t.id === 'nodes' && res ? `Узлы ${res.nodes.length}` : t.label }))}
+            value={tab}
+            onChange={setTab}
+            aria-label="Разделы оптимизатора"
+            data-tour="optimizer-tabs"
+            className="w-[560px]"
+          />
+          <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground">{OPT_TABS.find((t) => t.id === tab)?.title}</span>
+        </div>
 
-                {(gamePingResult.warnings ?? []).map((w) => (
-                  <div
-                    key={w}
-                    className="text-[10px] leading-relaxed rounded-lg border border-st-warn/30 bg-st-warn/10 text-st-warn-text px-2.5 py-1.5"
-                  >
-                    {w}
-                  </div>
-                ))}
-
-                {typeof gamePingResult.measuredNodes === 'number' && (
-                  <div className="text-[10px] text-muted-foreground">
-                    Проверено узлов: {gamePingResult.measuredNodes} из {gamePingResult.totalNodes} (самые быстрые до вас).
-                    Сортировка по итоговой оценке: пинг + 2×джиттер + 5 мс за каждый % потерь.
-                  </div>
-                )}
-
-                {/* Node List */}
-                <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-                  {gamePingResult.nodes.length === 0 ? (
-                    <div className="text-center py-6 text-xs text-muted-foreground">
-                      Нет доступных узлов для замера — обновите подписку на вкладке INCY.
-                    </div>
-                  ) : (
-                    gamePingResult.nodes.map((n) => {
-                      const isCurrentActive = status.state === 'running' && status.activeNodeId === n.nodeId
-                      const estimated = n.path?.method === 'estimate'
-                      return (
-                        <div
-                          key={n.nodeId}
-                          className={cn(
-                            'flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 rounded-xl border transition-all text-xs',
-                            n.isBest
-                              ? 'border-st-ok/50 bg-st-ok/10 shadow-[0_0_15px_rgba(16,185,129,0.15)] ring-1 ring-st-ok/30'
-                              : 'border-border/50 bg-card/60 hover:bg-card/90'
-                          )}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="font-semibold text-foreground truncate">{cleanServerName(n.nodeName)}</span>
-                              <Badge variant="outline" className="text-[9px] uppercase px-1 py-0">
-                                {n.protocol}
-                              </Badge>
-                              {n.isBest && (
-                                <Badge className="text-[9px] px-1.5 py-0 bg-st-ok text-white font-bold"><Trophy className="h-2.5 w-2.5 mr-0.5 inline" />ЛУЧШИЙ</Badge>
-                              )}
-                              {n.udpTransport === 'udp' ? (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[9px] px-1 py-0 text-st-ok-text border-st-ok/40"
-                                  title="Пакеты игры идут по UDP напрямую — без задержек на повторную отправку"
-                                >
-                                  нативный UDP
-                                </Badge>
-                              ) : n.udpTransport === 'tcp' ? (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[9px] px-1 py-0 text-muted-foreground"
-                                  title="UDP игры едет внутри TCP: при потерях на линии пакеты ждут повторной отправки — скачки пинга"
-                                >
-                                  UDP в TCP
-                                </Badge>
-                              ) : null}
-                              {isCurrentActive && (
-                                <Badge className="text-[9px] px-1.5 py-0 bg-primary/20 text-primary border border-primary/40 font-mono">
-                                  ТЕКУЩИЙ
-                                </Badge>
-                              )}
-                              {estimated && (
-                                <Badge variant="outline" className="text-[9px] px-1 py-0 text-st-warn-text border-st-warn/40">
-                                  оценка
-                                </Badge>
-                              )}
-                              {n.autoAllowed === false && (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[9px] px-1 py-0 text-muted-foreground"
-                                  title="Узел исключён из автовыбора — вручную подключиться можно"
-                                >
-                                  не для автовыбора
-                                </Badge>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-3 text-[10px] text-muted-foreground mt-1.5 font-mono flex-wrap">
-                              <span>
-                                ПК → узел: <b className="text-foreground">{n.userToNodePing ?? '—'} мс</b>
-                              </span>
-                              {n.path && n.path.method === 'a2s' && (
-                                <span>
-                                  ответов: {n.path.received}/{n.path.sent}
-                                </span>
-                              )}
-                              {typeof n.savingMs === 'number' && n.savingMs > 0 && !gamePingResult.directViaTunnel && (
-                                <span className="text-st-ok-text font-bold">
-                                  ⚡ на {n.savingMs} мс быстрее прямого{estimated ? ' (оценка)' : ''}
-                                </span>
-                              )}
-                              {n.error && <span className="text-destructive">{n.error}</span>}
-                              {!n.error && n.path?.method === 'failed' && (
-                                <span className="text-destructive">сервер не ответил через этот узел</span>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
-                            <StatTriple stats={n.path} fallbackPing={n.totalPing} highlight={n.isBest} />
-                            <Button
-                              size="sm"
-                              variant={n.isBest ? 'default' : 'outline'}
-                              onClick={() => {
-                                void handleSelectNodeAndConnect(n.nodeId)
-                              }}
-                              disabled={selectingNodeId === n.nodeId || isCurrentActive}
-                              className="text-xs h-7 px-2.5 font-semibold"
-                            >
-                              {selectingNodeId === n.nodeId ? (
-                                <RefreshCw className="h-3 w-3 animate-spin" />
-                              ) : isCurrentActive ? (
-                                'Подключен'
-                              ) : (
-                                'Подключить'
-                              )}
-                            </Button>
-                          </div>
+        {tab === 'nodes' && (
+          <LzPanel className="select-text px-2 pt-3 pb-2">
+            <LzSectionHead
+              className="px-3 pb-2"
+              title="Узлы до сервера"
+              hint="Сортировка по итоговой оценке: пинг + 2×джиттер + 5 мс за каждый % потерь. «Нативный UDP» — пакеты игры идут по UDP без повторной отправки, это лучше для игр."
+              sub={
+                res && typeof res.measuredNodes === 'number'
+                  ? `Проверено ${res.measuredNodes} из ${res.totalNodes}, самые быстрые до вас`
+                  : 'Пинг, разброс и потери через каждый быстрый узел подписки'
+              }
+            />
+            {(res?.warnings ?? []).map((w) => (
+              <div key={w} className="mx-2 mb-2 rounded-xl border border-st-warn/35 bg-st-warn/10 px-3 py-2 text-[12px] leading-relaxed text-st-warn-text">
+                {w}
+              </div>
+            ))}
+            {!res ? (
+              <EmptyState
+                icon={<Target />}
+                title={measuringGamePing ? 'Замеряю пути…' : 'Здесь появятся узлы'}
+                text={
+                  measuringGamePing
+                    ? optimizerProgress?.stage
+                    : 'Вставьте адрес сервера вверху и нажмите «Замерить пинг». Список отсортируется от быстрого к медленному.'
+                }
+              />
+            ) : res.nodes.length === 0 ? (
+              <EmptyState icon={<Target />} title="Нет узлов для замера" text="Обновите подписку на вкладке INCY." />
+            ) : (
+              <div className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
+                {res.nodes.map((n) => {
+                  const isCurrentActive = status.state === 'running' && status.activeNodeId === n.nodeId
+                  const estimated = n.path?.method === 'estimate'
+                  return (
+                    <div
+                      key={n.nodeId}
+                      className={cn(
+                        'relative flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border py-2.5 pr-3 pl-3 text-xs transition-colors',
+                        n.isBest ? 'border-primary/40 bg-primary/[0.09]' : 'border-transparent hover:border-foreground/[0.08] hover:bg-foreground/[0.03]'
+                      )}
+                    >
+                      {n.isBest && <span aria-hidden className="pointer-events-none absolute inset-y-2.5 left-0 w-[3px] rounded-r-full bg-primary" />}
+                      <span
+                        aria-hidden
+                        className={cn(
+                          'flex size-9 shrink-0 items-center justify-center rounded-xl [&_svg]:size-[18px]',
+                          n.isBest ? 'bg-primary/15 text-primary' : 'bg-foreground/[0.05] text-muted-foreground'
+                        )}
+                      >
+                        {n.isBest ? <Trophy /> : <Server />}
+                      </span>
+                      <div className="min-w-[14rem] flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span data-sensitive="node" className={cn('truncate text-[13.5px] font-semibold', n.isBest ? 'text-primary' : 'text-foreground')}>
+                            {cleanServerName(n.nodeName)}
+                          </span>
+                          <ProtocolTag protocol={n.protocol} />
+                          {n.isBest && <span className="rounded-md bg-primary px-1.5 py-px text-[10.5px] font-bold text-primary-foreground">лучший</span>}
+                          {n.udpTransport === 'udp' ? (
+                            <MiniTag tone="ok" title="Пакеты игры идут по UDP напрямую — без задержек на повторную отправку">
+                              нативный UDP
+                            </MiniTag>
+                          ) : n.udpTransport === 'tcp' ? (
+                            <MiniTag title="UDP игры едет внутри TCP: при потерях на линии пакеты ждут повторной отправки — скачки пинга">UDP в TCP</MiniTag>
+                          ) : null}
+                          {isCurrentActive && <MiniTag tone="primary">подключён</MiniTag>}
+                          {estimated && <MiniTag tone="warn">оценка</MiniTag>}
+                          {n.autoAllowed === false && <MiniTag title="Узел исключён из автовыбора — вручную подключиться можно">не для автовыбора</MiniTag>}
                         </div>
-                      )
-                    })
-                  )}
-                </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11.5px] text-muted-foreground">
+                          <span>
+                            ПК → узел: <b className="font-semibold text-foreground tabular-nums">{n.userToNodePing ?? '—'} мс</b>
+                          </span>
+                          {n.path && n.path.method === 'a2s' && (
+                            <span className="tabular-nums">
+                              ответов {n.path.received} из {n.path.sent}
+                            </span>
+                          )}
+                          {typeof n.savingMs === 'number' && n.savingMs > 0 && !res.directViaTunnel && (
+                            <span className="font-semibold text-primary">
+                              на {n.savingMs} мс быстрее прямого{estimated ? ' (оценка)' : ''}
+                            </span>
+                          )}
+                          {n.error && <span className="text-st-err-text">{n.error}</span>}
+                          {!n.error && n.path?.method === 'failed' && <span className="text-st-err-text">сервер не ответил через этот узел</span>}
+                        </div>
+                      </div>
+                      <div className="ml-auto flex shrink-0 items-center gap-3">
+                        <StatTriple stats={n.path} fallbackPing={n.totalPing} highlight={n.isBest} />
+                        <Button
+                          size="sm"
+                          variant={n.isBest ? 'default' : 'outline'}
+                          onClick={() => void handleSelectNodeAndConnect(n.nodeId)}
+                          disabled={selectingNodeId === n.nodeId || isCurrentActive}
+                          className="h-8 w-[7.25rem] rounded-lg text-xs"
+                        >
+                          {selectingNodeId === n.nodeId ? <RefreshCw className="size-3.5 animate-spin" /> : isCurrentActive ? 'Подключён' : 'Подключить'}
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             )}
-          </CardContent>
-        </Card>
+          </LzPanel>
+        )}
 
-        {/* Диагностика пути */}
-        <Card className="cyber-card">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <Route className="h-4 w-4 text-primary" />
-              Откуда берётся пинг
-            </CardTitle>
-            <p className="text-[11px] text-muted-foreground">
-              Если на «близком» сервере пинг выше, чем должен быть (например, 63 мс вместо 25 на московском Faceit), —
-              трассировка покажет, на каком участке пути он набирается, а проверка под нагрузкой — не виноваты ли
-              роутер и скачивания в домашней сети. Всё меряется мимо VPN.
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" className="text-xs h-8 gap-1.5" onClick={() => void runTrace()} disabled={tracing}>
-                {tracing ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Route className="h-3.5 w-3.5" />}
-                Трассировка до сервера
-              </Button>
-              <Button size="sm" variant="outline" className="text-xs h-8 gap-1.5" onClick={() => void runBloat()} disabled={bloating}>
-                {bloating ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Gauge className="h-3.5 w-3.5" />}
-                {bloating ? 'Нагружаю канал ~15 с…' : 'Пинг под нагрузкой'}
-              </Button>
-            </div>
+        {tab === 'path' && (
+          <LzPanel className="space-y-3 p-4">
+            <LzSectionHead
+              title="Откуда берётся пинг"
+              hint="Если на «близком» сервере пинг выше, чем должен быть (например, 63 мс вместо 25 на московском Faceit), трассировка покажет, на каком участке пути он набирается, а проверка под нагрузкой — не виноваты ли роутер и скачивания в домашней сети. Всё меряется мимо VPN."
+              sub="Трассировка до сервера и пинг под нагрузкой, мимо VPN"
+              right={
+                <>
+                  <Button size="sm" variant="outline" className="h-8 gap-1.5 rounded-lg text-xs" onClick={() => void runTrace()} disabled={tracing}>
+                    {tracing ? <RefreshCw className="size-3.5 animate-spin" /> : <Route className="size-3.5" />}
+                    Трассировка до сервера
+                  </Button>
+                  <Button size="sm" variant="outline" className="h-8 gap-1.5 rounded-lg text-xs" onClick={() => void runBloat()} disabled={bloating}>
+                    {bloating ? <RefreshCw className="size-3.5 animate-spin" /> : <Gauge className="size-3.5" />}
+                    {bloating ? 'Нагружаю канал ~15 с…' : 'Пинг под нагрузкой'}
+                  </Button>
+                </>
+              }
+            />
+
+            {!trace && !bloat && (
+              <EmptyState
+                compact
+                icon={<Route />}
+                title="Пока ничего не измерено"
+                text="Трассировка идёт до адреса из поля вверху. Пинг под нагрузкой скачает немного данных, чтобы проверить домашнюю сеть."
+              />
+            )}
 
             {trace && (
-              <div className="select-text space-y-2 rounded-xl border border-border/50 bg-background/40 p-3">
-                <div className="text-[11px] text-muted-foreground">
-                  До {trace.targetIp}
-                  {trace.reached ? '' : ' (сервер на пинг не отвечает)'} · {trace.hops.length} узлов
-                  {trace.viaPhysical ? ' · в обход VPN' : ''}
+              <div className="select-text space-y-2 rounded-xl border border-foreground/[0.08] bg-foreground/[0.03] p-3">
+                <div className="text-[12px] text-muted-foreground">
+                  До <span data-sensitive="ip">{trace.targetIp}</span>
+                  {trace.reached ? '' : ' (сервер на пинг не отвечает)'}, узлов: {trace.hops.length}
+                  {trace.viaPhysical ? ', в обход VPN' : ''}
                 </div>
-                <div className="space-y-0.5 font-mono text-[11px]">
+                <div className="space-y-0.5 text-[12px] tabular-nums">
+                  <div className="grid grid-cols-[2rem_1fr_4.5rem_4rem_4rem] gap-2 pb-1 text-[11px] text-muted-foreground">
+                    <span>№</span>
+                    <span>Адрес</span>
+                    <span className="text-right">Пинг</span>
+                    <span className="text-right">Прирост</span>
+                    <span className="text-right">Потери</span>
+                  </div>
                   {trace.hops.map((h) => {
                     const jump = trace.biggestJump?.hop === h.hop && (trace.biggestJump?.deltaMs ?? 0) >= 10
                     return (
                       <div
                         key={h.hop}
-                        className={cn('grid grid-cols-[2rem_1fr_4rem_4rem_4rem] gap-2', jump && 'text-st-warn-text font-bold')}
+                        className={cn('grid grid-cols-[2rem_1fr_4.5rem_4rem_4rem] gap-2 rounded-md px-0.5', jump && 'bg-st-warn/10 font-bold text-st-warn-text')}
                       >
                         <span className="text-muted-foreground">{h.hop}</span>
-                        <span className="truncate">{h.ip ?? '* * *'}{h.isPrivate ? ' (дом)' : ''}</span>
+                        <span data-sensitive="ip" className="truncate">
+                          {h.ip ?? '* * *'}
+                          {h.isPrivate ? ' (дом)' : ''}
+                        </span>
                         <span className="text-right">{h.avgMs != null ? `${h.avgMs} мс` : '—'}</span>
                         <span className="text-right">{h.deltaMs != null && h.deltaMs > 0 ? `+${h.deltaMs}` : ''}</span>
-                        <span className={cn('text-right', (h.lossPct ?? 0) > 0 && 'text-muted-foreground')}>
-                          {h.lossPct != null ? `${h.lossPct}%` : ''}
-                        </span>
+                        <span className={cn('text-right', (h.lossPct ?? 0) > 0 && 'text-muted-foreground')}>{h.lossPct != null ? `${h.lossPct}%` : ''}</span>
                       </div>
                     )
                   })}
                 </div>
-                <ul className="space-y-1 text-[11px] leading-relaxed">
+                <ul className="space-y-1 text-[12px] leading-relaxed">
                   {trace.verdict.map((v) => (
-                    <li key={v}>• {v}</li>
+                    <li key={v} className="flex gap-2">
+                      <span aria-hidden className="mt-[7px] size-1.5 shrink-0 rounded-full bg-primary" />
+                      {v}
+                    </li>
                   ))}
                 </ul>
               </div>
             )}
 
             {bloat && (
-              <div className="select-text space-y-1.5 rounded-xl border border-border/50 bg-background/40 p-3 text-[11px]">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono">
-                  <span>
-                    Оценка:{' '}
-                    <b
-                      className={cn(
-                        bloat.grade === 'A' || bloat.grade === 'B' ? 'text-st-ok-text' : bloat.grade === 'unknown' ? '' : 'text-st-warn-text'
-                      )}
-                    >
-                      {bloat.grade === 'unknown' ? '—' : bloat.grade}
-                    </b>
-                  </span>
-                  <span>покой: {bloat.idle.avgMs ?? '—'} мс</span>
-                  <span>
-                    под нагрузкой: {bloat.loaded.avgMs ?? '—'} мс (макс {bloat.loaded.maxMs ?? '—'}, потери {bloat.loaded.lossPct}%)
-                  </span>
-                  {bloat.downloadMbps != null && <span>скачивание: {bloat.downloadMbps} Мбит/с</span>}
+              <div className="select-text flex flex-wrap items-center gap-4 rounded-xl border border-foreground/[0.08] bg-foreground/[0.03] p-3">
+                <span
+                  className={cn(
+                    'flex size-12 shrink-0 items-center justify-center rounded-xl text-[22px] font-extrabold',
+                    bloat.grade === 'A' || bloat.grade === 'B'
+                      ? 'bg-st-ok/12 text-st-ok-text'
+                      : bloat.grade === 'unknown'
+                        ? 'bg-foreground/[0.05] text-muted-foreground'
+                        : 'bg-st-warn/12 text-st-warn-text'
+                  )}
+                  title="Оценка домашней сети под нагрузкой"
+                >
+                  {bloat.grade === 'unknown' ? '—' : bloat.grade}
+                </span>
+                <div className="min-w-[16rem] flex-1 space-y-1">
+                  <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[12px] tabular-nums text-muted-foreground">
+                    <span>
+                      в покое <b className="text-foreground">{bloat.idle.avgMs ?? '—'} мс</b>
+                    </span>
+                    <span>
+                      под нагрузкой <b className="text-foreground">{bloat.loaded.avgMs ?? '—'} мс</b> (макс {bloat.loaded.maxMs ?? '—'}, потери {bloat.loaded.lossPct}%)
+                    </span>
+                    {bloat.downloadMbps != null && <span>скачивание {bloat.downloadMbps} Мбит/с</span>}
+                  </div>
+                  <p className="text-[12.5px] leading-relaxed">{bloat.verdict}</p>
                 </div>
-                <p className="leading-relaxed">{bloat.verdict}</p>
               </div>
             )}
 
-            <div className="rounded-xl border border-border/50 bg-card/50 p-3 text-[11px] leading-relaxed text-muted-foreground space-y-1">
-              <div className="font-semibold text-foreground">Что реально снижает пинг и убирает потери</div>
-              <div>• Кабель вместо Wi-Fi и никаких скачиваний в сети во время матча (проверка выше).</div>
-              <div>
-                • VPN помогает, только если путь провайдера до сервера хуже, чем через узел. Для московских серверов берите
-                узел в России, для европейских — в ближайшей к серверу стране. Узел далеко от сервера пинг только добавит.
-              </div>
-              <div>
-                • Для игр выбирайте узлы с пометкой «нативный UDP» (Hysteria2, WireGuard). У VLESS/Trojan пакеты игры едут
-                внутри TCP, и любая потеря на линии превращается в скачок пинга.
-              </div>
-              <div>• Включайте VPN только для игры — режим ExitLag, чтобы остальной трафик не делил с ней канал.</div>
-            </div>
-          </CardContent>
-        </Card>
+            <details className="group rounded-xl border border-foreground/[0.08] bg-foreground/[0.025] px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
+              <summary className="cursor-pointer list-none font-semibold text-foreground marker:hidden">
+                Что реально снижает пинг и убирает потери
+                <span className="ml-1 text-muted-foreground group-open:hidden">— показать</span>
+              </summary>
+              <ul className="mt-2 space-y-1">
+                <li>Кабель вместо Wi-Fi и никаких скачиваний в сети во время матча (проверка выше).</li>
+                <li>
+                  VPN помогает, только если путь провайдера до сервера хуже, чем через узел. Для московских серверов берите узел в России,
+                  для европейских — в ближайшей к серверу стране. Узел далеко от сервера пинг только добавит.
+                </li>
+                <li>
+                  Для игр выбирайте узлы с пометкой «нативный UDP» (Hysteria2, WireGuard). У VLESS/Trojan пакеты игры едут внутри TCP, и
+                  любая потеря на линии превращается в скачок пинга.
+                </li>
+                <li>Включайте VPN только для игры — режим ExitLag, чтобы остальной трафик не делил с ней канал.</li>
+              </ul>
+            </details>
 
-        <SiteCheckCard />
+            <button
+              type="button"
+              onClick={() => navigate('/diagnostics')}
+              className="flex w-full cursor-pointer items-center gap-3 rounded-xl border border-foreground/[0.08] bg-foreground/[0.03] px-3 py-2.5 text-left transition-colors hover:border-primary/40"
+            >
+              <Stethoscope className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 text-[12.5px]">
+                <span className="font-semibold text-foreground">Проверка сайтов, утечек и Wi-Fi</span>
+                <span className="text-muted-foreground"> — в разделе «Диагностика»</span>
+              </span>
+              <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
+            </button>
+          </LzPanel>
+        )}
 
-        <ValveRegionsCard />
+        {tab === 'valve' && <ValveRegionsCard />}
 
-        <AutoSelectCard settings={settings} nodes={nodes} onPatch={handleUpdateSettings} />
+        {tab === 'settings' && (
+          <>
+            <SettingsGroup title="Адрес сервера и Zapret" hint="Что делает оптимизатор, когда вы вставляете адрес сервера.">
+              <Rows>
+                <SwitchRow
+                  id="opt-add-zapret"
+                  data-tour="optimizer-add-zapret"
+                  icon={<ShieldPlus />}
+                  title="Добавлять IP сервера в Zapret при вставке"
+                  desc="«Вставить» или Enter кладёт IP — без connect и порта — в список Zapret. Замер при этом не запускается."
+                  hint="Работающий Zapret перезапустится на пару секунд, чтобы применить список. Пинг меряется отдельно кнопкой «Замерить пинг»."
+                  checked={settings?.optimizerAddToZapret !== false}
+                  onChange={(v) => void handleUpdateSettings({ optimizerAddToZapret: v })}
+                />
+              </Rows>
+            </SettingsGroup>
+            <AutoSelectCard settings={settings} nodes={nodes} onPatch={handleUpdateSettings} />
+          </>
+        )}
       </div>
     </BasePage>
   )
 }
+
+const MiniTag: React.FC<{ children: React.ReactNode; tone?: 'ok' | 'warn' | 'primary'; title?: string }> = ({ children, tone, title }) => (
+  <span
+    title={title}
+    className={cn(
+      'inline-flex items-center rounded-md border px-1.5 py-px text-[10.5px] font-semibold leading-tight',
+      tone === 'ok' && 'border-st-ok/35 bg-st-ok/10 text-st-ok-text',
+      tone === 'warn' && 'border-st-warn/35 bg-st-warn/10 text-st-warn-text',
+      tone === 'primary' && 'border-primary/35 bg-primary/10 text-primary',
+      !tone && 'border-foreground/[0.1] bg-foreground/[0.05] text-muted-foreground'
+    )}
+  >
+    {children}
+  </span>
+)

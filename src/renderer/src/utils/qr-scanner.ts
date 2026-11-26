@@ -1,9 +1,10 @@
-import jsQR from 'jsqr'
 
 /**
  * Decodes a QR code from a base64 Data URL (e.g. from screen capture, file, or clipboard).
  */
 export async function decodeQrFromDataUrl(dataUrl: string): Promise<string | null> {
+  // Распознаватель (~300 КБ) грузится только при первом сканировании.
+  const { default: jsQR } = await import('jsqr')
   return new Promise((resolve, reject) => {
     const img = new Image()
     img.crossOrigin = 'anonymous'

@@ -53,6 +53,8 @@ export interface Scenario {
   tgws: ScenarioToggle
   dns: string
   hotkey?: string
+  /** Свой порядок шагов (2.0): ключи действий; нет — порядок по умолчанию. */
+  order?: string[]
 }
 export interface ScenarioStep {
   what: string
@@ -210,9 +212,35 @@ export interface StrategyTestProgress {
   strategy?: string
   report?: StrategyTestReport
   message?: string
+  /** Во время проверки: результаты уже проверенных стратегий этого прогона. */
+  done?: Record<string, StrategyTestResult>
 }
-export const zapretRunStrategyTest = (opts: { resume?: boolean } = {}): Promise<StrategyTestReport> =>
+export const zapretRunStrategyTest = (opts: { resume?: boolean; file?: string; autoSelect?: boolean } = {}): Promise<StrategyTestReport> =>
   invoke('zapret:runStrategyTest', opts)
+export const zapretLinuxUserLists = (): Promise<{ include: string[]; exclude: string[] }> =>
+  invoke('zapret:linuxUserLists')
+export const zapretSaveLinuxUserLists = (input: { include: string[]; exclude: string[] }): Promise<void> =>
+  invoke('zapret:saveLinuxUserLists', input)
+export interface LinuxGameFilter {
+  mode: 'off' | 'tcp' | 'udp' | 'all'
+  ipset: 'none' | 'loaded' | 'any'
+  tcp: string
+  udp: string
+}
+export const zapretLinuxGameFilter = (): Promise<LinuxGameFilter> => invoke('zapret:linuxGameFilter')
+export const zapretSaveLinuxGameFilter = (input: LinuxGameFilter): Promise<void> =>
+  invoke('zapret:saveLinuxGameFilter', input)
+export interface LinuxZapretCustomProfile {
+  file: string
+  title: string
+  base: string
+  repeats: number
+}
+export const zapretLinuxCustomProfiles = (): Promise<LinuxZapretCustomProfile[]> =>
+  invoke('zapret:linuxCustomProfiles')
+export const zapretSaveLinuxCustom = (input:
+  { action: 'save'; title: string; base: string; repeats: number } | { action: 'remove'; file: string }
+): Promise<void> => invoke('zapret:saveLinuxCustom', input)
 export const zapretStopStrategyTest = (): Promise<boolean> => invoke('zapret:stopStrategyTest')
 export const zapretClearStrategyTestResults = (): Promise<void> => invoke('zapret:clearStrategyTestResults')
 export const zapretGetStrategyTestResults = (): Promise<StrategyTestReport | null> =>
@@ -617,6 +645,10 @@ export interface IncyNode {
   shortId?: string
   flow?: string
   fingerprint?: string
+  /** Фрагментация, заданная для этого узла в ссылке. */
+  fragment?: { packets?: string; length?: string; interval?: string }
+  /** Подсказки провайдера подписки (копия из подписки). */
+  providerHints?: IncyProviderHints
   rawUri?: string
   rawJson?: any
   latencyMs: number | null
@@ -656,6 +688,23 @@ export interface IncySubscription {
   hwidRequired?: boolean
   /** Лимит устройств исчерпан. */
   hwidLimitReached?: boolean
+  /** Подсказки провайдера: фрагментация, шумы, защищённый DNS. */
+  providerHints?: IncyProviderHints
+  /** Готовая строка «фрагментация tlshello 100-200 …» для карточки. */
+  hintsText?: string
+  announceUrl?: string
+  description?: string
+  /** Порядок сортировки, предложенный провайдером. */
+  sortOrder?: 'none' | 'ping' | 'name'
+  /** Прежний адрес, если провайдер перенёс подписку. */
+  movedFrom?: string
+}
+
+/** Подсказки провайдера подписки (HTTP-заголовки fragmentation-*, noises-*, server-address-resolve-*). */
+export interface IncyProviderHints {
+  fragment?: { enabled: boolean; packets?: string; length?: string; interval?: string }
+  noises?: { enabled: boolean; type?: 'rand' | 'str' | 'hex'; packet?: string; delay?: string }
+  resolve?: { enabled: boolean; dohUrl?: string; dohIp?: string }
 }
 
 /** One calendar day of traffic. Mirrors IncyDayStat in the main process. */
@@ -709,6 +758,7 @@ export interface IncyRoutingProfile {
 }
 
 export interface IncySettings {
+  chainEntryNodeId?: string
   // Routing
   routingMode: 'bypass-ru' | 'global' | 'direct'
   /** Master switch for the curated geo databases. */
@@ -802,15 +852,26 @@ export interface IncySettings {
   tunStack?: 'mixed' | 'system' | 'gvisor'
   /** MTU адаптера TUN (0 — авто). */
   tunMtu?: number
+  /** Подробный лог ядра (уровень info). */
+  verboseCoreLog?: boolean
+  /** Не применять подсказки провайдера подписки. */
+  ignoreProviderSettings?: boolean
+  /** Искать адрес сервера через защищённый DNS. */
+  secureServerLookup?: boolean
+  /** Подсети, исключённые из туннеля TUN (CIDR, до 64). */
+  excludedRoutes?: string[]
   disconnectOnSleep: boolean
   memoryMonitor: boolean
 }
 
 export interface IncyStatus {
+  previousNodeId?: string
   state: 'stopped' | 'running' | 'connecting' | 'error'
   activeNodeId: string | null
   selectedNodeId: string | null
   connectionMode: 'tun' | 'system_proxy' | 'only_proxy'
+  systemProxyAvailable?: boolean
+  tunAvailable?: boolean
   routingMode: 'bypass-ru' | 'global' | 'direct'
   connectedAt?: number
   lastError?: string
@@ -865,6 +926,7 @@ export interface NetSpeedResult {
   error?: string
 }
 /** Тест скорости интернета; ход — событием `speed:progress`. */
+export const speedStop = (): Promise<boolean> => invoke('speed:stop')
 export const speedRun = (service: SpeedService, economy: boolean): Promise<NetSpeedResult> => invoke('speed:run', service, economy)
 /** Тот же замер, но через выбранный сервер INCY (временное ядро, VPN не рвётся). */
 export const speedRunNode = (nodeId: string, service: SpeedService, economy: boolean): Promise<NetSpeedResult> =>
@@ -929,6 +991,17 @@ export const incyParseUri = (uri: string): Promise<IncyNode | null> => invoke('i
 export const incyGetStatus = (): Promise<IncyStatus> => invoke('incy:getStatus')
 export const incyConnect = (id?: string): Promise<IncyStatus> => invoke('incy:connect', id)
 export const incyDisconnect = (): Promise<IncyStatus> => invoke('incy:disconnect')
+/** Снять блокировку Kill Switch, если интернет остался закрытым после сбоя. */
+export const incyResetKillSwitch = (): Promise<{ released: boolean; message: string }> =>
+  invoke('incy:resetKillSwitch')
+/** Результат проверки списка исключённых маршрутов (CIDR). */
+export interface IncyRoutesCheck {
+  valid: string[]
+  invalid: string[]
+  overflow: number
+}
+export const incyCheckExcludedRoutes = (list: string[] | string): Promise<IncyRoutesCheck> =>
+  invoke('incy:checkExcludedRoutes', list)
 export const incySelectNode = (id: string): Promise<IncyStatus> => invoke('incy:selectNode', id)
 
 // ---- macOS: служба LAZEYKA (root-демон) для режима TUN ---------------------------
@@ -1312,12 +1385,16 @@ export interface SiteCheckResult {
   url: string
   host: string
   pageLoadMs: number | null
+  documentMs?: number | null
+  pageStatusCode?: number | null
   pageTimedOut: boolean
   pageError?: string
   pageHosts: SitePageHost[]
   probes: SiteHostProbe[]
   zapretRunning: boolean
   vpnNode?: string
+  vpnRoute?: 'chain' | 'single'
+  probeNote?: string
   viaTunnel: boolean
   verdict: string[]
 }

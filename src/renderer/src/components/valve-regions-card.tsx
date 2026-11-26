@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Globe2, Loader2, Settings2, ShieldPlus } from 'lucide-react'
+import { SteamBrandIcon } from '@renderer/components/service-icons'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
+import { EmptyState, LzPanel, LzSectionHead } from '@renderer/components/lz'
 import { cn } from '@renderer/lib/utils'
 import {
   optimizerValveRegions,
@@ -94,9 +95,9 @@ const ValveRegionsCard: React.FC = () => {
 
   useEffect(() => {
     const listener = (_e: unknown, p: { done: number; total: number; stage: string }): void => setStage(p)
-    window.electron.ipcRenderer.on('optimizer:valveProgress', listener)
+    const offIpc = window.electron.ipcRenderer.on('optimizer:valveProgress', listener)
     return () => {
-      window.electron.ipcRenderer.removeListener('optimizer:valveProgress', listener)
+      offIpc()
     }
   }, [])
 
@@ -126,30 +127,29 @@ const ValveRegionsCard: React.FC = () => {
   const rows = report ? (showAll ? report.regions : report.regions.slice(0, 10)) : []
 
   return (
-    <Card className="cyber-card">
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between gap-3">
+    <LzPanel data-tour="valve-regions" className="space-y-3 p-4">
+      <LzSectionHead
+        title={
           <span className="flex items-center gap-2">
-            <Globe2 className="h-4 w-4 text-primary" />
+            <SteamBrandIcon className="h-4 w-4" />
             Регионы Valve (CS2, Dota 2)
           </span>
-          <Button size="sm" className="h-8 gap-1.5 text-xs" disabled={running} onClick={() => void run()}>
-            {running && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            {running ? (stage ? `${stage.stage} ${stage.total > 1 ? `${stage.done}/${stage.total}` : ''}` : 'Замер…') : report ? 'Ещё раз' : 'Замерить регионы'}
-          </Button>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/40 px-3 py-2">
-          <p className="text-xs text-muted-foreground">
-            Одна кнопка, вводить ничего не нужно: в Zapret попадает вся сеть Valve и ретрансляторы
-            CS2 и Dota 2 из списков самого Steam. Поле «connect IP» выше нужно только для Faceit.
-          </p>
-          <Button size="sm" variant="outline" className="h-7 shrink-0 gap-1.5 text-xs" disabled={adding} onClick={() => void addToZapret()}>
-            {adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldPlus className="h-3.5 w-3.5" />}
-            Добавить в Zapret
-          </Button>
-        </div>
+        }
+        hint="Обычный матчмейкинг Valve выбирает сервер по пингу до этих точек. «Напрямую» — пинг с этого ПК мимо VPN. «Через VPN» — настоящий замер через каждый узел до серверов Steam в том же датацентре; «~» — оценка для точек партнёров Valve, где своих серверов Steam нет."
+        sub="«Добавить в Zapret» кладёт всю сеть Valve и ретрансляторы CS2 и Dota 2 из списков Steam, вводить ничего не нужно"
+        right={
+          <>
+            <Button size="sm" variant="outline" className="h-8 shrink-0 gap-1.5 rounded-lg text-xs" disabled={adding} onClick={() => void addToZapret()}>
+              {adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldPlus className="h-3.5 w-3.5" />}
+              Добавить в Zapret
+            </Button>
+            <Button size="sm" className="h-8 gap-1.5 rounded-lg text-xs" disabled={running} onClick={() => void run()}>
+              {running && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {running ? (stage ? `${stage.stage} ${stage.total > 1 ? `${stage.done}/${stage.total}` : ''}` : 'Замер…') : report ? 'Ещё раз' : 'Замерить регионы'}
+            </Button>
+          </>
+        }
+      />
 
         {filters && (gameOk && ipsetOk ? (
           <p className="flex items-center gap-1.5 text-xs text-st-ok-text">
@@ -186,15 +186,18 @@ const ValveRegionsCard: React.FC = () => {
           </div>
         ))}
 
-        <p className="text-xs text-muted-foreground">
-          Обычный матчмейкинг Valve выбирает сервер по пингу до этих точек. «Напрямую» — пинг с этого ПК мимо
-          VPN. «Через VPN» — настоящий замер через каждый узел до серверов Steam в том же датацентре; «~» —
-          оценка для точек партнёров Valve, где своих серверов Steam нет.
-        </p>
+        {!report && (
+          <EmptyState
+            compact
+            icon={<Globe2 />}
+            title={running ? 'Замеряю регионы…' : 'Пинг до датацентров Valve'}
+            text="Напрямую и через каждый узел VPN. Покажем, где пинг ниже и какой узел для этого подключить."
+          />
+        )}
 
         {report && (
-          <div className="overflow-hidden rounded-xl border border-border/60">
-            <div className="grid grid-cols-[1fr_90px_1.4fr] gap-2 bg-muted/40 px-3 py-2 text-[11px] font-semibold text-muted-foreground">
+          <div className="overflow-hidden rounded-xl border border-foreground/[0.08]">
+            <div className="grid grid-cols-[1fr_90px_1.4fr] gap-2 bg-foreground/[0.04] px-3 py-2 text-[11.5px] font-semibold text-muted-foreground">
               <span>Регион</span>
               <span>Напрямую</span>
               <span>Через VPN (лучший узел)</span>
@@ -202,9 +205,9 @@ const ValveRegionsCard: React.FC = () => {
             {rows.map((r) => {
               const better = r.best && (r.directMs == null || r.best.ms < r.directMs)
               return (
-                <div key={r.code} className="grid grid-cols-[1fr_90px_1.4fr] items-center gap-2 border-t border-border/40 px-3 py-1.5 text-xs">
+                <div key={r.code} className="grid grid-cols-[1fr_90px_1.4fr] items-center gap-2 border-t border-foreground/[0.06] px-3 py-1.5 text-[12.5px]">
                   <span className="truncate font-medium">{r.name}</span>
-                  <span className={cn('font-mono font-semibold', tone(r.directMs))}>
+                  <span className={cn('font-semibold tabular-nums', tone(r.directMs))}>
                     {r.directMs == null ? '—' : `${r.directMs} мс`}
                   </span>
                   <span className="flex min-w-0 items-center justify-between gap-2">
@@ -212,13 +215,13 @@ const ValveRegionsCard: React.FC = () => {
                       <>
                         <span className="min-w-0 truncate">
                           <span
-                            className={cn('font-mono font-semibold', tone(r.best.ms))}
+                            className={cn('font-semibold tabular-nums', tone(r.best.ms))}
                             title={r.best.measured ? 'Замер через узел' : 'Оценка: замер до ближайшего датацентра Valve плюс расстояние'}
                           >
                             {r.best.measured ? '' : '~'}
                             {r.best.ms} мс
                           </span>
-                          <span className="text-muted-foreground"> · {cleanName(r.best.nodeName)}</span>
+                          <span data-sensitive="node" className="text-muted-foreground"> · {cleanName(r.best.nodeName)}</span>
                         </span>
                         {better && (
                           <Button
@@ -256,8 +259,7 @@ const ValveRegionsCard: React.FC = () => {
             замеренный датацентр.
           </p>
         )}
-      </CardContent>
-    </Card>
+    </LzPanel>
   )
 }
 

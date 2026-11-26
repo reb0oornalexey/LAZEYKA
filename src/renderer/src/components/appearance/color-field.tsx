@@ -27,14 +27,15 @@ interface Props {
 }
 
 /**
- * Одна строка цвета: образец (открывает выбор) + подпись + маленький HEX.
- * Источник правды — только хранилище: локального состояния цвета здесь нет.
+ * Одна строка цвета по сетке: [образец][подпись ……][HEX][!][×].
+ * Образец открывает выбор цвета. Значок «плохо читается» — отдельная кнопка рядом
+ * (не внутри кнопки строки). Источник правды — только хранилище: локального состояния цвета нет.
  */
 export const ColorField = memo(function ColorField({ tokenKey: key, label, hint, advanced, autoOpen }: Props) {
   const override = useAppearanceStore((s) => s.tokens[key])
   useAppearanceStore((s) => s.tick) // после применения темы перечитываем вычисленное значение
   const recent = useAppearanceStore(useShallow((s) => s.recentColors))
-  const issue = useIssue(key)
+  const issue = useIssue(key, advanced)
   const hex = tokenHex(key)
   const value = override ?? hex
   const changed = override !== undefined
@@ -45,8 +46,8 @@ export const ColorField = memo(function ColorField({ tokenKey: key, label, hint,
   }
 
   return (
-    <Ctl id={key} className="group/row relative">
-      <div className="flex items-center gap-1">
+    <Ctl id={key} className="group/row relative max-w-[20rem]">
+      <div className="grid grid-cols-[minmax(0,1fr)_1rem_1.25rem] items-center gap-1">
         <ColorPicker
           value={value}
           onLive={(v) => liveSetToken(key, v)}
@@ -60,41 +61,37 @@ export const ColorField = memo(function ColorField({ tokenKey: key, label, hint,
           <button
             type="button"
             title={hint ? `${label}: ${hint}` : label}
-            className="flex min-w-0 max-w-[calc(100%-1.5rem)] cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1 text-left hover:bg-accent/60"
+            className="grid min-w-0 cursor-pointer grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2.5 rounded-lg px-1.5 py-1 text-left hover:bg-accent/60"
           >
-            <span className="relative shrink-0">
-              <Swatch color={swatchBg} className="h-5 w-8 rounded-md shadow-sm" />
-              {issue && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        autoFixToken(key, issue.pair)
-                      }}
-                      onKeyDown={(e) => e.key === 'Enter' && autoFixToken(key, issue.pair)}
-                      className="absolute -top-1.5 -right-1.5 flex size-3.5 items-center justify-center rounded-full bg-warning text-warning-foreground"
-                    >
-                      <AlertTriangle className="size-2.5" />
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" className="max-w-56 text-xs">
-                    Плохо читается: {issue.pair.label} — {issue.ratio.toFixed(1)}:1 (нужно {issue.pair.min}:1). Нажмите, чтобы подобрать цвет этой строки.
-                  </TooltipContent>
-                </Tooltip>
-              )}
-            </span>
+            <Swatch color={swatchBg} className="h-5 w-8 rounded-[5px] shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--foreground)_14%,transparent)]" />
             <span className="min-w-0 truncate text-xs">{label}</span>
-            <span className={cn('shrink-0 font-mono text-[10px]', advanced && !changed ? 'text-muted-foreground italic' : 'text-muted-foreground')}>
+            <span className={cn('w-[4.25rem] text-right font-mono text-[10px] text-muted-foreground', advanced && !changed && 'italic')}>
               {advanced && !changed ? 'авто' : shortHex(value)}
             </span>
           </button>
         </ColorPicker>
+        {issue ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={`Плохо читается: ${issue.pair.label}. Подобрать цвет`}
+                onClick={() => autoFixToken(key, issue.pair)}
+                className="flex size-4 cursor-pointer items-center justify-center rounded-full bg-warning text-warning-foreground hover:brightness-110"
+              >
+                <AlertTriangle className="size-2.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-56 text-xs">
+              Плохо читается: {issue.pair.label} — {issue.ratio.toFixed(1)}:1 (нужно {issue.pair.min}:1). Нажмите, чтобы подобрать цвет этой строки.
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          <span />
+        )}
         <button
           type="button"
-          title="Вернуть авто / значение темы"
+          title={advanced ? 'Вернуть «авто»' : 'Вернуть цвет темы'}
           aria-label="Сбросить"
           disabled={!changed}
           onClick={() => {

@@ -1,0 +1,4 @@
+body { margin: 0; padding: 12px; background: #2d2d2d; color: #d8d8d8; font: 13px/1.4 "Segoe UI", system-ui, sans-serif; }
+label { display: block; margin-bottom: 6px; color: #9a9a9a; }
+select, input[type="text"] { width: 100%; box-sizing: border-box; padding: 6px 8px; background: #1e1e1e; color: #e8e8e8; border: 1px solid #444; border-radius: 4px; font: inherit; }
+.hint { margin-top: 10px; color: #8a8a8a; font-size: 12px; }

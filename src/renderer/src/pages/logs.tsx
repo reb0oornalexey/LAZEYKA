@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso'
 import { useLogsStore, formatLogTime } from '@renderer/store/logs-store'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { MapPin, Trash2, ClipboardCopy, Download } from 'lucide-react'
+import { Activity, ArrowDownToLine, ClipboardCopy, Cpu, Download, Gamepad2, Globe, Loader2, Lock, ScrollText, Search, Send, Trash2, X } from 'lucide-react'
+import { EmptyState, LiveNumber, LzHero, LzPanel, Segmented, Sparkline, StatChip, type LzTone } from '@renderer/components/lz'
 import { cn } from '@renderer/lib/utils'
 import BasePage from '@renderer/components/base/base-page'
 import { toast } from 'sonner'
@@ -24,20 +25,40 @@ function redact(text: string): string {
 }
 
 const sourceColor: Record<CoreSource, string> = {
-  tgws: 'text-st-info-text font-semibold',
-  zapret: 'text-indigo-400 font-semibold',
+  tgws: 'text-st-info-text',
+  zapret: 'text-primary',
   app: 'text-muted-foreground',
-  incy: 'text-st-ok-text font-semibold',
-  exitlag: 'text-st-warn-text font-semibold'
+  incy: 'text-st-ok-text',
+  exitlag: 'text-st-warn-text'
 }
 
-const sourceLabels: Record<'all' | CoreSource, string> = {
-  all: 'все каналы',
-  tgws: 'telegram',
-  zapret: 'zapret',
-  app: 'система',
-  incy: 'incy',
-  exitlag: 'exitlag'
+const SOURCES: { id: CoreSource; label: string; icon: React.ReactNode }[] = [
+  { id: 'zapret', label: 'Zapret', icon: <Lock /> },
+  { id: 'tgws', label: 'Telegram', icon: <Send /> },
+  { id: 'incy', label: 'INCY', icon: <Globe /> },
+  { id: 'exitlag', label: 'ExitLag', icon: <Gamepad2 /> },
+  { id: 'app', label: 'Система', icon: <Cpu /> }
+]
+const SOURCE_NAME: Record<CoreSource, string> = { zapret: 'zapret', tgws: 'telegram', incy: 'incy', exitlag: 'exitlag', app: 'система' }
+
+type Level = 'all' | 'problems' | 'error'
+const LEVELS: { id: Level; label: string }[] = [
+  { id: 'all', label: 'Все' },
+  { id: 'problems', label: 'С проблемами' },
+  { id: 'error', label: 'Только ошибки' }
+]
+
+/** Сколько записей пришло за каждую из последних 30 минут (для мини-графика). */
+function perMinute(logs: ControllerLog[], now: number): { all: number[]; bad: number[] } {
+  const all = new Array(30).fill(0)
+  const bad = new Array(30).fill(0)
+  for (const l of logs) {
+    const k = 29 - Math.floor((now - l.time) / 60000)
+    if (k < 0 || k > 29) continue
+    all[k]++
+    if (l.type === 'error' || l.type === 'warn') bad[k]++
+  }
+  return { all, bad }
 }
 
 async function generateDiagnosticReport(): Promise<string> {
@@ -110,19 +131,46 @@ const Logs: React.FC = () => {
   const [logs, setLogs] = useState<ControllerLog[]>(() => useLogsStore.getState().logs)
   const [filter, setFilter] = useState('')
   const [sourceFilter, setSourceFilter] = useState<CoreSource | 'all'>('all')
+  const [level, setLevel] = useState<Level>('all')
   const [trace, setTrace] = useState(true)
   const traceRef = useRef(trace)
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const [generatingReport, setGeneratingReport] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
 
   const filteredLogs = useMemo(() => {
     const fl = filter.toLowerCase()
     return logs.filter((log) => {
       if (sourceFilter !== 'all' && log.source !== sourceFilter) return false
+      if (level === 'error' && log.type !== 'error') return false
+      if (level === 'problems' && log.type !== 'error' && log.type !== 'warn') return false
       if (!fl) return true
       return log.payload.toLowerCase().includes(fl) || log.type.toLowerCase().includes(fl)
     })
-  }, [logs, filter, sourceFilter])
+  }, [logs, filter, sourceFilter, level])
+
+  // Счётчики по каналам: всего и ошибок (по всему журналу, без учёта поиска).
+  const counts = useMemo(() => {
+    const c = {} as Record<CoreSource, { n: number; err: number; warn: number }>
+    for (const s of SOURCES) c[s.id] = { n: 0, err: 0, warn: 0 }
+    for (const l of logs) {
+      const x = c[l.source]
+      if (!x) continue
+      x.n++
+      if (l.type === 'error') x.err++
+      else if (l.type === 'warn') x.warn++
+    }
+    return c
+  }, [logs])
+  const errors = SOURCES.reduce((n, s) => n + counts[s.id].err, 0)
+  const lastError = useMemo(() => [...logs].reverse().find((l) => l.type === 'error'), [logs])
+
+  // Мини-график активности: пересчитывается с новыми записями и раз в минуту, пока страница открыта.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60000)
+    return () => clearInterval(t)
+  }, [])
+  const activity = useMemo(() => perMinute(logs, now), [logs, now])
 
   const toggleTrace = useCallback(() => {
     setTrace((prev) => {
@@ -182,122 +230,176 @@ const Logs: React.FC = () => {
     }
   }
 
+  const tone: LzTone = errors ? 'warn' : 'on'
+  const title = logs.length === 0 ? 'Журнал пуст' : errors ? `Ошибок в журнале: ${errors}` : 'Ошибок нет'
+  const text =
+    logs.length === 0
+      ? 'Здесь появятся сообщения Zapret, Telegram-прокси, INCY, ExitLag и самой программы. Хранятся последние 500 записей этого запуска.'
+      : errors && lastError
+        ? `Последняя — ${formatLogTime(lastError.time)}, ${SOURCE_NAME[lastError.source]}. Если что-то не работает, отправьте отчёт: в нём логи и состояние служб, ключи и ссылки скрыты.`
+        : 'Если что-то не работает, скопируйте отчёт для поддержки: в нём логи и состояние служб, ключи и ссылки скрыты.'
+
   return (
     <BasePage
-      title="Консоль логов"
+      title="Логи"
       contentClassName="flex flex-col"
       header={
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            title="Скопировать отчёт для поддержки"
-            aria-label="Скопировать отчёт для поддержки"
-            className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-st-ok-text dark:hover:text-st-ok-text hover:bg-st-ok/10 transition-colors"
-            onClick={() => { void handleGenerateReport() }}
-            disabled={generatingReport}
-          >
-            <ClipboardCopy className={cn('size-4', generatingReport && 'animate-spin')} />
-          </button>
-          <button
-            type="button"
-            title="Сохранить отчёт в файл"
-            aria-label="Сохранить отчёт в файл"
-            className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-st-info-text dark:hover:text-st-info-text hover:bg-st-info/10 transition-colors"
-            onClick={() => { void handleSaveReport() }}
-            disabled={generatingReport}
-          >
-            <Download className="size-4" />
-          </button>
-          <button
-            type="button"
-            title="Очистить логи"
-            aria-label="Очистить логи"
-            className="cursor-pointer p-1.5 rounded-xl text-muted-foreground hover:text-st-err-text dark:hover:text-st-err-text hover:bg-st-err/10 transition-colors"
-            onClick={() => {
-              clearLogs()
-              setLogs([])
-            }}
-          >
-            <Trash2 className="size-4" />
-          </button>
-        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="mr-1 h-8 rounded-lg text-xs"
+          title="Очистить журнал этого запуска"
+          onClick={() => {
+            clearLogs()
+            setLogs([])
+          }}
+        >
+          <Trash2 className="size-3.5" /> Очистить
+        </Button>
       }
     >
-      <div className="flex flex-col h-full px-4 pb-4">
-        <div className="py-2.5 flex items-center gap-2 flex-wrap">
-          <Input
-            className="h-8.5 text-xs font-mono bg-card/60 border-border/70 rounded-xl flex-1 min-w-[150px]"
-            value={filter}
-            placeholder="Поиск по тексту или уровню..."
-            onChange={(e) => setFilter(e.target.value)}
-          />
-          {(['all', 'tgws', 'zapret', 'incy', 'exitlag', 'app'] as const).map((s) => (
-            <Button
-              key={s}
-              size="sm"
-              variant={sourceFilter === s ? 'default' : 'outline'}
-              onClick={() => setSourceFilter(s)}
-              className={cn(
-                'h-8 text-xs font-mono rounded-xl cursor-pointer transition-all uppercase',
-                sourceFilter === s
-                  ? 'bg-primary text-primary-foreground font-bold'
-                  : 'border-border/70 hover:bg-foreground/[0.04]'
-              )}
-            >
-              {sourceLabels[s]}
+      <div className="mx-auto flex h-full w-full max-w-[1080px] flex-col lz-page-gap lz-page-x pb-5">
+        <LzHero
+          data-tour="logs-hero"
+          tone={tone}
+          className="shrink-0"
+          visual={
+            <div className="flex size-[88px] shrink-0 flex-col items-center justify-center rounded-full border border-foreground/[0.08] bg-foreground/[0.03]">
+              <ScrollText className={cn('mb-0.5 size-4', errors ? 'text-st-warn-text' : 'text-primary')} />
+              <LiveNumber value={logs.length} className="text-[24px] font-extrabold text-[color:var(--text-title)]" />
+              <span className="text-[10px] text-muted-foreground">записей</span>
+            </div>
+          }
+          title={title}
+          text={text}
+          actions={
+            <>
+              <Button size="lg" className="h-11 rounded-xl px-5 text-[14px]" disabled={generatingReport} onClick={() => void handleGenerateReport()} title="Логи и состояние служб в буфер обмена, для чата поддержки">
+                {generatingReport ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCopy className="size-4" />}
+                Скопировать отчёт
+              </Button>
+              <Button variant="outline" className="h-10 rounded-xl" disabled={generatingReport} onClick={() => void handleSaveReport()}>
+                <Download className="size-4" /> Сохранить в файл
+              </Button>
+            </>
+          }
+          footer={
+            <div className="flex flex-wrap gap-2">
+              <StatChip
+                icon={<Activity />}
+                tone={errors ? 'warn' : logs.length ? 'on' : 'off'}
+                label="За 30 минут"
+                value={`${activity.all.reduce((a, b) => a + b, 0)} записей`}
+                title={`За последние 30 минут: ${activity.all.reduce((a, b) => a + b, 0)} записей, из них предупреждений и ошибок ${activity.bad.reduce((a, b) => a + b, 0)}`}
+                aside={
+                  <div className="h-8 w-[120px]">
+                    <Sparkline a={activity.all} b={activity.bad} colorB="var(--st-warn)" floor={4} className="h-full w-full" />
+                  </div>
+                }
+                className="min-w-[320px] flex-[2]"
+              />
+              {SOURCES.map((s) => {
+                const c = counts[s.id]
+                const on = sourceFilter === s.id
+                return (
+                  <StatChip
+                    key={s.id}
+                    icon={s.icon}
+                    tone={c.err ? 'error' : c.warn ? 'warn' : c.n ? 'on' : 'off'}
+                    label={s.label}
+                    value={String(c.n)}
+                    aside={
+                      c.err ? (
+                        <span className="rounded-md bg-st-err/15 px-1.5 py-px text-[10.5px] font-bold text-st-err-text tabular-nums" title={`Ошибок: ${c.err}`}>
+                          {c.err}
+                        </span>
+                      ) : undefined
+                    }
+                    title={on ? 'Показать все каналы' : `Показать только ${s.label}`}
+                    onClick={() => setSourceFilter(on ? 'all' : s.id)}
+                    className={cn('min-w-[104px] flex-1', on && 'border-primary/50 bg-primary/10')}
+                  />
+                )
+              })}
+            </div>
+          }
+        />
+
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <div className="relative min-w-[200px] flex-1">
+            <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input className="h-9 rounded-xl pl-8 text-xs" value={filter} placeholder="Поиск по тексту или уровню" onChange={(e) => setFilter(e.target.value)} aria-label="Поиск по журналу" />
+          </div>
+          <Segmented items={LEVELS} value={level} onChange={setLevel} aria-label="Уровень" size="sm" className="w-[340px]" />
+          {sourceFilter !== 'all' && (
+            <Button size="sm" variant="ghost" className="h-9 rounded-xl text-xs" onClick={() => setSourceFilter('all')} title="Показать все каналы">
+              <X className="size-3.5" /> {SOURCES.find((s) => s.id === sourceFilter)?.label}
             </Button>
-          ))}
+          )}
           <Button
-            size="icon-sm"
-            className={cn(
-              'h-8 w-8 rounded-xl cursor-pointer transition-all',
-              trace
-                ? 'bg-primary text-primary-foreground '
-                : 'border-border/70 hover:bg-foreground/[0.04]'
-            )}
+            size="sm"
             variant={trace ? 'default' : 'outline'}
-            title="Автоскролл за новыми событиями"
+            className="h-9 rounded-xl text-xs"
+            title="Прокручивать к новым записям"
+            aria-pressed={trace}
             onClick={toggleTrace}
           >
-            <MapPin className="size-3.5" />
+            <ArrowDownToLine className="size-3.5" /> {trace ? 'За новыми' : 'Пауза'}
           </Button>
         </div>
 
-        {/* Report banner */}
-        <div className="mb-2 flex items-center gap-2 bg-primary/5 border border-primary/20 rounded-xl px-3 py-2">
-          <ClipboardCopy className="size-4 text-primary shrink-0" />
-          <span className="text-xs text-foreground/80">
-            Нажмите <strong>📋</strong> в правом верхнем углу — отчёт со всеми логами и статусами будет скопирован в буфер обмена для поддержки.
-          </span>
-        </div>
-
-        <div className="flex-1 min-h-0 font-mono text-xs rounded-2xl border border-border/60 bg-black/40 p-2 overflow-hidden shadow-inner">
-          <Virtuoso
-            ref={virtuosoRef}
-            data={filteredLogs}
-            initialTopMostItemIndex={filteredLogs.length - 1}
-            followOutput={trace}
-            itemContent={(_i, log) => (
-              <div className="px-3 py-1 flex gap-2.5 items-baseline hover:bg-foreground/[0.04] rounded-lg transition-colors leading-relaxed">
-                <span className="text-muted-foreground/60 shrink-0 text-[11px]">{formatLogTime(log.time)}</span>
-                <span className={cn('shrink-0 text-[11px] uppercase tracking-wider', sourceColor[log.source])}>
-                  [{log.source}]
-                </span>
-                <span
+        <LzPanel data-sensitive="ip" className="min-h-[260px] flex-1 p-1.5 text-xs">
+          {filteredLogs.length === 0 ? (
+            <EmptyState
+              icon={<ScrollText />}
+              title={logs.length ? 'Под фильтр ничего не попало' : 'Записей пока нет'}
+              text={logs.length ? 'Сбросьте поиск, уровень или канал.' : 'Включите Zapret, VPN или Telegram-прокси — их сообщения появятся здесь.'}
+              action={
+                logs.length ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setFilter('')
+                      setLevel('all')
+                      setSourceFilter('all')
+                    }}
+                  >
+                    Сбросить фильтры
+                  </Button>
+                ) : undefined
+              }
+            />
+          ) : (
+            <Virtuoso
+              ref={virtuosoRef}
+              data={filteredLogs}
+              className="custom-scrollbar"
+              initialTopMostItemIndex={filteredLogs.length - 1}
+              followOutput={trace}
+              itemContent={(_i, log) => (
+                <div
                   className={cn(
-                    'shrink-0 text-[11px] font-bold uppercase',
-                    log.type === 'error' && 'text-st-err-text',
-                    log.type === 'warn' && 'text-st-warn-text',
-                    log.type === 'info' && 'text-st-ok-text/80'
+                    'flex items-baseline gap-2.5 rounded-lg px-3 py-1 font-mono leading-relaxed transition-colors hover:bg-foreground/[0.04]',
+                    log.type === 'error' && 'bg-st-err/[0.06]'
                   )}
                 >
-                  {log.type}
-                </span>
-                <span className="break-all whitespace-pre-wrap text-foreground/90">{log.payload}</span>
-              </div>
-            )}
-          />
-        </div>
+                  <span className="shrink-0 text-[11px] text-muted-foreground/70 tabular-nums">{formatLogTime(log.time)}</span>
+                  <span className={cn('w-[68px] shrink-0 truncate text-[11px] font-semibold', sourceColor[log.source])}>{SOURCE_NAME[log.source]}</span>
+                  <span
+                    className={cn(
+                      'w-[44px] shrink-0 text-[11px] font-bold',
+                      log.type === 'error' ? 'text-st-err-text' : log.type === 'warn' ? 'text-st-warn-text' : 'text-muted-foreground/70'
+                    )}
+                  >
+                    {log.type}
+                  </span>
+                  <span className="break-all whitespace-pre-wrap text-foreground/90">{log.payload}</span>
+                </div>
+              )}
+            />
+          )}
+        </LzPanel>
       </div>
     </BasePage>
   )

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <action id="com.lazeyka.dns.control">
+    <description>Change the system DNS resolver</description>
+    <description xml:lang="ru">Изменение системного DNS</description>
+    <message>Administrator authentication is required to change system DNS.</message>
+    <message xml:lang="ru">Подтвердите изменение системного DNS.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/lazeyka/dns-control</annotate>
+  </action>
+</policyconfig>

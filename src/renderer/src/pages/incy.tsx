@@ -1,6 +1,42 @@
 import { appLabel } from '@renderer/utils/per-app'
-import React, { useEffect, useState, useMemo } from 'react'
+import { Hint } from '@renderer/components/prematch/hint'
+import ConnectionsPanel from '@renderer/components/incy/connections-panel'
+import { OpsIconButton, OpsSplitButton, OpsStatusLine, useIncyOps, type ScopeOption } from '@renderer/components/incy/ping-ops-control'
+import type { OpScope, OpSnapshot } from '@renderer/utils/incy-ops-api'
+import { chainExitCheck, chainGet, chainProbe, type ChainInfo } from '@renderer/utils/incy-extra-api'
+import NodeChainCard from '@renderer/components/incy/node-chain-card'
+import { SubIcon } from '@renderer/components/incy/sub-icon'
+import RouteMemoryCard from '@renderer/components/incy/route-memory-card'
+import { SubscriptionProviderInfo, NodeProviderFragmentNote } from '@renderer/components/incy/provider-info'
+import { WindowedRows } from '@renderer/components/incy/windowed-rows'
+import { IncyConsole, BusyLine, type ConnMode, type RouteMode } from '@renderer/components/incy/incy-console'
+import { SubscriptionTile, SubAnnouncements, SubLinks } from '@renderer/components/incy/subscription-tile'
+import { AutoSelectTile } from '@renderer/components/incy/auto-select-tile'
+import { SpeedTile } from '@renderer/components/incy/speed-tile'
+import { VelvetOffer } from '@renderer/components/incy/velvet-offer'
+import { SignalBars, ProtocolTag, subUsage, daysText, gb } from '@renderer/components/incy/signal'
+import { LzPanel, LzSectionHead, Segmented, StatChip, EmptyState, type LzTone, type SegmentedItem } from '@renderer/components/lz'
+import TrafficChip from '@renderer/components/home/traffic-chip'
+import { useLiveTraffic } from '@renderer/components/home/use-live-traffic'
+import {
+  IgnoreProviderSettingsRow,
+  SecureServerLookupRow,
+  VerboseCoreLogRow,
+  MtuPicker,
+  ExcludedRoutesEditor,
+  KillSwitchResetRow,
+  DraftField,
+  validPackets,
+  validRange,
+  MixedPortField,
+  ExtraBypassEditor,
+  SniffingRow,
+  QuicBlockRow,
+  ApplyNote
+} from '@renderer/components/incy/tunnel-extras'
+import React, { useEffect, useState, useMemo, useRef, memo } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTourTab } from '@renderer/lib/tour-focus'
 import { toast } from 'sonner'
 import {
   Power,
@@ -9,7 +45,6 @@ import {
   Search,
   Server,
   Settings as SettingsIcon,
-  Star,
   Activity,
   Lock,
   Wifi,
@@ -25,7 +60,6 @@ import {
   ChevronDown,
   CheckCircle2,
   HelpCircle,
-  Send,
   Split,
   Globe2,
   ShieldOff,
@@ -35,18 +69,14 @@ import {
   Monitor,
   FolderOpen,
   X,
-  MapPinned,
   Globe,
   ArrowRight,
-  ShieldAlert
+  ShieldAlert,
+  Zap
 } from 'lucide-react'
 import BasePage from '@renderer/components/base/base-page'
-import AutoSelectCard from '@renderer/components/auto-select-card'
 import SplitTunnelingCard from '@renderer/components/split-tunneling-card'
-import VelvetRecommendation from '@renderer/components/velvet-recommendation'
-import NetSpeedDialog from '@renderer/components/net-speed-dialog'
 import { WarpCard } from '@renderer/components/warp-card'
-import { Gauge } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -55,17 +85,14 @@ import { Switch } from '@renderer/components/ui/switch'
 import { Label } from '@renderer/components/ui/label'
 import {
   incyGetNodes,
-  incySaveLatencies,
   incyRemoveNode,
   incyClearManualNodes,
   incyGetSubscription,
   incyGetSettings,
   incyPatchSettings,
   incyImportInput,
-  incyRefreshSubscription,
   incyGetSubscriptions,
   incyGetHwidHeaders,
-  incyRefreshAllSubscriptions,
   incyRemoveSubscription,
   incyGetStatus,
   incyConnect,
@@ -73,7 +100,6 @@ import {
   incySelectNode,
   incySetConnectionMode,
   incySetRoutingMode,
-  incyPingNode,
   incyGetStats,
   incyResetStats,
   incyExportBackup,
@@ -140,32 +166,13 @@ function formatLatency(node: { latencyMs: number | null; latencyAt?: number }): 
   measured: boolean
   unreachable: boolean
 } {
-  if (node.latencyMs !== null) {
+  if (typeof node.latencyMs === 'number' && Number.isFinite(node.latencyMs)) {
     return { text: `${node.latencyMs} мс`, measured: true, unreachable: false }
   }
   if (node.latencyAt) {
     return { text: 'нет ответа', measured: true, unreachable: true }
   }
   return { text: '—', measured: false, unreachable: false }
-}
-
-/**
- * Colour for the latency dot. An unmeasured node gets a neutral dot: a red one
- * claims the server is down, which we have no basis for before the first ping.
- */
-function latencyDotClass(
-  node: { latencyMs: number | null; latencyAt?: number },
-  strong = false
-): string {
-  const good = strong ? 'bg-st-ok' : 'bg-st-ok'
-  const mid = strong ? 'bg-st-warn' : 'bg-st-warn'
-  const bad = strong ? 'bg-st-err' : 'bg-st-err'
-  if (node.latencyMs === null) {
-    return node.latencyAt ? bad : 'bg-muted-foreground/40'
-  }
-  if (node.latencyMs < 100) return good
-  if (node.latencyMs < 250) return mid
-  return bad
 }
 
 /** Quality bucket, shared by every latency renderer below. */
@@ -189,33 +196,27 @@ const LatencyBadge: React.FC<{
   node: { latencyMs: number | null; latencyAt?: number }
   display?: 'numbers' | 'bar' | 'both' | 'dots'
   strong?: boolean
-}> = ({ node, display = 'numbers', strong = false }) => {
+}> = ({ node, display = 'numbers' }) => {
   const info = formatLatency(node)
   const tier = info.unreachable ? 'bad' : info.measured ? latencyTier(node.latencyMs) : 'none'
 
   const textClass =
     tier === 'good'
-      ? strong
-        ? 'text-st-ok-text bg-st-ok/10'
-        : 'text-st-ok-text bg-st-ok/10'
+      ? 'text-st-ok-text'
       : tier === 'mid'
-      ? strong
-        ? 'text-st-warn-text bg-st-warn/10'
-        : 'text-st-warn-text bg-st-warn/10'
-      : tier === 'bad'
-      ? strong
-        ? 'text-st-err-text bg-st-err/10'
-        : 'text-st-err-text bg-st-err/10'
-      : 'text-muted-foreground bg-muted/40'
+        ? 'text-st-warn-text'
+        : tier === 'bad'
+          ? 'text-st-err-text'
+          : 'text-muted-foreground'
 
   const fillClass =
     tier === 'good'
       ? 'bg-st-ok'
       : tier === 'mid'
-      ? 'bg-st-warn'
-      : tier === 'bad'
-      ? 'bg-st-err'
-      : 'bg-muted-foreground/30'
+        ? 'bg-st-warn'
+        : tier === 'bad'
+          ? 'bg-st-err'
+          : 'bg-muted-foreground/30'
 
   // 0 ms → full bar, 400 ms and worse → empty. Linear in between.
   const pct =
@@ -223,18 +224,15 @@ const LatencyBadge: React.FC<{
   // Four dots: one lit per 100 ms band still under the measured value.
   const litDots = node.latencyMs === null ? 0 : Math.max(1, 4 - Math.floor(Math.min(node.latencyMs, 399) / 100))
 
+  const label = (
+    <span className={cn('min-w-[3.6rem] text-right text-[12px] font-semibold tabular-nums', textClass)}>{info.text}</span>
+  )
+
   if (display === 'dots') {
     return (
-      <span
-        title={info.text}
-        className="flex items-center gap-[3px] px-1.5 py-0.5"
-        aria-label={`Задержка: ${info.text}`}
-      >
+      <span title={info.text} className="flex items-center gap-[3px] px-1.5 py-1" aria-label={`Задержка: ${info.text}`}>
         {[0, 1, 2, 3].map((i) => (
-          <span
-            key={i}
-            className={cn('h-1.5 w-1.5 rounded-full', i < litDots ? fillClass : 'bg-muted-foreground/20')}
-          />
+          <span key={i} className={cn('size-1.5 rounded-full', i < litDots ? fillClass : 'bg-foreground/12')} />
         ))}
       </span>
     )
@@ -242,31 +240,20 @@ const LatencyBadge: React.FC<{
 
   if (display === 'bar' || display === 'both') {
     return (
-      <span
-        title={info.text}
-        className="flex items-center gap-1.5 px-1 py-0.5"
-        aria-label={`Задержка: ${info.text}`}
-      >
-        <span className="h-1.5 w-12 rounded-full bg-muted-foreground/20 overflow-hidden">
+      <span title={info.text} className="flex items-center gap-2 px-1 py-1" aria-label={`Задержка: ${info.text}`}>
+        <span className="h-1.5 w-12 overflow-hidden rounded-full bg-foreground/10">
           <span className={cn('block h-full rounded-full', fillClass)} style={{ width: `${pct}%` }} />
         </span>
-        {display === 'both' && (
-          <span className={cn('text-[10px] font-mono px-1 py-px rounded', textClass)}>{info.text}</span>
-        )}
+        {display === 'both' && label}
       </span>
     )
   }
 
+  // «Цифры»: число и деления силы сигнала рядом.
   return (
-    <span
-      className={cn(
-        'text-[10px] font-mono px-1.5 py-0.5 rounded flex items-center gap-1',
-        textClass,
-        info.unreachable && 'border border-st-err/20'
-      )}
-    >
-      <span className={cn('h-1.5 w-1.5 rounded-full', latencyDotClass(node, strong))} />
-      {info.text}
+    <span className="flex items-center gap-2 px-1 py-1" aria-label={`Задержка: ${info.text}`}>
+      <SignalBars ms={node.latencyMs} unreachable={info.unreachable} height={13} />
+      {label}
     </span>
   )
 }
@@ -1216,6 +1203,190 @@ const RoutingProfiles: React.FC<{
 }
 
 
+const nodeKey = (n: IncyNode): string => n.id
+
+/** Обработчики строки сервера; объект один на всё время жизни страницы. */
+interface ServerRowActions {
+  select: (id: string) => void
+  connect: (id: string) => void
+  disconnect: () => void
+  remove: (node: IncyNode) => void
+  /** Проверить пинг одного сервера (через общий менеджер). */
+  ping: (id: string) => void
+}
+
+/**
+ * Строка сервера на вкладке «Сервера».
+ *
+ * Отдельный memo-компонент: во время замера пинга и подключения страница
+ * перерисовывается часто, а строк в подписке бывает несколько сотен. Строка
+ * перерисовывается, только когда меняется её узел или её флаги.
+ */
+const ServerRow = memo(function ServerRow({
+  node,
+  isNodeActive,
+  isNodeSelected,
+  isPinging,
+  pingDisplay,
+  settings,
+  isManual,
+  actions
+}: {
+  node: IncyNode
+  isNodeActive: boolean
+  isNodeSelected: boolean
+  isPinging: boolean
+  pingDisplay: IncySettings['pingDisplay'] | undefined
+  settings: IncySettings | null
+  isManual: boolean
+  actions: ServerRowActions
+}): React.ReactElement {
+  const flag = getFlagEmoji(node.name)
+  const cleanName = cleanServerName(node.name)
+
+  return (
+    <div
+      className={cn(
+        'group relative flex items-center gap-2 overflow-hidden rounded-xl border py-1.5 pr-1.5 pl-2 transition-[background-color,border-color] duration-200',
+        isNodeActive
+          ? 'border-primary/50 bg-primary/[0.11]'
+          : isNodeSelected
+            ? 'border-primary/30 bg-primary/[0.05]'
+            : 'border-foreground/[0.07] bg-foreground/[0.025] hover:border-foreground/[0.14] hover:bg-foreground/[0.05]'
+      )}
+    >
+      {/* Полоса сигнала слева: горит у подключённого, тлеет у выбранного. */}
+      <span
+        aria-hidden
+        className={cn(
+          'absolute inset-y-2 left-0 w-[3px] rounded-r-full transition-colors',
+          isNodeActive ? 'bg-primary' : isNodeSelected ? 'bg-primary/55' : 'bg-transparent'
+        )}
+        style={isNodeActive ? { boxShadow: '0 0 10px var(--primary)' } : undefined}
+      />
+      <button
+        type="button"
+        onClick={() => actions.select(node.id)}
+        title={isNodeSelected ? 'Выбранный узел' : 'Выбрать этот узел'}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg py-0.5 pl-1 text-left"
+      >
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-foreground/[0.05] text-[20px] leading-none select-none">
+          {flag || <Globe className="size-4 text-muted-foreground" />}
+        </span>
+        <span className="min-w-0">
+          <span className="flex min-w-0 items-center gap-2">
+            <span data-sensitive="node" className="truncate text-[13px] font-semibold text-foreground">
+              {cleanName}
+            </span>
+            <ProtocolTag protocol={node.protocol} json={Boolean(node.rawJson)} />
+            <NodeProviderFragmentNote node={node} settings={settings} />
+          </span>
+          <span className="mt-0.5 block truncate text-[11.5px] text-muted-foreground">
+            {node.description ? <span data-sensitive="node">{node.description}</span> : <span data-sensitive="ip">{`${node.server}:${node.port}`}</span>}
+          </span>
+        </span>
+      </button>
+
+      <div className="flex shrink-0 items-center gap-1.5">
+        {isPinging ? (
+          <span className="flex min-w-[5.5rem] items-center justify-end gap-1.5 px-1 text-[11.5px] text-primary">
+            <span className="size-3 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
+            замер
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={() => actions.ping(node.id)}
+            title="Проверить пинг этого сервера"
+            className="cursor-pointer rounded-lg transition-colors hover:bg-foreground/[0.06]"
+          >
+            <LatencyBadge node={node} display={pingDisplay} strong />
+          </button>
+        )}
+
+        <Button
+          size="sm"
+          variant={isNodeActive ? 'default' : 'outline'}
+          onClick={() => {
+            if (isNodeActive) {
+              actions.disconnect()
+            } else {
+              actions.connect(node.id)
+            }
+          }}
+          title={isNodeActive ? 'Отключить VPN' : 'Подключиться к этому узлу'}
+          className={cn('h-8 min-w-[104px] gap-1.5 rounded-lg text-xs', !isNodeActive && 'opacity-80 group-hover:opacity-100')}
+        >
+          <Power className="size-3.5" />
+          {isNodeActive ? 'Подключён' : 'Подключить'}
+        </Button>
+
+        {isManual && (
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            onClick={(e) => {
+              e.stopPropagation()
+              actions.remove(node)
+            }}
+            title="Удалить сервер"
+            className="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+})
+
+/**
+ * Секунды с начала подключения/отключения. Свой таймер у маленького
+ * компонента: раньше тик перерисовывал всю страницу INCY вместе со списком.
+ * Компонент монтируется в начале ожидания, поэтому отсчёт идёт от монтирования.
+ */
+function useElapsedSeconds(): number {
+  const [started] = useState(() => Date.now())
+  const [sec, setSec] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => {
+      setSec(Math.floor((Date.now() - started) / 1000))
+    }, 250)
+    return () => clearInterval(id)
+  }, [started])
+  return sec
+}
+
+const BusySeconds: React.FC = () => {
+  const sec = useElapsedSeconds()
+  if (sec <= 0) return null
+  return <span className="text-[10px] font-mono tabular-nums text-primary/80">{sec} с</span>
+}
+
+/**
+ * Rough phase hint driven by elapsed time. The engine does not report
+ * sub-steps, but the durations are known and stable: config generation and
+ * `sing-box check` land well under a second, core startup is verified at
+ * ~0.8 s, and anything past ~8 s means the server itself is not answering.
+ * Saying so is far more useful than a static "please wait".
+ */
+const BusyHint: React.FC<{ disconnecting: boolean }> = ({ disconnecting }) => {
+  const sec = useElapsedSeconds()
+  return (
+    <>
+      {disconnecting
+        ? 'Останавливаем туннель и снимаем системный прокси…'
+        : sec < 1
+          ? 'Собираем конфигурацию и проверяем её ядром…'
+          : sec < 3
+            ? 'Запускаем ядро и поднимаем туннель…'
+            : sec < 8
+              ? 'Ожидаем ответ сервера…'
+              : 'Сервер не отвечает — возможно, узел недоступен. Можно выбрать другой.'}
+    </>
+  )
+}
+
 /**
  * Guards the launch ping sweep so it runs once per app session rather than on
  * every visit to the INCY tab. Module scope, not a ref: the page unmounts when
@@ -1228,6 +1399,7 @@ export default function IncyPage(): React.ReactElement {
   const [activeTab, setActiveTab] = useState<
     'main' | 'servers' | 'routing' | 'settings' | 'stats'
   >('main')
+  useTourTab<'main' | 'servers' | 'routing' | 'settings' | 'stats'>('/incy', setActiveTab)
   const [nodes, setNodes] = useState<IncyNode[]>([])
   /** «Текущая» подписка — та, которой принадлежит выбранный сервер. */
   const [subscription, setSubscription] = useState<IncySubscription | null>(null)
@@ -1235,8 +1407,6 @@ export default function IncyPage(): React.ReactElement {
   const [subscriptions, setSubscriptions] = useState<IncySubscription[]>([])
   /** Какие карточки подписок свёрнуты: с пятью провайдерами список иначе не читается. */
   const [collapsedSubs, setCollapsedSubs] = useState<Set<string>>(new Set())
-  /** id подписки, которая сейчас обновляется поодиночке. */
-  const [refreshingSubId, setRefreshingSubId] = useState<string | null>(null)
   const [removingSub, setRemovingSub] = useState<IncySubscription | null>(null)
   const [settings, setSettings] = useState<IncySettings | null>(null)
   const storeStatus = useIncyStore((s) => s.status)
@@ -1249,10 +1419,6 @@ export default function IncyPage(): React.ReactElement {
 
   const [inputUrl, setInputUrl] = useState('')
   const [loadingImport, setLoadingImport] = useState(false)
-  const [loadingRefresh, setLoadingRefresh] = useState(false)
-  const [testingPings, setTestingPings] = useState(false)
-  const [speedOpen, setSpeedOpen] = useState(false)
-  const [pingingNodeIds, setPingingNodeIds] = useState<Set<string>>(new Set())
   const [coreMemory, setCoreMemory] = useState<CoreMemoryUsage | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [protocolFilter, setProtocolFilter] = useState<'all' | 'vless' | 'hysteria2' | 'wireguard'>('all')
@@ -1260,7 +1426,103 @@ export default function IncyPage(): React.ReactElement {
   const [onlyWorking, setOnlyWorking] = useState(false)
   const [showServerSelectModal, setShowServerSelectModal] = useState(false)
   const [showQrModal, setShowQrModal] = useState(false)
+  // Окна выбора узла и QR закрываются по Esc.
+  useEffect(() => {
+    if (!showServerSelectModal && !showQrModal) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      setShowServerSelectModal(false)
+      setShowQrModal(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [showServerSelectModal, showQrModal])
+  /** Блок Cloudflare WARP на «Серверах»: свёрнут, пока есть другие серверы (выбор запоминается). */
+  const [warpOpen, setWarpOpen] = useState(() => {
+    try {
+      return localStorage.getItem('lazeyka.incy.warpOpen') === '1'
+    } catch {
+      return false
+    }
+  })
+  const setWarpOpenSaved = (v: boolean): void => {
+    setWarpOpen(v)
+    try {
+      localStorage.setItem('lazeyka.incy.warpOpen', v ? '1' : '0')
+    } catch {
+      /* noop */
+    }
+  }
   const [scanningQr, setScanningQr] = useState(false)
+
+  /**
+   * «Проверить пинг» и «Обновить подписки» идут в главном процессе через общий менеджер (его же видит пульт
+   * с телефона). Сюда приходит ход: полученные числа сразу показываются в строках, а после каждой обновлённой
+   * подписки и в конце действия списки перечитываются с диска.
+   */
+  const lastOpRef = useRef<{ seq: number; done: number; running: boolean } | null>(null)
+  /**
+   * Последние замеры пинга в этом окне (id → результат). Список серверов перечитывается с диска при
+   * каждой смене состояния VPN и после выбора сервера; если на диске замер старше (или его ещё нет —
+   * проверка идёт), берём наш. Иначе выбор/подключение во время проверки «сбрасывал» все пинги.
+   */
+  const pingMemoRef = useRef<Map<string, { latencyMs: number | null; at: number }>>(new Map())
+  const withPingMemo = (list: IncyNode[]): IncyNode[] => {
+    const memo = pingMemoRef.current
+    if (memo.size === 0) return list
+    const now = Date.now()
+    let changed = false
+    const out = list.map((n) => {
+      const r = memo.get(n.id)
+      if (!r || now - r.at > 15 * 60_000) return n
+      if ((n.latencyAt ?? 0) >= r.at) return n
+      changed = true
+      return { ...n, latencyMs: r.latencyMs, latencyAt: r.at }
+    })
+    return changed ? out : list
+  }
+  const reloadLists = async (): Promise<void> => {
+    const [n, subs, cur] = await Promise.all([incyGetNodes(), incyGetSubscriptions(), incyGetSubscription()])
+    setNodes(withPingMemo(n))
+    setSubscriptions(subs)
+    setSubscription(cur)
+  }
+  const handleOpsSnapshot = (snap: OpSnapshot): void => {
+    const v = snap.view
+    if (v?.running && v.kind === 'ping') {
+      const res = snap.results
+      for (const [id, r] of Object.entries(res)) pingMemoRef.current.set(id, r)
+      setNodes((prev) => {
+        let changed = false
+        const next = prev.map((n) => {
+          const r = res[n.id]
+          if (!r || (n.latencyAt === r.at && n.latencyMs === r.latencyMs)) return n
+          changed = true
+          return { ...n, latencyMs: r.latencyMs, latencyAt: r.at }
+        })
+        return changed ? next : prev
+      })
+    }
+    const before = lastOpRef.current
+    lastOpRef.current = v ? { seq: v.seq, done: v.done, running: v.running } : null
+    if (!v) return
+    const finishedNow = Boolean(before && before.seq === v.seq && before.running && !v.running)
+    const refreshStep = v.kind === 'refresh' && v.running && v.done > 0 && (!before || before.seq !== v.seq || before.done !== v.done)
+    if (finishedNow || refreshStep) void reloadLists().catch(() => void 0)
+  }
+  const ops = useIncyOps(handleOpsSnapshot)
+  const opView = ops.running
+  const testingPings = opView?.kind === 'ping'
+  const loadingRefresh = opView?.kind === 'refresh'
+  const refreshingSubId = opView?.kind === 'refresh' && opView.scope === 'sub' ? (opView.subId ?? null) : null
+  const pingingNodeIds = useMemo(() => {
+    const snap = ops.snap
+    if (!snap?.view?.running || snap.view.kind !== 'ping') return new Set<string>()
+    return new Set(snap.targetIds.filter((id) => !(id in snap.results)))
+  }, [ops.snap])
+  const startPing = (scope: OpScope = { type: 'all' }): void => {
+    void ops.start('ping', scope)
+  }
 
   const loadData = async (): Promise<void> => {
     try {
@@ -1272,7 +1534,7 @@ export default function IncyPage(): React.ReactElement {
         incyGetStatus(),
         incyGetStats()
       ])
-      setNodes(n)
+      setNodes(withPingMemo(n))
       setSettings(s)
       setSubscriptions(subs)
       // Не затираем показанную подписку пустотой: при кратком сбое чтения
@@ -1293,6 +1555,18 @@ export default function IncyPage(): React.ReactElement {
     }
   }, [])
 
+  // Провайдер перенёс подписку на новый адрес (заголовок new-url / new-domain).
+  useEffect(() => {
+    const onMoved = (): void => {
+      toast.success('Провайдер перенёс подписку на новый адрес')
+      void loadData()
+    }
+    const offMoved = window.electron.ipcRenderer.on('incy:subscriptionMoved', onMoved)
+    return () => {
+      offMoved()
+    }
+  }, [])
+
   useEffect(() => {
     void loadData()
     const timer = setInterval(() => {
@@ -1301,7 +1575,8 @@ export default function IncyPage(): React.ReactElement {
       // and the weekly chart are persisted, so they are worth showing (and
       // updating after a reset) even with the tunnel down.
       // Цифры видны только на вкладке «Статистика» — только тогда и спрашиваем.
-      if (activeTab === 'stats') {
+      // Пульт на «Главной» показывает трафик сессии — пока VPN подключён.
+      if (activeTab === 'stats' || (activeTab === 'main' && status.state === 'running')) {
         void incyGetStats().then(setStats).catch(() => {})
       }
     }, 3000)
@@ -1376,7 +1651,7 @@ export default function IncyPage(): React.ReactElement {
       setSubscriptions(await incyGetSubscriptions().catch(() => subscriptions))
       setInputUrl('')
       toast.success(`Импортировано серверов: ${res.addedCount}`, { style: POWER_ON_BANNER_STYLE })
-      void handlePingAll(res.nodes)
+      startPing()
     } catch (e: any) {
       toast.error('Ошибка импорта', { description: e?.message || String(e) })
     } finally {
@@ -1474,67 +1749,8 @@ export default function IncyPage(): React.ReactElement {
     }
   }
 
-  /**
-   * Обновить одну подписку. Без аргумента — текущую (кнопка на главной).
-   *
-   * Серверы остальных провайдеров при этом не трогаются: главный процесс
-   * заменяет только узлы этой подписки.
-   */
-  const handleRefreshSubscription = async (subscriptionId?: string): Promise<void> => {
-    setLoadingRefresh(true)
-    setRefreshingSubId(subscriptionId ?? null)
-    try {
-      const res = await incyRefreshSubscription(subscriptionId)
-      setNodes(res.nodes)
-      setSubscriptions(await incyGetSubscriptions().catch(() => subscriptions))
-      if (res.subscription) {
-        // Карточку на главной меняем только если обновили именно её подписку.
-        if (!subscriptionId || subscriptionId === subscription?.id) setSubscription(res.subscription)
-      }
-      toast.success(`Подписка «${res.subscription?.title ?? ''}» обновлена`, {
-        style: POWER_ON_BANNER_STYLE
-      })
-      if (settings?.pingOnUpdateSubscription) {
-        void handlePingAll(res.nodes)
-      }
-    } catch (e: any) {
-      toast.error('Не удалось обновить подписку', { description: e?.message || String(e) })
-    } finally {
-      setLoadingRefresh(false)
-      setRefreshingSubId(null)
-    }
-  }
-
-  /**
-   * Обновить все подписки подряд.
-   *
-   * Упавший провайдер не отменяет остальные — про него говорим отдельно,
-   * иначе одна мёртвая ссылка блокировала бы обновление всех.
-   */
-  const handleRefreshAllSubscriptions = async (): Promise<void> => {
-    setLoadingRefresh(true)
-    try {
-      const res = await incyRefreshAllSubscriptions()
-      setNodes(res.nodes)
-      setSubscriptions(res.subscriptions)
-      const current = await incyGetSubscription().catch(() => null)
-      if (current) setSubscription(current)
-
-      const okCount = res.subscriptions.length - res.failed.length
-      if (res.failed.length === 0) {
-        toast.success(`Обновлено подписок: ${okCount}`, { style: POWER_ON_BANNER_STYLE })
-      } else {
-        toast.warning(`Обновлено ${okCount} из ${res.subscriptions.length}`, {
-          description: res.failed.map((f) => `${f.title}: ${f.error}`).join('\n')
-        })
-      }
-      if (settings?.pingOnUpdateSubscription) void handlePingAll(res.nodes)
-    } catch (e: any) {
-      toast.error('Не удалось обновить подписки', { description: e?.message || String(e) })
-    } finally {
-      setLoadingRefresh(false)
-    }
-  }
+  // Обновление подписок («Обновить», «Обновить все», «Только эту») — кнопки OpsSplitButton/OpsIconButton:
+  // действие идёт в общем менеджере (incy-ops), итог и «Пинг после обновления» — там же.
 
   /** Удалить подписку вместе с её серверами. Ручные узлы остаются. */
   const handleRemoveSubscription = async (sub: IncySubscription): Promise<void> => {
@@ -1649,72 +1865,6 @@ export default function IncyPage(): React.ReactElement {
     }
   }, [settings?.disableFontSmoothing])
 
-  const handlePingAll = async (targetNodes = nodes): Promise<void> => {
-    if (!targetNodes.length || testingPings) return
-    setTestingPings(true)
-    const allIds = new Set(targetNodes.map((n) => n.id))
-    setPingingNodeIds(allIds)
-    const queue = [...targetNodes]
-    const results: { id: string; latencyMs: number | null }[] = []
-    try {
-      let idx = 0
-      const worker = async (): Promise<void> => {
-        while (idx < queue.length) {
-          const node = queue[idx++]
-          const lat = await incyPingNode(node, (settings?.pingTimeoutSec || 3) * 1000)
-          results.push({ id: node.id, latencyMs: lat })
-          // Время ставим и для неудачного замера: «нет ответа» ≠ «не проверяли».
-          // Обновляем по id в ТЕКУЩЕМ списке: если за время замера обновилась
-          // подписка, её новые узлы не затираются старым снимком.
-          const at = Date.now()
-          setNodes((prev) => prev.map((n) => (n.id === node.id ? { ...n, latencyMs: lat, latencyAt: at } : n)))
-          setPingingNodeIds((prev) => {
-            const next = new Set(prev)
-            next.delete(node.id)
-            return next
-          })
-        }
-      }
-      await Promise.all(Array.from({ length: 5 }, worker))
-      await incySaveLatencies(results)
-      toast.success('Замер задержки серверов завершён')
-      // «Подключаться к лучшему после замера» работает и для замера в INCY,
-      // а не только в оптимизаторе ExitLag. Переключаемся, только если лучший
-      // узел заметно быстрее текущего — иначе каждый замер дёргал бы туннель.
-      if (settings?.routeAutoConnectBest && targetNodes.length > 1) {
-        const words = String(settings.autoSelectExcludeKeywords ?? '')
-          .split(/[,;\n]+/)
-          .map((w) => w.trim().toLowerCase())
-          .filter(Boolean)
-        const excluded = new Set(settings.autoSelectExcludedKeys ?? [])
-        const allowed = (n: IncyNode): boolean =>
-          !excluded.has(`${n.name}|${n.server}:${n.port}`) &&
-          !words.some((w) => `${n.name} ${n.description ?? ''}`.toLowerCase().includes(w))
-        const byId = new Map(targetNodes.map((n) => [n.id, n]))
-        const best = results
-          .filter((r) => r.latencyMs != null && byId.has(r.id) && allowed(byId.get(r.id)!))
-          .sort((a, b) => a.latencyMs! - b.latencyMs!)[0]
-        const curId = status.state === 'running' ? status.activeNodeId : status.selectedNodeId
-        const cur = results.find((r) => r.id === curId)
-        const muchBetter =
-          best && best.id !== curId && (cur?.latencyMs == null || (best.latencyMs! < cur.latencyMs * 0.7 && cur.latencyMs - best.latencyMs! > 30))
-        if (best && muchBetter) {
-          const name = byId.get(best.id)!.name
-          if (status.state === 'running') {
-            toast.info(`Переключаю на лучший узел: ${name} (${best.latencyMs} мс)`)
-            setStatus(await incyConnect(best.id))
-          } else {
-            setStatus(await incySelectNode(best.id))
-            toast.info(`Выбран лучший узел: ${name} (${best.latencyMs} мс)`)
-          }
-        }
-      }
-    } catch { /* ignore */ } finally {
-      setPingingNodeIds(new Set())
-      setTestingPings(false)
-    }
-  }
-
   /**
    * Measure latency once after launch.
    *
@@ -1732,8 +1882,9 @@ export default function IncyPage(): React.ReactElement {
     if (!settings || settings.pingOnLaunch === false) return
     if (nodes.length === 0) return
     if (nodes.some((n) => n.latencyMs !== null)) return
+    if (ops.running) return
     launchPingDone = true
-    const t = setTimeout(() => { void handlePingAll(nodes) }, 400)
+    const t = setTimeout(() => startPing(), 400)
     return () => clearTimeout(t)
     // Depends only on "are there nodes yet" and the setting — re-running on
     // every `nodes` identity change would restart the sweep as its own results
@@ -1829,14 +1980,30 @@ export default function IncyPage(): React.ReactElement {
   }, [nodes, status.activeNodeId, status.selectedNodeId])
 
   const sortedNodes = useMemo(() => {
+    const byPing = (a: IncyNode, b: IncyNode): number => (a.latencyMs ?? 9999) - (b.latencyMs ?? 9999)
+    const byName = (a: IncyNode, b: IncyNode): number => a.name.localeCompare(b.name)
+    const cmpFor = (mode: string | undefined): ((a: IncyNode, b: IncyNode) => number) | null =>
+      mode === 'ping' ? byPing : mode === 'name' ? byName : null
+    const own = cmpFor(settings?.sortServersBy)
+    // Порядок, предложенный провайдером (`sort-order`), действует только пока
+    // человек сам ничего не выбрал: «по умолчанию» — это и есть «не выбирал».
+    const providerOrder = new Map(subscriptions.map((s) => [s.id, s.sortOrder] as const))
     const list = [...nodes]
-    if (settings?.sortServersBy === 'ping') {
-      list.sort((a, b) => (a.latencyMs ?? 9999) - (b.latencyMs ?? 9999))
-    } else if (settings?.sortServersBy === 'name') {
-      list.sort((a, b) => a.name.localeCompare(b.name))
+    if (own) return list.sort(own)
+    if (![...providerOrder.values()].some((v) => v === 'ping' || v === 'name')) return list
+    // Узлы разных подписок сортируются каждый по своей: сначала группируем.
+    const groups = new Map<string, IncyNode[]>()
+    for (const n of list) {
+      const key = n.subscriptionId ?? ''
+      groups.set(key, [...(groups.get(key) ?? []), n])
     }
-    return list
-  }, [nodes, settings?.sortServersBy])
+    const out: IncyNode[] = []
+    for (const [key, items] of groups) {
+      const cmp = cmpFor(key ? providerOrder.get(key) : undefined)
+      out.push(...(cmp ? [...items].sort(cmp) : items))
+    }
+    return out
+  }, [nodes, settings?.sortServersBy, subscriptions])
 
   const filteredNodes = useMemo(() => {
     return sortedNodes.filter((n) => {
@@ -1868,6 +2035,53 @@ export default function IncyPage(): React.ReactElement {
         (n) => !n.subscriptionId || !subscriptions.some((s) => s.id === n.subscriptionId)
       ),
     [filteredNodes, subscriptions]
+  )
+
+  /**
+   * Объём для «Проверить пинг» / «Обновить» (меню у стрелки). Множественного выбора в списке нет —
+   * вместо «выбранных» есть «найденные»: то, что осталось после поиска и фильтров.
+   */
+  const pingScopeOptions = useMemo<ScopeOption[]>(() => {
+    const out: ScopeOption[] = [{ key: 'all', label: 'Все серверы', count: nodes.length, scope: { type: 'all' } }]
+    const filtered = filteredNodes.length !== nodes.length
+    out.push({
+      key: 'visible',
+      label: 'Только найденные',
+      count: filtered ? filteredNodes.length : undefined,
+      hint: filtered ? 'То, что видно после поиска и фильтров' : 'Сначала задайте поиск или фильтр',
+      disabled: !filtered || filteredNodes.length === 0,
+      scope: { type: 'ids', ids: filteredNodes.map((n) => n.id), label: 'найденные' }
+    })
+    if (subscriptions.length > 1 || (subscriptions.length === 1 && nodes.some((n) => !n.subscriptionId))) {
+      for (const sub of subscriptions) {
+        const count = nodes.filter((n) => n.subscriptionId === sub.id).length
+        out.push({ key: `sub:${sub.id}`, label: `Подписка «${sub.title}»`, count, disabled: count === 0, scope: { type: 'sub', subId: sub.id } })
+      }
+      const manual = nodes.filter((n) => !n.subscriptionId).length
+      if (manual > 0) out.push({ key: 'manual', label: 'Добавленные вручную', count: manual, scope: { type: 'sub', subId: null } })
+    }
+    const sel = nodes.find((n) => n.id === (status.selectedNodeId || ''))
+    if (sel) {
+      out.push({
+        key: 'one',
+        label: `Один: ${cleanServerName(sel.name)}`,
+        hint: 'Выбранный сервер. Любой другой — щелчок по его пингу в списке',
+        scope: { type: 'ids', ids: [sel.id] }
+      })
+    }
+    return out
+  }, [nodes, filteredNodes, subscriptions, status.selectedNodeId])
+
+  const refreshScopeOptions = useMemo<ScopeOption[]>(
+    () => [
+      { key: 'all', label: 'Обновить все', count: subscriptions.length, scope: { type: 'all' } },
+      ...subscriptions.map<ScopeOption>((sub) => ({
+        key: sub.id,
+        label: `Только «${sub.title}»`,
+        scope: { type: 'sub', subId: sub.id }
+      }))
+    ],
+    [subscriptions]
   )
 
   /** Подписки, кроме текущей — для блока «Другие провайдеры» на главной. */
@@ -1907,99 +2121,51 @@ export default function IncyPage(): React.ReactElement {
    * внутри карточки каждой подписки и отдельно для добавленных вручную.
    * Копия разметки на каждую группу разъехалась бы при первой же правке.
    */
-  const renderServerRow = (node: IncyNode, isManual = false): React.ReactElement => {
-    const isNodeActive = isConnected && status.activeNodeId === node.id
-    const isNodeSelected = (status.selectedNodeId || nodes[0]?.id) === node.id
-    const flag = getFlagEmoji(node.name)
-    const cleanName = cleanServerName(node.name)
-
-    return (
-      <div
-        key={node.id}
-        className={cn(
-          'flex items-center justify-between p-3 rounded-xl border transition-all duration-200',
-          isNodeActive
-            ? 'border-st-ok/60 bg-st-ok/10 shadow-sm'
-            : isNodeSelected
-            ? 'border-primary/60 bg-primary/10'
-            : 'border-border bg-card/40 hover:bg-card/70'
-        )}
-      >
-        <div
-          onClick={() => { void handleSelectNode(node.id) }}
-          className="flex items-center gap-3 min-w-0 cursor-pointer flex-1"
-        >
-          <span className="text-xl shrink-0 select-none">{flag}</span>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-foreground truncate">{cleanName}</span>
-              <Badge
-                variant="outline"
-                className={cn(
-                  'text-[9px] px-1.5 py-0 font-mono uppercase',
-                  node.protocol === 'hysteria2' && 'border-st-warn/40 text-st-warn-text bg-st-warn/10',
-                  node.protocol === 'wireguard' && 'border-st-info/40 text-st-info-text bg-st-info/10'
-                )}
-              >
-                {node.protocol === 'hysteria2' ? 'HYS2' : node.protocol === 'wireguard' ? 'WARP' : node.protocol}
-              </Badge>
-              {node.rawJson && (
-                <Badge variant="secondary" className="text-[9px] px-1 py-0 font-mono opacity-70">
-                  JSON
-                </Badge>
-              )}
-            </div>
-            <div className="text-[11px] text-muted-foreground truncate mt-0.5">
-              {node.description || `${node.server}:${node.port}`}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          {pingingNodeIds.has(node.id) ? (
-            <div className="px-2 py-0.5 flex items-center justify-center">
-              <div className="h-3 w-3 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
-            </div>
-          ) : (
-            <LatencyBadge node={node} display={settings?.pingDisplay} strong />
-          )}
-
-          <Button
-            size="sm"
-            variant={isNodeActive ? 'default' : 'outline'}
-            onClick={() => {
-              if (isNodeActive) {
-                void handleDisconnect()
-              } else {
-                void handleConnect(node.id)
-              }
-            }}
-            className={cn(
-              'text-xs h-7 min-w-[90px]',
-              isNodeActive && 'bg-st-ok hover:bg-st-ok text-white'
-            )}
-          >
-            {isNodeActive ? 'Активен' : 'Подключить'}
-          </Button>
-
-          {isManual && (
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              onClick={(e) => {
-                e.stopPropagation()
-                void handleRemoveNode(node)
-              }}
-              title="Удалить сервер"
-              className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
-          )}
-        </div>
-      </div>
-    )
+  /**
+   * Строка сервера на вкладке «Сервера» (см. ServerRow выше). Обработчики
+   * берутся из ref, поэтому их ссылки не меняются от рендера к рендеру и
+   * memo-строка перерисовывается, только когда меняются её собственные данные.
+   */
+  const rowHandlersRef = useRef({
+    select: (_id: string): void => undefined,
+    connect: (_id: string): void => undefined,
+    disconnect: (): void => undefined,
+    remove: (_node: IncyNode): void => undefined,
+    ping: (_id: string): void => undefined
+  })
+  rowHandlersRef.current = {
+    select: (id) => void handleSelectNode(id),
+    connect: (id) => void handleConnect(id),
+    disconnect: () => void handleDisconnect(),
+    remove: (n) => void handleRemoveNode(n),
+    ping: (id) => startPing({ type: 'ids', ids: [id] })
   }
+  const rowActions = useMemo<ServerRowActions>(
+    () => ({
+      select: (id) => rowHandlersRef.current.select(id),
+      connect: (id) => rowHandlersRef.current.connect(id),
+      disconnect: () => rowHandlersRef.current.disconnect(),
+      remove: (n) => rowHandlersRef.current.remove(n),
+      ping: (id) => rowHandlersRef.current.ping(id)
+    }),
+    []
+  )
+  const selectedRowId = status.selectedNodeId || nodes[0]?.id
+  const renderServerRow = (node: IncyNode, isManual = false): React.ReactElement => (
+    <ServerRow
+      key={node.id}
+      node={node}
+      isNodeActive={isConnected && status.activeNodeId === node.id}
+      isNodeSelected={selectedRowId === node.id}
+      isPinging={pingingNodeIds.has(node.id)}
+      pingDisplay={settings?.pingDisplay}
+      settings={settings}
+      isManual={isManual}
+      actions={rowActions}
+    />
+  )
+  const renderAutoRow = (node: IncyNode): React.ReactElement => renderServerRow(node)
+  const renderManualRow = (node: IncyNode): React.ReactElement => renderServerRow(node, true)
 
   /**
    * Local "busy" flag.
@@ -2012,19 +2178,7 @@ export default function IncyPage(): React.ReactElement {
   const [pendingAction, setPendingAction] = useState<null | 'connect' | 'disconnect'>(null)
   const isBusy = pendingAction !== null || status.state === 'connecting'
 
-  // Seconds spent waiting. Reset whenever the busy phase starts or ends.
-  const [busySeconds, setBusySeconds] = useState(0)
-  useEffect(() => {
-    if (!isBusy) {
-      setBusySeconds(0)
-      return
-    }
-    const started = Date.now()
-    const id = setInterval(() => {
-      setBusySeconds(Math.floor((Date.now() - started) / 1000))
-    }, 250)
-    return () => clearInterval(id)
-  }, [isBusy])
+  // Секунды ожидания считают BusySeconds/BusyHint (маленькие компоненты со своим таймером).
 
   // Clear the optimistic flag once the backend reports a settled state.
   useEffect(() => {
@@ -2033,36 +2187,81 @@ export default function IncyPage(): React.ReactElement {
     }
   }, [status.state])
 
-  const busyLabel = pendingAction === 'disconnect' ? 'Отключение' : 'Подключение'
+  // Живая скорость сети для пульта — только пока VPN подключён и открыта «Главная».
+  const liveTraffic = useLiveTraffic(isConnected && activeTab === 'main')
+  const [chain, setChain] = useState<ChainInfo | null>(null)
+  const [chainChecking, setChainChecking] = useState(false)
+  const checkChainTraffic = async (): Promise<void> => {
+    setChainChecking(true)
+    try {
+      const ok = await chainProbe()
+      if (ok === true) toast.success('Трафик через цепочку проходит')
+      else if (ok === false) toast.error('Цепочка применена, но проверочный адрес не ответил')
+      else toast.info('Проверка цепочки недоступна для текущего подключения')
+    } catch (error) {
+      toast.error('Не удалось проверить цепочку', { description: String(error) })
+    } finally {
+      setChainChecking(false)
+    }
+  }
+  useEffect(() => {
+    if (activeTab !== 'main') return
+    let current = true
+    void chainGet().then((value) => {
+      if (current) setChain(value)
+    }).catch(() => {
+      if (current) setChain(null)
+    })
+    return () => { current = false }
+  }, [activeTab, status.state, status.activeNodeId, status.selectedNodeId, status.connectedAt, status.routingMode, settings?.chainEntryNodeId])
+  const previousNode = nodes.find((node) => node.id === status.previousNodeId && node.id !== activeOrSelectedNode?.id)
+  const nodeTitle = (id: string | null): string => {
+    const name = nodes.find((node) => node.id === id)?.name
+    return name ? cleanServerName(name) : 'Узел не найден'
+  }
+  const [previousChecking, setPreviousChecking] = useState(false)
+  const selectPrevious = async (): Promise<void> => {
+    if (!previousNode || previousChecking) return
+    setPreviousChecking(true)
+    try {
+      const check = await chainExitCheck(previousNode.id)
+      if (!check.ok) {
+        toast.error('Нельзя сменить выход цепочки', { description: check.reason })
+        return
+      }
+      await handleSelectNode(previousNode.id)
+    } catch (error) {
+      toast.error('Не удалось проверить предыдущий узел', { description: String(error) })
+    } finally {
+      setPreviousChecking(false)
+    }
+  }
+  const consoleTone: LzTone = isBusy ? 'busy' : isConnected ? 'on' : hasError ? 'error' : 'off'
+  const nodeLabelById = useMemo(() => {
+    const map = new Map(nodes.map((n) => [n.id, cleanServerName(n.name)] as const))
+    return (id: string): string => map.get(id) ?? 'выбранный сервер'
+  }, [nodes])
+  const protocolItems = useMemo<SegmentedItem<'all' | 'vless' | 'hysteria2' | 'wireguard'>[]>(() => {
+    const count = (p: string): number => nodes.filter((n) => n.protocol === p).length
+    return [
+      { id: 'all', label: `Все ${nodes.length}` },
+      { id: 'vless', label: `VLESS ${count('vless')}` },
+      { id: 'hysteria2', label: `Hysteria2 ${count('hysteria2')}` },
+      { id: 'wireguard', label: `WARP ${count('wireguard')}` }
+    ]
+  }, [nodes])
 
-  /**
-   * Rough phase hint driven by elapsed time. The engine does not report
-   * sub-steps, but the durations are known and stable: config generation and
-   * `sing-box check` land well under a second, core startup is verified at
-   * ~0.8 s, and anything past ~8 s means the server itself is not answering.
-   * Saying so is far more useful than a static "please wait".
-   */
-  const busyHint =
-    pendingAction === 'disconnect'
-      ? 'Останавливаем туннель и снимаем системный прокси…'
-      : busySeconds < 1
-        ? 'Собираем конфигурацию и проверяем её ядром…'
-        : busySeconds < 3
-          ? 'Запускаем ядро и поднимаем туннель…'
-          : busySeconds < 8
-            ? 'Ожидаем ответ сервера…'
-            : 'Сервер не отвечает — возможно, узел недоступен. Можно выбрать другой.'
 
   return (
     <BasePage title="INCY Proxy Engine">
-      <div className="px-4 pb-6 space-y-4">
+      <div className="mx-auto w-full max-w-[1080px] space-y-[var(--lz-gap)] lz-page-x pb-5">
         {/* ExitLag и INCY — один туннель. Если на вкладке ExitLag включён
             белый список, «Подключить» здесь поднимает VPN только для этих
             приложений. Без явного предупреждения это выглядело как «INCY
             перестал работать». */}
         {settings?.perAppProxy &&
           settings.perAppMode !== 'bypass_only' && (
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-st-warn/40 bg-st-warn/10 px-3 py-2.5 text-xs">
+            <LzPanel tone="warn" glow={12} className="flex flex-col justify-between gap-2 border-st-warn/40 px-4 py-2.5 text-xs sm:flex-row sm:items-center">
               <div className="flex items-start gap-2 min-w-0">
                 <Gamepad2 className="size-4 text-st-warn-text shrink-0 mt-0.5" />
                 <div className="min-w-0">
@@ -2086,111 +2285,77 @@ export default function IncyPage(): React.ReactElement {
                   Весь трафик через VPN
                 </Button>
               </div>
-            </div>
+            </LzPanel>
           )}
-        {/* Navigation Tabs Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/40 pb-3">
-          <div className="flex flex-wrap items-center gap-1 bg-card/60 p-1 rounded-xl border border-border/60">
-            <Button
-              size="sm"
-              variant={activeTab === 'main' ? 'default' : 'ghost'}
-              onClick={() => setActiveTab('main')}
-              className={cn(
-                'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'main' && 'bg-primary text-primary-foreground '
-              )}
-            >
-              <Power className="size-3.5" />
-              Главная
-            </Button>
-            <Button
-              size="sm"
-              variant={activeTab === 'servers' ? 'default' : 'ghost'}
-              onClick={() => setActiveTab('servers')}
-              className={cn(
-                'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'servers' && 'bg-primary text-primary-foreground '
-              )}
-            >
-              <Server className="size-3.5" />
-              Сервера
-              {nodes.length > 0 && (
-                <Badge variant="secondary" className="px-1.5 py-0 text-[10px] ml-1 font-mono">
-                  {nodes.length}
-                </Badge>
-              )}
-            </Button>
-            <Button
-              size="sm"
-              variant={activeTab === 'routing' ? 'default' : 'ghost'}
-              onClick={() => setActiveTab('routing')}
-              className={cn(
-                'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'routing' && 'bg-primary text-primary-foreground '
-              )}
-            >
-              <Split className="size-3.5" />
-              Маршрутизация
-              {(settings?.customRoutingRules?.length ?? 0) > 0 && (
-                <Badge variant="secondary" className="px-1.5 py-0 text-[10px] ml-1 font-mono">
-                  {settings?.customRoutingRules?.length}
-                </Badge>
-              )}
-            </Button>
-            <Button
-              size="sm"
-              variant={activeTab === 'settings' ? 'default' : 'ghost'}
-              onClick={() => setActiveTab('settings')}
-              className={cn(
-                'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'settings' && 'bg-primary text-primary-foreground '
-              )}
-            >
-              <SettingsIcon className="size-3.5" />
-              Настройки
-            </Button>
-            <Button
-              size="sm"
-              variant={activeTab === 'stats' ? 'default' : 'ghost'}
-              onClick={() => setActiveTab('stats')}
-              className={cn(
-                'gap-1.5 text-xs h-7.5 rounded-lg font-semibold transition-all',
-                activeTab === 'stats' && 'bg-primary text-primary-foreground '
-              )}
-            >
-              <BarChart2 className="size-3.5" />
-              Статистика
-            </Button>
-
+        {/* Вкладки раздела: одна строка, выбранная горит цветом темы. Справа — состояние
+            VPN словами (на «Главной» его показывает пульт, там оно не дублируется). */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div
+            role="tablist"
+            aria-label="Разделы INCY"
+            className="lz-control-surface flex flex-wrap items-center gap-1 rounded-xl border p-1"
+          >
+            {(
+              [
+                { id: 'main', label: 'Главная', icon: Power, count: 0 },
+                { id: 'servers', label: 'Сервера', icon: Server, count: nodes.length },
+                { id: 'routing', label: 'Маршрутизация', icon: Split, count: settings?.customRoutingRules?.length ?? 0 },
+                { id: 'settings', label: 'Настройки', icon: SettingsIcon, count: 0 },
+                { id: 'stats', label: 'Статистика', icon: BarChart2, count: 0 }
+              ] as const
+            ).map((t) => {
+              const active = activeTab === t.id
+              const Icon = t.icon
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  data-tour={`incy-tab-${t.id}`}
+                  onClick={() => setActiveTab(t.id)}
+                  className={cn(
+                    'flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-3 text-[12.5px] font-semibold transition-colors',
+                    active ? 'bg-primary text-primary-foreground shadow-sm' : 'lz-control-option'
+                  )}
+                >
+                  <Icon className="size-3.5" />
+                  {t.label}
+                  {t.count > 0 && (
+                    <span
+                      className={cn(
+                        'rounded-md px-1.5 text-[10.5px] leading-[1.35rem] tabular-nums',
+                        active ? 'bg-primary-foreground/20' : 'bg-foreground/[0.07] text-foreground/80'
+                      )}
+                    >
+                      {t.count}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
           </div>
 
-          <div className="flex items-center gap-2">
+          {activeTab !== 'main' && (
             <div
               className={cn(
-                'inline-flex items-center gap-2 text-xs font-mono font-semibold py-1 px-3 rounded-full border transition-all duration-300',
-                isConnected
-                  ? 'bg-st-ok/15 border-st-ok/30 text-st-ok-text shadow-[0_0_15px_rgba(16,185,129,0.25)]'
-                  : 'bg-card/60 border-border/60 text-muted-foreground'
+                'inline-flex max-w-[280px] items-center gap-2 rounded-xl border px-3 py-1.5 text-[12px] font-semibold',
+                isConnected ? 'border-primary/40 bg-primary/10 text-foreground' : 'border-foreground/[0.08] bg-foreground/[0.04] text-muted-foreground'
               )}
             >
-              <span
-                className={cn(
-                  'size-2 rounded-full',
-                  isConnected ? 'bg-primary' : 'bg-muted-foreground/50'
-                )}
-              />
-              <span className="truncate max-w-[180px]">
-                {isConnected ? `Подключено: ${activeOrSelectedNode?.name || 'INCY'}` : 'Отключено'}
+              <span className={cn('relative size-2 shrink-0 rounded-full', isConnected ? 'lz-beacon bg-primary text-primary' : hasError ? 'bg-st-err' : 'bg-muted-foreground/50')} />
+              <span data-sensitive="node" className="truncate">
+                {isConnected ? `Подключено: ${activeOrSelectedNode ? cleanServerName(activeOrSelectedNode.name) : 'INCY'}` : isBusy ? 'Подключение…' : 'Отключено'}
               </span>
             </div>
-          </div>
+          )}
         </div>
 
-        {/* TAB 1: MAIN (Complete INCY Home Replica) */}
+        {/* TAB 1: MAIN — пульт подключения, подписка, автовыбор, скорость */}
         {activeTab === 'main' && (
-          <div className="space-y-4 max-w-2xl mx-auto py-2">
+          <div className="space-y-3">
             {(status.killSwitchActive || status.recovering) && status.state !== 'running' && (
-              <div className="flex items-start gap-3 rounded-lg border border-st-warn/40 bg-st-warn/10 px-3 py-2.5">
+              <LzPanel tone="warn" glow={12} className="flex items-start gap-3 border-st-warn/40 px-4 py-3">
                 <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-st-warn-text" />
                 <div className="min-w-0 flex-1 text-xs leading-relaxed">
                   <div className="font-semibold text-foreground">
@@ -2205,716 +2370,304 @@ export default function IncyPage(): React.ReactElement {
                 <Button size="sm" variant="outline" className="h-7 shrink-0 text-xs" onClick={handleDisconnect}>
                   Отключить
                 </Button>
-              </div>
+              </LzPanel>
             )}
-            {settings?.memoryMonitor && coreMemory && coreMemory.totalBytes > 0 && (
-              <div className="flex items-center justify-between px-3 py-1.5 rounded-lg border border-border bg-card/40 text-[11px]">
-                <span className="flex items-center gap-1.5 text-muted-foreground">
-                  <Cpu className="h-3.5 w-3.5 text-primary" />
-                  Память ядер
-                </span>
-                <span className="flex items-center gap-2 font-mono">
-                  {coreMemory.perProcess.map((p) => (
-                    <span key={p.name} className="text-muted-foreground">
-                      {p.name.replace('.exe', '')} {formatBytes(p.bytes)}
-                    </span>
-                  ))}
-                  <span className="font-bold text-foreground">{formatBytes(coreMemory.totalBytes)}</span>
-                </span>
-              </div>
-            )}
-            {settings?.connectionStyle === 'compact' ? (
-              /* COMPACT STYLE */
-              <div className="space-y-3">
-                <Card className={cn(
-                  'border transition-all duration-300 shadow-md',
-                  isConnected
-                    ? 'border-st-ok/50 bg-gradient-to-r from-st-ok/30 via-card/90 to-card/90'
-                    : 'border-primary/30 bg-card/60'
-                )}>
-                  <CardContent className="p-4 flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-3.5 min-w-0">
-                      <Button
-                        size="icon"
-                        onClick={() => {
-                          if (isConnected) void handleDisconnect()
-                          else void handleConnect()
-                        }}
-                        className={cn(
-                          'h-12 w-12 rounded-full shrink-0 shadow-lg transition-all duration-200',
-                          isConnected
-                            ? 'bg-st-ok hover:bg-st-ok text-white shadow-st-ok/30 ring-4 ring-st-ok/20'
-                            : 'bg-primary hover:bg-primary/90 text-white shadow-primary/30 ring-4 ring-primary/20'
-                        )}
-                      >
-                        <Power className="h-5 w-5" />
-                      </Button>
 
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold text-foreground">
-                            {isConnected ? 'VPN ПОДКЛЮЧЕН' : 'VPN ОТКЛЮЧЕН'}
-                          </span>
-                          <Badge
-                            variant={isConnected ? 'default' : 'secondary'}
-                            className={cn(
-                              'text-[10px] px-1.5 py-0 font-mono font-bold uppercase',
-                              isConnected && 'bg-st-ok text-white'
-                            )}
-                          >
-                            {status.connectionMode.toUpperCase()}
-                          </Badge>
-                        </div>
-                        <div className="text-xs text-muted-foreground truncate mt-0.5">
-                          {activeOrSelectedNode
-                            ? `${getFlagEmoji(activeOrSelectedNode.name)} ${cleanServerName(activeOrSelectedNode.name)}`
-                            : 'Сервер не выбран'}
-                        </div>
-                      </div>
-                    </div>
-
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setShowServerSelectModal(true)}
-                      className="text-xs h-8 gap-1.5 shrink-0 border-primary/40 hover:bg-primary/10"
-                    >
-                      <Server className="h-3.5 w-3.5 text-primary" /> Выбрать сервер
-                    </Button>
-                  </CardContent>
-                </Card>
-
-                {/* Quick Controls Row */}
-                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl border border-border/80 bg-card/40 ">
-                  {/* Connection Mode (TUN / Sys Proxy / Only Proxy) */}
-                  <div className="flex items-center gap-1 bg-background/80 p-0.5 rounded-lg border border-border/50">
-                    <button
-                      onClick={() => void handleSetConnectionMode('tun')}
-                      className={cn(
-                        'px-3 py-1 rounded text-xs font-semibold transition-all',
-                        status.connectionMode === 'tun' ? 'bg-primary text-primary-foreground font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      TUN
-                    </button>
-                    <button
-                      onClick={() => void handleSetConnectionMode('system_proxy')}
-                      className={cn(
-                        'px-3 py-1 rounded text-xs font-semibold transition-all',
-                        status.connectionMode === 'system_proxy' ? 'bg-primary text-primary-foreground font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      Системный прокси
-                    </button>
-                    <button
-                      onClick={() => void handleSetConnectionMode('only_proxy')}
-                      className={cn(
-                        'px-3 py-1 rounded text-xs font-semibold transition-all',
-                        status.connectionMode === 'only_proxy' ? 'bg-primary text-primary-foreground font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      Только прокси
-                    </button>
-                  </div>
-
-                  {/* Routing Mode */}
-                  <div className="flex items-center gap-1 bg-background/80 p-0.5 rounded-lg border border-border/50">
-                    <button
-                      onClick={() => incySetRoutingMode('bypass-ru').then(setStatus)}
-                      className={cn(
-                        'px-3 py-1 rounded text-xs font-semibold transition-all',
-                        status.routingMode === 'bypass-ru' ? 'bg-primary text-primary-foreground font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      <span className="inline-flex items-center gap-1"><MapPinned className="h-3 w-3" />Обход РФ</span>
-                    </button>
-                    <button
-                      onClick={() => incySetRoutingMode('global').then(setStatus)}
-                      className={cn(
-                        'px-3 py-1 rounded text-xs font-semibold transition-all',
-                        status.routingMode === 'global' ? 'bg-primary text-primary-foreground font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      <span className="inline-flex items-center gap-1"><Globe className="h-3 w-3" />Весь трафик</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              /* CLASSIC STYLE */
-              <>
-                {/* Mode Switcher Buttons (TUN / Системный прокси / Только прокси) */}
-                <div className="flex justify-center">
-                  <div className="inline-flex p-1 rounded-xl border border-primary/30 bg-primary/10 gap-1">
-                    <button
-                      onClick={() => { void handleSetConnectionMode('tun') }}
-                      className={cn(
-                        'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200',
-                        status.connectionMode === 'tun'
-                          ? 'bg-primary text-primary-foreground  font-bold'
-                          : 'text-primary hover:bg-primary/15'
-                      )}
-                    >
-                      TUN
-                    </button>
-                    <button
-                      onClick={() => { void handleSetConnectionMode('system_proxy') }}
-                      className={cn(
-                        'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200',
-                        status.connectionMode === 'system_proxy'
-                          ? 'bg-primary text-primary-foreground  font-bold'
-                          : 'text-primary hover:bg-primary/15'
-                      )}
-                    >
-                      Системный прокси
-                    </button>
-                    <button
-                      onClick={() => { void handleSetConnectionMode('only_proxy') }}
-                      className={cn(
-                        'px-4 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200',
-                        status.connectionMode === 'only_proxy'
-                          ? 'bg-primary text-primary-foreground  font-bold'
-                          : 'text-primary hover:bg-primary/15'
-                      )}
-                    >
-                      Только прокси
-                    </button>
-                  </div>
-                </div>
-
-                {/* Big Power Button.
-                    The button used to have exactly two looks — connected or
-                    not — and stayed inert for the second or two a connect
-                    takes, so pressing it felt like nothing happened. It now
-                    reflects the real `connecting` / `error` states, spins a
-                    ring while it works, and counts the seconds so a slow
-                    server is visibly slow rather than indistinguishable from
-                    a freeze. */}
-                <div className="flex flex-col items-center justify-center py-4 space-y-4">
-                  <div className="relative flex items-center justify-center">
-                    {/* Rotating progress ring — only while busy. */}
-                    {isBusy && (
-                      <span
-                        aria-hidden
-                        className="absolute size-[10.5rem] rounded-full border-4 border-transparent border-t-primary border-r-primary/40 animate-spin"
-                        style={{ animationDuration: '1.1s' }}
-                      />
-                    )}
-                    <button
-                      onClick={() => {
-                        if (isBusy) return
-                        if (isConnected) {
-                          void handleDisconnect()
-                        } else {
-                          void handleConnect()
+            <IncyConsole
+              tone={consoleTone}
+              compact={settings?.connectionStyle === 'compact'}
+              title={
+                isBusy
+                  ? pendingAction === 'disconnect'
+                    ? 'Отключение…'
+                    : 'Подключение…'
+                  : isConnected
+                    ? 'Подключено'
+                    : hasError
+                      ? status.recovering
+                        ? 'Переподключение…'
+                        : 'Не удалось подключиться'
+                      : nodes.length
+                        ? 'VPN отключён'
+                        : 'Нужна подписка'
+              }
+              text={
+                isBusy ? (
+                  <BusyLine>
+                    <BusyHint disconnecting={pendingAction === 'disconnect'} /> <BusySeconds />
+                  </BusyLine>
+                ) : isConnected ? (
+                  status.exitLagActive ? (
+                    'Режим ExitLag: через VPN идут только выбранные приложения, остальное — напрямую.'
+                  ) : (
+                    <>
+                      {status.connectionMode === 'tun'
+                        ? 'Через VPN идёт весь компьютер, включая игры.'
+                        : status.connectionMode === 'system_proxy'
+                          ? 'Через VPN идут браузеры и программы, которые читают системный прокси.'
+                          : 'Открыт локальный порт прокси — укажите его в нужной программе.'}{' '}
+                      {status.routingMode === 'bypass-ru'
+                        ? 'Российские сайты — напрямую.'
+                        : status.routingMode === 'global'
+                          ? 'Все сайты — через VPN.'
+                          : 'Маршрут «напрямую»: трафик идёт мимо VPN.'}
+                    </>
+                  )
+                ) : hasError ? (
+                  <>
+                    <span className="text-st-err-text">{status.lastError || 'Сервер не ответил.'}</span>{' '}
+                    Нажмите на клавишу, чтобы попробовать снова, или смените узел.
+                  </>
+                ) : nodes.length ? (
+                  'Нажмите на клавишу, чтобы подключиться к выбранному узлу. Режим и маршрут можно поменять и потом.'
+                ) : (
+                  'Добавьте ссылку на подписку от VPN-сервиса — появятся узлы для подключения.'
+                )
+              }
+              extra={
+                !isBusy && hasError && /AmneziaWG|sing-box-lx/.test(status.lastError ?? '') ? (
+                  <Button
+                    size="sm"
+                    className="h-8 gap-1.5 rounded-xl text-xs"
+                    onClick={() => {
+                      const id = toast.loading('Скачиваю ядро sing-box-lx…')
+                      incyUpdateSingBoxNow()
+                        .then((r) =>
+                          r.success
+                            ? toast.success('Ядро обновлено — подключитесь ещё раз', { id, description: r.message })
+                            : toast.error('Ядро не обновилось', { id, description: r.message })
+                        )
+                        .catch((e) => toast.error('Ядро не обновилось', { id, description: e instanceof Error ? e.message : String(e) }))
+                    }}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    Обновить ядро сейчас
+                  </Button>
+                ) : !nodes.length ? (
+                  <Button size="sm" className="h-8 gap-1.5 rounded-xl text-xs" onClick={() => setActiveTab('servers')}>
+                    <Plus className="h-3.5 w-3.5" />
+                    Добавить подписку
+                  </Button>
+                ) : undefined
+              }
+              node={
+                activeOrSelectedNode
+                  ? {
+                      flag: getFlagEmoji(activeOrSelectedNode.name),
+                      name: cleanServerName(activeOrSelectedNode.name),
+                      protocol: activeOrSelectedNode.protocol,
+                      json: Boolean(activeOrSelectedNode.rawJson)
+                    }
+                  : null
+              }
+              pingMs={activeOrSelectedNode?.latencyMs ?? null}
+              connectedAt={status.connectedAt}
+              dialLabel={isBusy ? (pendingAction === 'disconnect' ? 'Отключение…' : 'Подключение…') : isConnected ? 'Отключить VPN' : 'Подключить VPN'}
+              dialDisabled={isBusy}
+              onDial={() => {
+                if (isBusy) return
+                if (isConnected) void handleDisconnect()
+                else void handleConnect()
+              }}
+              onChangeNode={() => (nodes.length ? setShowServerSelectModal(true) : setActiveTab('servers'))}
+              mode={status.connectionMode as ConnMode}
+              systemProxyAvailable={status.systemProxyAvailable}
+              tunAvailable={status.tunAvailable}
+              onMode={(m) => void handleSetConnectionMode(m)}
+              route={status.routingMode as RouteMode}
+              onRoute={(r) => void incySetRoutingMode(r).then(setStatus)}
+              footer={
+                settings?.connectionStyle === 'compact' ? undefined : (
+                  <div className="flex flex-wrap gap-2">
+                    {activeOrSelectedNode && (
+                      <StatChip
+                        label="Пинг до узла"
+                        tone={consoleTone === 'on' ? 'on' : undefined}
+                        icon={<Activity />}
+                        value={
+                          pingingNodeIds.has(activeOrSelectedNode.id)
+                            ? 'замер…'
+                            : formatLatency(activeOrSelectedNode).text
                         }
-                      }}
-                      disabled={isBusy}
-                      aria-busy={isBusy}
-                      className={cn(
-                        'w-36 h-36 rounded-full flex flex-col items-center justify-center gap-1.5 transition-all duration-300 shadow-2xl border-4 relative',
-                        isBusy && 'cursor-wait border-primary/70 bg-primary/10 text-primary',
-                        !isBusy && isConnected &&
-                          'bg-st-ok/20 border-st-ok text-st-ok-text shadow-st-ok/25 hover:scale-105',
-                        !isBusy && !isConnected && hasError &&
-                          'bg-st-err/10 border-st-err/60 text-st-err-text hover:scale-105',
-                        !isBusy && !isConnected && !hasError &&
-                          'bg-card/80 border-primary/40 text-muted-foreground hover:border-primary hover:text-primary hover:scale-105'
-                      )}
-                    >
-                      <Power
-                        className={cn(
-                          'h-12 w-12 transition-transform',
-                          isBusy && 'animate-pulse'
-                        )}
+                        aside={
+                          <SignalBars
+                            ms={activeOrSelectedNode.latencyMs}
+                            unreachable={formatLatency(activeOrSelectedNode).unreachable}
+                            on={isConnected}
+                          />
+                        }
+                        title="Проверить пинг узла ещё раз"
+                        onClick={() => startPing({ type: 'ids', ids: [activeOrSelectedNode.id] })}
+                        className="min-w-[150px]"
                       />
-                      <span className="text-[11px] font-bold uppercase tracking-wider">
-                        {isBusy
-                          ? busyLabel
-                          : isConnected
-                            ? 'Отключить'
-                            : 'Подключить'}
-                      </span>
-                      {/* Seconds elapsed — the difference between "slow" and
-                          "hung" is knowing the clock is still ticking. */}
-                      {isBusy && busySeconds > 0 && (
-                        <span className="text-[10px] font-mono tabular-nums text-primary/80">
-                          {busySeconds} с
-                        </span>
-                      )}
-                    </button>
-                  </div>
-
-                  <div className="text-center space-y-1">
-                    <div
-                      className={cn(
-                        'text-sm font-semibold',
-                        isBusy && 'text-primary',
-                        !isBusy && isConnected && 'text-st-ok-text',
-                        !isBusy && !isConnected && hasError && 'text-st-err-text',
-                        !isBusy && !isConnected && !hasError && 'text-muted-foreground'
-                      )}
-                    >
-                      {isBusy
-                        ? busyHint
-                        : isConnected
-                          ? 'Подключено к VPN'
-                          : hasError
-                            ? status.recovering
-                              ? 'Переподключение…'
-                              : 'Не удалось подключиться'
-                            : 'Нажмите для подключения'}
-                    </div>
-                    {!isBusy && hasError && status.lastError && (
-                      <div className="text-[11px] text-muted-foreground max-w-sm mx-auto leading-relaxed">
-                        {status.lastError}
-                      </div>
                     )}
-                    {!isBusy && hasError && /AmneziaWG|sing-box-lx/.test(status.lastError ?? '') && (
-                      <Button
-                        size="sm"
-                        className="mt-1"
-                        onClick={() => {
-                          const id = toast.loading('Скачиваю ядро sing-box-lx…')
-                          incyUpdateSingBoxNow()
-                            .then((r) =>
-                              r.success
-                                ? toast.success('Ядро обновлено — подключитесь ещё раз', { id, description: r.message })
-                                : toast.error('Ядро не обновилось', { id, description: r.message })
-                            )
-                            .catch((e) => toast.error('Ядро не обновилось', { id, description: e instanceof Error ? e.message : String(e) }))
-                        }}
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" />
-                        Обновить ядро сейчас
-                      </Button>
+                    {isConnected && stats?.trafficAvailable ? (
+                      <StatChip
+                        label="За сессию"
+                        icon={<Download />}
+                        value={`↓ ${formatBytes(stats.sessionBytesReceived).replace('.', ',')}  ↑ ${formatBytes(stats.sessionBytesSent).replace('.', ',')}`}
+                        title="Сколько прошло через VPN с момента подключения"
+                      />
+                    ) : (
+                      <StatChip
+                        label="Серверы"
+                        icon={<Server />}
+                        value={nodes.length ? (anyMeasured ? `${workingCount} из ${nodes.length} отвечают` : `${nodes.length}`) : 'пока нет'}
+                        title="Открыть список серверов"
+                        onClick={() => setActiveTab('servers')}
+                      />
                     )}
+                    {settings?.memoryMonitor && coreMemory && coreMemory.totalBytes > 0 && (
+                      <StatChip
+                        label="Память ядер"
+                        icon={<Cpu />}
+                        value={formatBytes(coreMemory.totalBytes)}
+                        title={coreMemory.perProcess.map((p) => `${p.name.replace('.exe', '')}: ${formatBytes(p.bytes)}`).join('\n')}
+                      />
+                    )}
+                    <TrafficChip t={liveTraffic} active={isConnected} className="min-w-[260px] flex-1" />
                   </div>
-
-                  {/* Quick Split / Global mode selector */}
-                  <div className="flex items-center gap-2 p-1 rounded-xl border border-border bg-card/40">
-                    <Button
-                      size="sm"
-                      variant={status.routingMode === 'bypass-ru' ? 'default' : 'ghost'}
-                      onClick={() => incySetRoutingMode('bypass-ru').then(setStatus)}
-                      className="text-xs h-7 gap-1"
-                    >
-                      <MapPinned className="h-3.5 w-3.5 shrink-0" /> Обход РФ-сайтов
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant={status.routingMode === 'global' ? 'default' : 'ghost'}
-                      onClick={() => incySetRoutingMode('global').then(setStatus)}
-                      className="text-xs h-7 gap-1"
-                    >
-                      <Globe className="h-3.5 w-3.5 shrink-0" /> Весь трафик
-                    </Button>
+                )
+              }
+            />
+            {(chain?.entryNodeId || previousNode) && (
+              <LzPanel className="flex flex-wrap items-center justify-between gap-3 p-4">
+                {chain?.entryNodeId && (
+                  <div className="min-w-0 space-y-1">
+                    <div className="text-sm font-semibold">Цепочка · {chain.active ? 'Маршрут применён' : status.state === 'connecting' ? 'Подключается' : isConnected ? 'Не применена' : 'Настроена'}</div>
+                    <div className="text-xs break-words">ПК → {nodeTitle(chain.entryNodeId)} → {nodeTitle(chain.exitNodeId)}</div>
+                    {chain.reason && <div className="text-xs text-st-warn-text">{chain.reason}</div>}
                   </div>
-                </div>
-              </>
+                )}
+                {chain?.active && (
+                  <Button size="sm" variant="outline" disabled={chainChecking || isBusy} onClick={() => void checkChainTraffic()}>
+                    {chainChecking ? 'Проверяю…' : 'Проверить цепочку'}
+                  </Button>
+                )}
+                {previousNode && (
+                  <Button size="sm" variant="outline" disabled={previousChecking || isBusy} onClick={() => void selectPrevious()}>
+                    {isConnected ? 'Вернуться на' : 'Выбрать предыдущий:'} {cleanServerName(previousNode.name)}
+                  </Button>
+                )}
+              </LzPanel>
             )}
 
-            {/* Автовыбор узла: автопереключение при сбое + правила, какие узлы
-                можно выбирать автоматически. Стоит прямо под кнопкой
-                подключения, чтобы переключатель не терялся. */}
-            <AutoSelectCard
-              settings={settings}
-              nodes={nodes}
-              onPatch={(patch) => handleUpdateSettings(patch, true)}
-            />
-
-            {/* Тест скорости: выбор сервера (или текущее подключение) и сервиса
-                замера — то же окно, что на главной. */}
-            <div className="flex flex-wrap items-center gap-3 ui-card rounded-xl border border-border bg-card p-4">
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary">
-                <Gauge className="h-5 w-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold">Тест скорости</div>
-                <div className="truncate text-xs text-muted-foreground">
-                  {nodes.length
-                    ? `Через любой сервер подписки или текущее подключение · Яндекс, Speedtest, Cloudflare`
-                    : 'Серверов пока нет — можно проверить интернет напрямую. Добавьте подписку, чтобы мерить через VPN.'}
-                </div>
-              </div>
-              <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => setSpeedOpen(true)}>
-                <Gauge className="h-3.5 w-3.5" />
-                Проверить
-              </Button>
-              <NetSpeedDialog
-                open={speedOpen}
-                onClose={() => setSpeedOpen(false)}
-                vpnOn={isConnected}
+            {/* Вторая строка: подписка, автовыбор узла, тест скорости. Без серверов
+                место автовыбора занимает рекомендация автора. */}
+            <div className="grid gap-3 md:grid-cols-[1.3fr_1fr_1fr]">
+              <SubscriptionTile
+                subscription={subscription}
+                nodeCount={
+                  subscription
+                    ? nodes.filter((n) => n.subscriptionId === subscription.id).length || nodes.length
+                    : nodes.length
+                }
+                others={otherSubscriptions}
+                othersCount={(id) => nodes.filter((n) => n.subscriptionId === id).length}
+                onSwitchProvider={(sub) => void handleSwitchProvider(sub)}
+                onAdd={() => setActiveTab('servers')}
+                ops={ops}
+                pingDisabled={nodes.length === 0}
+                hintsIgnored={Boolean(settings?.ignoreProviderSettings)}
+              />
+              {nodes.length > 0 ? (
+                <AutoSelectTile settings={settings} nodes={nodes} onPatch={(patch) => handleUpdateSettings(patch, true)} />
+              ) : (
+                <VelvetOffer variant="full" />
+              )}
+              <SpeedTile
                 nodes={nodes}
+                vpnOn={isConnected}
                 initialNodeId={activeOrSelectedNode?.id ?? null}
+                nodeLabel={nodeLabelById}
               />
             </div>
 
-            {/* ТЕКУЩАЯ ПОДПИСКА (Subscription Card) */}
-            <div className="space-y-2">
-              <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                Текущая подписка
-              </div>
+            {nodes.length > 0 && <VelvetOffer variant="slim" />}
 
-              {subscription ? (
-                <Card className="border-primary/40 bg-gradient-to-br from-card/90 via-card/60 to-primary/10 shadow-md">
-                  <CardContent className="p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <Star className="h-4 w-4 text-st-warn-text fill-st-warn shrink-0" />
-                        <div className="font-bold text-sm text-foreground truncate">
-                          {subscription.title}
-                        </div>
-                        {/* Считаем узлы именно этой подписки. Общее число
-                            приписывало бы ей серверы других провайдеров. */}
-                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 font-mono bg-primary/20 text-primary">
-                          {nodes.filter((n) => n.subscriptionId === subscription.id).length ||
-                            nodes.length}
-                        </Badge>
-                      </div>
-
-                      <div className="flex items-center gap-1">
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          onClick={() => { void handleRefreshSubscription() }}
-                          disabled={loadingRefresh}
-                          title="Обновить подписку"
-                          className="h-7 w-7"
-                        >
-                          <RefreshCw className={cn('h-3.5 w-3.5', loadingRefresh && 'animate-spin')} />
-                        </Button>
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          onClick={() => { void handlePingAll() }}
-                          disabled={testingPings}
-                          title="Замерить пинг всех серверов"
-                          className="h-7 w-7"
-                        >
-                          <Activity className={cn('h-3.5 w-3.5', testingPings && 'animate-pulse text-st-warn-text')} />
-                        </Button>
-                      </div>
-                    </div>
-
-                    {/* Progress bar */}
-                    {subscription.usedBytes !== null && subscription.totalBytes !== null && (
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between text-xs text-muted-foreground">
-                          <span>
-                            {subscription.expireDate ? `Срок: ${subscription.expireDate}` : 'Активна'}
-                          </span>
-                          <span className="font-mono text-primary">
-                            {(subscription.usedBytes / (1024 * 1024 * 1024)).toFixed(2)} ГБ /{' '}
-                            {(subscription.totalBytes / (1024 * 1024 * 1024)).toFixed(2)} ГБ
-                          </span>
-                        </div>
-                        <div className="w-full bg-secondary/80 h-2 rounded-full overflow-hidden">
-                          <div
-                            className="bg-primary h-full transition-all duration-500 shadow-sm"
-                            style={{
-                              width: `${Math.min(
-                                100,
-                                Math.round((subscription.usedBytes / subscription.totalBytes) * 100)
-                              )}%`
-                            }}
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Action Buttons if provider metadata exists */}
-                    {(subscription.webPageUrl || subscription.supportUrl || subscription.premiumUrl) && (
-                      <div className="flex flex-wrap items-center gap-2 pt-1">
-                        {subscription.webPageUrl && (
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            className="text-xs h-7 gap-1.5 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30"
-                            onClick={() => window.open(subscription.webPageUrl, '_blank')}
-                          >
-                            <Send className="h-3 w-3" /> Канал / Сайт
-                          </Button>
-                        )}
-                        {subscription.supportUrl && (
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            className="text-xs h-7 gap-1.5 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30"
-                            onClick={() => window.open(subscription.supportUrl, '_blank')}
-                          >
-                            <HelpCircle className="h-3 w-3" /> Поддержка
-                          </Button>
-                        )}
-                        {subscription.premiumUrl && (
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            className="text-xs h-7 gap-1.5 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30"
-                            onClick={() => window.open(subscription.premiumUrl, '_blank')}
-                          >
-                            <Star className="h-3 w-3 text-st-warn-text" /> Продлить
-                          </Button>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Объявления провайдера.
-                        Раньше этот блок висел ОТДЕЛЬНОЙ карточкой над «Текущей
-                        подпиской», хотя приходит он тем же ответом подписки и
-                        описывает именно её — из-за этого выглядел как чужое
-                        системное уведомление. Теперь это секция внутри
-                        карточки, отделённая линией: тот же источник данных —
-                        то же место в интерфейсе. */}
-                    {subscription.announcements && subscription.announcements.length > 0 && (
-                      <div className="pt-3 mt-1 border-t border-border/50 space-y-1.5">
-                        {subscription.announcements.map((ann, idx) => {
-                          let emoji = 'ℹ️'
-                          if (ann.includes('📶') || ann.includes('LTE')) emoji = '📶'
-                          else if (ann.includes('⚠️') || ann.includes('Глушат')) emoji = '⚠️'
-                          else if (ann.includes('⛔') || ann.includes('Перестало')) emoji = '⛔'
-                          else if (ann.includes('🆔') || ann.includes('⏱️')) emoji = '🆔'
-
-                          const cleanText = stripLeadingEmoji(ann)
-                          return (
-                            <div
-                              key={idx}
-                              className="flex items-start gap-2 text-[11px] leading-relaxed text-st-warn-text"
-                            >
-                              <span className="shrink-0">{emoji}</span>
-                              <span>{cleanText || ann}</span>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              ) : (
-                <div className="p-4 rounded-xl border border-dashed border-border bg-card/30 text-center space-y-3">
-                  <div className="text-xs text-muted-foreground">Подписка пока не добавлена — нет VPN?</div>
-                  <VelvetRecommendation className="text-left" />
-                  <Button size="sm" variant="outline" onClick={() => setActiveTab('servers')} className="text-xs h-7 gap-1">
-                    <Plus className="h-3.5 w-3.5" /> У меня есть подписка — добавить
-                  </Button>
-                </div>
-              )}
-              {subscription && <VelvetRecommendation variant="hint" className="px-1 pt-0.5" />}
-            </div>
-
-            {/* ДРУГИЕ ПРОВАЙДЕРЫ.
-                Нужен способ переключиться между подписками, не уходя со
-                главной: клик берёт самый быстрый сервер провайдера и делает
-                его текущим — а если туннель поднят, сразу переподключается. */}
-            {otherSubscriptions.length > 0 && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                    Другие провайдеры ({otherSubscriptions.length})
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => { void handleRefreshAllSubscriptions() }}
-                    disabled={loadingRefresh}
-                    className="h-7 gap-1.5 text-xs"
-                  >
-                    <RefreshCw className={cn('h-3.5 w-3.5', loadingRefresh && 'animate-spin')} />
-                    Обновить все
-                  </Button>
-                </div>
-
-                <div className="space-y-2">
-                  {otherSubscriptions.map((sub) => {
-                    const subNodes = nodes.filter((n) => n.subscriptionId === sub.id)
-                    return (
-                      <div
-                        key={sub.id}
-                        onClick={() => { void handleSwitchProvider(sub) }}
-                        className="flex items-center justify-between p-3 rounded-xl border border-border bg-card/40 hover:bg-card/70 hover:border-primary/50 cursor-pointer transition-all"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Star className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                          <div className="min-w-0">
-                            <div className="text-xs font-semibold text-foreground truncate">
-                              {sub.title}
-                            </div>
-                            <div className="text-[10px] text-muted-foreground truncate mt-0.5">
-                              {subNodes.length} серв.
-                              {sub.expireDate ? ` • до ${sub.expireDate}` : ''}
-                            </div>
-                          </div>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={subNodes.length === 0}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            void handleSwitchProvider(sub)
-                          }}
-                          className="text-xs h-7 shrink-0"
-                        >
-                          Переключиться
-                        </Button>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* SELECTED SERVER CARD (Directly on Main Screen!) */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                  Выбранный сервер
-                </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setShowServerSelectModal(true)}
-                  className="text-xs h-6 text-primary hover:text-primary"
-                >
-                  Сменить сервер ▾
-                </Button>
-              </div>
-
-              {activeOrSelectedNode ? (
-                <div
-                  onClick={() => setShowServerSelectModal(true)}
-                  className={cn(
-                    'flex items-center justify-between p-3.5 rounded-xl border cursor-pointer transition-all duration-200 hover:border-primary/60 shadow-sm',
-                    isConnected
-                      ? 'border-st-ok/60 bg-st-ok/20'
-                      : 'border-primary/40 bg-card/60 hover:bg-card/90'
-                  )}
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span className="text-2xl shrink-0 select-none">
-                      {getFlagEmoji(activeOrSelectedNode.name)}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-foreground truncate">
-                          {cleanServerName(activeOrSelectedNode.name)}
-                        </span>
-                        <Badge
-                          variant="outline"
-                          className={cn(
-                            'text-[9px] px-1.5 py-0 font-mono uppercase',
-                            activeOrSelectedNode.protocol === 'hysteria2'
-                              ? 'border-st-warn/40 text-st-warn-text bg-st-warn/10'
-                              : activeOrSelectedNode.protocol === 'wireguard'
-                              ? 'border-st-info/40 text-st-info-text bg-st-info/10'
-                              : 'border-primary/40 text-primary bg-primary/10'
-                          )}
-                        >
-                          {activeOrSelectedNode.protocol === 'hysteria2' ? 'HYS2' : activeOrSelectedNode.protocol === 'wireguard' ? 'WARP' : activeOrSelectedNode.protocol}
-                        </Badge>
-                        {activeOrSelectedNode.rawJson && (
-                          <Badge variant="secondary" className="text-[9px] px-1 py-0 font-mono opacity-70">
-                            JSON
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="text-[11px] text-muted-foreground truncate mt-0.5">
-                        {activeOrSelectedNode.description || `${activeOrSelectedNode.server}:${activeOrSelectedNode.port}`}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    {pingingNodeIds.has(activeOrSelectedNode.id) ? (
-                      <div className="px-2 py-0.5 flex items-center justify-center">
-                        <div className="h-3 w-3 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
-                      </div>
-                    ) : (
-                      <LatencyBadge node={activeOrSelectedNode} display={settings?.pingDisplay} />
-                    )}
-                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                </div>
-              ) : (
-                <div className="text-xs text-muted-foreground p-3 rounded-xl border border-border text-center">
-                  Серверы не найдены. Импортируйте подписку на вкладке «Сервера».
-                </div>
-              )}
-            </div>
-
-            {/* Quick Switch Server Modal */}
+            {/* Быстрая смена узла */}
             {showServerSelectModal && (
               <div
-                className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
                 onClick={() => setShowServerSelectModal(false)}
               >
                 <div
-                  className="bg-card/95 border border-primary/30 w-full max-w-lg rounded-2xl p-4.5 space-y-3 max-h-[85vh] flex flex-col shadow-[0_0_50px_rgba(0,0,0,0.8)] "
+                  role="dialog"
+                  aria-label="Выбор узла"
+                  className="flex max-h-[85vh] w-full max-w-lg flex-col gap-3 rounded-2xl border border-border bg-[color:var(--popover)] p-5 shadow-2xl"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <div className="flex items-center justify-between border-b border-border/40 pb-2.5">
-                    <div className="font-bold text-sm text-foreground flex items-center gap-2">
-                      <Server className="size-4 text-primary" /> Выбор сервера ({nodes.length})
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-[15px] font-bold text-[color:var(--text-title)]">
+                      Выбор узла
+                      <span className="rounded-md bg-foreground/[0.07] px-1.5 text-[11px] font-semibold tabular-nums text-foreground/80">{nodes.length}</span>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
+                    <button
+                      type="button"
+                      aria-label="Закрыть"
                       onClick={() => setShowServerSelectModal(false)}
-                      className="text-xs h-7 rounded-lg"
+                      className="cursor-pointer rounded-lg p-1 text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
                     >
-                      Закрыть
-                    </Button>
+                      <X className="size-4" />
+                    </button>
                   </div>
 
                   <div className="relative">
-                    <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                    <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                     <Input
+                      autoFocus
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Быстрый поиск серверов..."
-                      className="pl-8 text-xs h-8"
+                      placeholder="Страна, город или адрес"
+                      className="h-9 pl-8 text-xs"
                     />
                   </div>
 
-                  <div className="overflow-y-auto space-y-1.5 flex-1 pr-1">
+                  <div className="-mr-1 flex-1 space-y-1.5 overflow-y-auto pr-1">
                     {filteredNodes.map((node) => {
                       const isSelected = (status.selectedNodeId || nodes[0]?.id) === node.id
                       return (
-                        <div
+                        <button
+                          type="button"
                           key={node.id}
                           onClick={() => { void handleSelectNode(node.id) }}
                           className={cn(
-                            'flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all',
+                            'relative flex w-full cursor-pointer items-center justify-between gap-2 overflow-hidden rounded-xl border py-1.5 pr-2 pl-2 text-left transition-colors',
                             isSelected
-                              ? 'border-primary bg-primary/15'
-                              : 'border-border/60 bg-card/40 hover:bg-card/80'
+                              ? 'border-primary/45 bg-primary/[0.09]'
+                              : 'border-foreground/[0.07] bg-foreground/[0.025] hover:border-foreground/[0.14] hover:bg-foreground/[0.05]'
                           )}
                         >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <span className="text-lg">{getFlagEmoji(node.name)}</span>
-                            <div className="min-w-0">
-                              <div className="text-xs font-semibold text-foreground truncate">
+                          <span aria-hidden className={cn('absolute inset-y-2 left-0 w-[3px] rounded-r-full', isSelected ? 'bg-primary' : 'bg-transparent')} />
+                          <span className="flex min-w-0 items-center gap-2.5 pl-1">
+                            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-foreground/[0.05] text-[18px] leading-none">
+                              {getFlagEmoji(node.name) || <Globe className="size-4 text-muted-foreground" />}
+                            </span>
+                            <span className="min-w-0">
+                              <span data-sensitive="node" className="block truncate text-[13px] font-semibold text-foreground">
                                 {cleanServerName(node.name)}
-                              </div>
-                              <div className="text-[10px] text-muted-foreground truncate">
-                                {node.protocol.toUpperCase()} • {node.server}:{node.port}
-                              </div>
-                            </div>
-                          </div>
+                              </span>
+                              <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                                <ProtocolTag protocol={node.protocol} />
+                                <span data-sensitive="ip" className="truncate">{node.server}:{node.port}</span>
+                              </span>
+                            </span>
+                          </span>
 
-                          <div className="flex items-center gap-2 shrink-0">
+                          <span className="flex shrink-0 items-center gap-1.5">
                             {pingingNodeIds.has(node.id) ? (
-                              <div className="px-2 py-0.5 flex items-center justify-center">
-                                <div className="h-3 w-3 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
-                              </div>
+                              <span className="size-3 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
                             ) : (
                               <LatencyBadge node={node} display={settings?.pingDisplay} />
                             )}
                             {isSelected && <CheckCircle2 className="h-4 w-4 text-primary" />}
-                          </div>
-                        </div>
+                          </span>
+                        </button>
                       )
                     })}
+                    {filteredNodes.length === 0 && (
+                      <div className="py-6 text-center text-[12px] text-muted-foreground">Ничего не найдено</div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2924,349 +2677,414 @@ export default function IncyPage(): React.ReactElement {
 
         {/* TAB 2: SERVERS (Full Servers List) */}
         {activeTab === 'servers' && (
-          <div className="space-y-4">
-            {/* Import Bar */}
-            <div className="flex flex-col sm:flex-row gap-2">
-              <Input
-                value={inputUrl}
-                onChange={(e) => setInputUrl(e.target.value)}
-                onPaste={(e) => {
-                  // Однострочное поле съедает переводы строк, а .conf без них не разобрать —
-                  // конфиг WireGuard импортируем сразу из буфера, минуя поле.
-                  const text = e.clipboardData.getData('text')
-                  if (/\[\s*interface\s*\]/i.test(text)) {
-                    e.preventDefault()
-                    void handleImport(text)
-                  }
-                }}
-                placeholder="Вставьте ссылку на подписку (https://...), узел (vless://, ss://, hy2://) или конфиг WireGuard / AmneziaWG"
-                className="text-xs font-mono flex-1"
+          <div className="space-y-3">
+            {/* Добавить: ссылка, буфер, QR, файл .conf */}
+            <LzPanel data-tour="incy-import" className="p-4">
+              <LzSectionHead
+                title="Добавить серверы"
+                hint="Ссылка на подписку от VPN-сервиса (https://…), отдельный узел (vless://, ss://, hy2://…) или конфиг WireGuard / AmneziaWG. Серверы подписки обновляются сами."
+                right={
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={loadingImport || scanningQr}
+                      onClick={() => setShowQrModal(true)}
+                      className="h-8 gap-1.5 rounded-xl text-xs"
+                      title="Сканировать QR-код с экрана, из буфера или файла"
+                    >
+                      <QrCode className="h-3.5 w-3.5" /> QR-код
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={loadingImport}
+                      onClick={() => { void handleImportConfFile() }}
+                      className="h-8 gap-1.5 rounded-xl text-xs"
+                      title="Импортировать конфиг WireGuard / AmneziaWG из файла .conf"
+                    >
+                      <FileUp className="h-3.5 w-3.5" /> Файл .conf
+                    </Button>
+                  </>
+                }
               />
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={loadingImport}
-                onClick={() => { void handlePasteImport() }}
-                className="gap-1.5 text-xs shrink-0"
-                title="Вставить ссылку из буфера обмена и импортировать"
-              >
-                <Copy className="h-3.5 w-3.5" /> Из буфера
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={loadingImport || scanningQr}
-                onClick={() => setShowQrModal(true)}
-                className="gap-1.5 text-xs shrink-0 border-primary/40 hover:bg-primary/10 text-primary"
-                title="Сканировать QR-код с экрана, из буфера или файла"
-              >
-                <QrCode className="h-3.5 w-3.5" /> QR-код
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={loadingImport}
-                onClick={() => { void handleImportConfFile() }}
-                className="gap-1.5 text-xs shrink-0"
-                title="Импортировать конфиг WireGuard / AmneziaWG из файла .conf"
-              >
-                <FileUp className="h-3.5 w-3.5" /> Импорт .conf
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => { void handleImport() }}
-                disabled={loadingImport || !inputUrl.trim()}
-                className="gap-1.5 text-xs shrink-0"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                {loadingImport ? 'Загрузка...' : 'Импортировать'}
-              </Button>
-            </div>
-            <WarpCard
-              nodes={nodes}
-              selectedNodeId={status.selectedNodeId}
-              busy={loadingImport}
-              onNodes={(all) => {
-                setNodes(all)
-                void incyGetStatus().then(setStatus).catch(() => void 0)
-                void handlePingAll(all)
-              }}
-              onImportText={(text, name) => handleImport(text, name)}
-              onPickFile={handleImportConfFile}
-            />
-
-            <VelvetRecommendation variant="hint" className="px-1" />
-
-            {/* Filter Pills and Search — наверху, над всеми подписками */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-1">
-              <div className="flex items-center gap-1.5 w-full sm:w-auto flex-wrap">
-                <Button
-                  size="sm"
-                  variant={protocolFilter === 'all' ? 'default' : 'outline'}
-                  onClick={() => setProtocolFilter('all')}
-                  className="text-xs h-7"
-                >
-                  Все ({nodes.length})
-                </Button>
-                <Button
-                  size="sm"
-                  variant={protocolFilter === 'vless' ? 'default' : 'outline'}
-                  onClick={() => setProtocolFilter('vless')}
-                  className="text-xs h-7"
-                >
-                  VLESS ({nodes.filter((n) => n.protocol === 'vless').length})
-                </Button>
-                <Button
-                  size="sm"
-                  variant={protocolFilter === 'hysteria2' ? 'default' : 'outline'}
-                  onClick={() => setProtocolFilter('hysteria2')}
-                  className="text-xs h-7"
-                >
-                  ⚡ Hysteria2 ({nodes.filter((n) => n.protocol === 'hysteria2').length})
-                </Button>
-                <Button
-                  size="sm"
-                  variant={protocolFilter === 'wireguard' ? 'default' : 'outline'}
-                  onClick={() => setProtocolFilter('wireguard')}
-                  className="text-xs h-7"
-                >
-                  🛡 WARP ({nodes.filter((n) => n.protocol === 'wireguard').length})
-                </Button>
-                <Button
-                  size="sm"
-                  variant={onlyWorking ? 'default' : 'outline'}
-                  onClick={() => setOnlyWorking((v) => !v)}
-                  disabled={!anyMeasured && !onlyWorking}
-                  title={anyMeasured ? 'Скрыть серверы, которые не ответили на замер' : 'Сначала замерьте пинг'}
-                  className="text-xs h-7 gap-1"
-                >
-                  <CheckCircle2 className="size-3.5" />
-                  Только рабочие{anyMeasured ? ` (${workingCount})` : ''}
-                </Button>
-              </div>
-
-              <div className="relative w-full sm:w-64">
-                <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
-                <Input
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Поиск серверов..."
-                  className="pl-8 text-xs h-7.5"
-                />
-              </div>
-            </div>
-
-            {/* Подписки: по карточке на провайдера.
-                Раньше карточка была одна и показывала общее число серверов —
-                с двумя подписками это враньё: она приписывала себе чужие узлы.
-                Теперь каждая считает только свои. */}
-            {subscriptions.length > 1 && (
-              <div className="flex items-center justify-between px-0.5">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Подписки ({subscriptions.length})
+              <div className="mt-2.5 flex flex-col gap-2 sm:flex-row">
+                <div className="relative flex-1">
+                  <LinkIcon className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    data-sensitive="link"
+                    value={inputUrl}
+                    onChange={(e) => setInputUrl(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && inputUrl.trim() && !loadingImport) void handleImport()
+                    }}
+                    onPaste={(e) => {
+                      // Однострочное поле съедает переводы строк, а .conf без них не разобрать —
+                      // конфиг WireGuard импортируем сразу из буфера, минуя поле.
+                      const text = e.clipboardData.getData('text')
+                      if (/\[\s*interface\s*\]/i.test(text)) {
+                        e.preventDefault()
+                        void handleImport(text)
+                      }
+                    }}
+                    placeholder="Ссылка на подписку (https://…), узел (vless://, ss://, hy2://) или конфиг WireGuard / AmneziaWG"
+                    className="h-10 rounded-xl pl-9 text-xs"
+                  />
                 </div>
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => { void handleRefreshAllSubscriptions() }}
-                  disabled={loadingRefresh}
-                  className="h-7 gap-1.5 text-xs"
+                  disabled={loadingImport}
+                  onClick={() => { void handlePasteImport() }}
+                  className="h-10 shrink-0 gap-1.5 rounded-xl text-xs"
+                  title="Вставить ссылку из буфера обмена и импортировать"
                 >
-                  <RefreshCw className={cn('h-3.5 w-3.5', loadingRefresh && 'animate-spin')} />
-                  Обновить все
+                  <Copy className="h-3.5 w-3.5" /> Из буфера
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => { void handleImport() }}
+                  disabled={loadingImport || !inputUrl.trim()}
+                  className="h-10 shrink-0 gap-1.5 rounded-xl px-4 text-xs"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {loadingImport ? 'Загрузка…' : 'Импортировать'}
                 </Button>
               </div>
+            </LzPanel>
+
+            {/* WarpCard не размонтируется при сворачивании: идущая генерация ключа не прервётся. */}
+            <div className={cn('relative', !(warpOpen || nodes.length === 0) && 'hidden')}>
+              {nodes.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setWarpOpenSaved(false)}
+                  className="absolute top-3.5 right-4 z-[2] flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-[12px] font-semibold text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
+                >
+                  <ChevronDown className="size-3.5 rotate-180" />
+                  Свернуть
+                </button>
+              )}
+              <WarpCard
+                nodes={nodes}
+                selectedNodeId={status.selectedNodeId}
+                busy={loadingImport}
+                onNodes={(all) => {
+                  setNodes(all)
+                  void incyGetStatus().then(setStatus).catch(() => void 0)
+                  startPing()
+                }}
+                onImportText={(text, name) => handleImport(text, name)}
+                onPickFile={handleImportConfFile}
+              />
+            </div>
+            {!(warpOpen || nodes.length === 0) && (
+              <LzPanel data-tour="incy-warp" className="flex items-center gap-3 px-4 py-2.5">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-[10px] bg-foreground/[0.06] text-st-info-text">
+                  <Zap className="size-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13.5px] font-bold text-[color:var(--text-title)]">Cloudflare WARP</div>
+                  <div className="truncate text-[11.5px] text-muted-foreground">Бесплатный узел от Cloudflare: свой ключ или конфиг из бота</div>
+                </div>
+                <Button size="sm" variant="outline" className="h-8 gap-1.5 rounded-xl text-xs" onClick={() => setWarpOpenSaved(true)}>
+                  <ChevronDown className="size-3.5" />
+                  Показать
+                </Button>
+              </LzPanel>
             )}
 
+            <VelvetOffer variant={nodes.length ? 'slim' : 'full'} />
+
+            {/* Поиск, фильтры, вид списка и действия — одной панелью над всеми подписками. */}
+            {nodes.length > 0 && (
+              <LzPanel data-tour="incy-server-tools" className="relative z-[3] space-y-2.5 overflow-visible p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Segmented
+                    items={protocolItems}
+                    value={protocolFilter}
+                    onChange={setProtocolFilter}
+                    size="sm"
+                    aria-label="Протокол"
+                    className="w-full sm:w-[400px]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setOnlyWorking((v) => !v)}
+                    disabled={!anyMeasured && !onlyWorking}
+                    aria-pressed={onlyWorking}
+                    title={anyMeasured ? 'Скрыть серверы, которые не ответили на замер' : 'Сначала замерьте пинг'}
+                    className={cn(
+                      'inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-xl border px-3 text-xs font-semibold transition-colors disabled:cursor-default disabled:opacity-50',
+                      onlyWorking
+                        ? 'border-primary/45 bg-primary/12 text-primary'
+                        : 'border-foreground/[0.08] bg-foreground/[0.04] text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    <CheckCircle2 className="size-3.5" />
+                    Только рабочие{anyMeasured ? ` ${workingCount}` : ''}
+                  </button>
+                  <div className="relative min-w-[200px] flex-1">
+                    <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Страна, город, адрес или протокол"
+                      className="h-9 rounded-xl pl-8 text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 border-t border-foreground/[0.07] pt-2.5">
+                  <div className="flex items-center gap-1.5" data-tour="incy-sort-quick">
+                    <span className="text-[11.5px] text-muted-foreground">Порядок</span>
+                    <Segmented
+                      items={[
+                        { id: 'default', label: 'Как есть', title: 'Как прислал провайдер' },
+                        { id: 'ping', label: 'Пинг', title: 'Сначала самые быстрые' },
+                        { id: 'name', label: 'Имя', title: 'По алфавиту' }
+                      ]}
+                      value={(settings?.sortServersBy ?? 'default') as 'default' | 'ping' | 'name'}
+                      onChange={(v) => void handleUpdateSettings({ sortServersBy: v }, true)}
+                      size="sm"
+                      aria-label="Порядок серверов"
+                      className="w-[210px]"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5" data-tour="incy-ping-display-quick">
+                    <span className="text-[11.5px] text-muted-foreground">Пинг</span>
+                    <Segmented
+                      items={[
+                        { id: 'numbers', label: 'Цифры' },
+                        { id: 'bar', label: 'Шкала' },
+                        { id: 'both', label: 'Оба' },
+                        { id: 'dots', label: 'Точки' }
+                      ]}
+                      value={(settings?.pingDisplay ?? 'numbers') as 'numbers' | 'bar' | 'both' | 'dots'}
+                      onChange={(v) => void handleUpdateSettings({ pingDisplay: v }, true)}
+                      size="sm"
+                      aria-label="Как показывать пинг"
+                      className="w-[250px]"
+                    />
+                  </div>
+                  <div className="ml-auto flex items-center gap-1.5">
+                    <OpsSplitButton
+                      kind="ping"
+                      ops={ops}
+                      label="Проверить пинг"
+                      menuTitle="Что проверить"
+                      options={pingScopeOptions}
+                      defaultScope={{ type: 'all' }}
+                      tour="incy-ping-scope"
+                    />
+                    {subscriptions.length > 0 && (
+                      <OpsSplitButton
+                        kind="refresh"
+                        ops={ops}
+                        label={subscriptions.length > 1 ? 'Обновить все' : 'Обновить'}
+                        menuTitle="Какие подписки обновить"
+                        options={refreshScopeOptions}
+                        defaultScope={{ type: 'all' }}
+                        tour="incy-refresh-scope"
+                      />
+                    )}
+                  </div>
+                </div>
+                <OpsStatusLine ops={ops} />
+              </LzPanel>
+            )}
+
+            {/* Подписки: по панели на провайдера, каждая считает только свои серверы. */}
             {subscriptions.map((sub) => {
               const subNodes = nodes.filter((n) => n.subscriptionId === sub.id)
               const visibleNodes = filteredNodes.filter((n) => n.subscriptionId === sub.id)
               const collapsed = collapsedSubs.has(sub.id)
               const isCurrent = subscriptions.length > 1 && subscription?.id === sub.id
+              const holdsActive = isConnected && subNodes.some((n) => n.id === status.activeNodeId)
               const busy = loadingRefresh && refreshingSubId === sub.id
+              const u = subUsage(sub)
 
               return (
-                <Card
+                <LzPanel
                   key={sub.id}
-                  className={cn(
-                    'shadow-md transition-colors',
-                    isCurrent
-                      ? 'border-primary/40 bg-gradient-to-br from-card/90 via-card/60 to-primary/10'
-                      : 'border-border/70 bg-card/60'
-                  )}
+                  tone={holdsActive ? 'on' : 'off'}
+                  glow={8}
+                  className={cn('p-0', (isCurrent || holdsActive) && 'border-primary/35', u.low && !holdsActive && 'border-st-warn/40')}
                 >
-                  <CardContent className="p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCollapsedSubs((prev) => {
-                            const next = new Set(prev)
-                            if (next.has(sub.id)) next.delete(sub.id)
-                            else next.add(sub.id)
-                            return next
-                          })
-                        }}
-                        className="flex items-center gap-2 min-w-0 flex-1 text-left"
-                        title={collapsed ? 'Показать серверы' : 'Свернуть'}
-                      >
-                        <ChevronDown
-                          className={cn(
-                            'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
-                            collapsed && '-rotate-90'
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCollapsedSubs((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(sub.id)) next.delete(sub.id)
+                          else next.add(sub.id)
+                          return next
+                        })
+                      }}
+                      aria-expanded={!collapsed}
+                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left"
+                      title={collapsed ? 'Показать серверы' : 'Свернуть'}
+                    >
+                      <ChevronDown
+                        className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', collapsed && '-rotate-90')}
+                      />
+                      <SubIcon subId={sub.id} title={sub.title} />
+                      <span className="min-w-0">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span data-sensitive="node" className="truncate text-[14px] font-bold text-[color:var(--text-title)]">
+                            {sub.title}
+                          </span>
+                          {isCurrent && (
+                            <span className="shrink-0 rounded-md bg-primary/12 px-1.5 py-px text-[10.5px] font-semibold text-primary">текущая</span>
                           )}
-                        />
-                        <Star className="h-4 w-4 text-st-warn-text fill-st-warn shrink-0" />
-                        <div className="font-bold text-sm text-foreground truncate">{sub.title}</div>
-                        <Badge
-                          variant="secondary"
-                          className="text-[10px] px-1.5 py-0 font-mono bg-primary/20 text-primary"
-                        >
-                          {subNodes.length}
-                        </Badge>
-                        {isCurrent && (
-                          <Badge variant="outline" className="text-[9px] px-1.5 py-0 uppercase">
-                            текущая
-                          </Badge>
-                        )}
-                      </button>
+                        </span>
+                        <span className="text-[11.5px] text-muted-foreground tabular-nums">
+                          {subNodes.length} серв.
+                          {visibleNodes.length !== subNodes.length ? `, найдено ${visibleNodes.length}` : ''}
+                        </span>
+                      </span>
+                    </button>
 
-                      <div className="flex items-center gap-1">
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          onClick={() => { void handleRefreshSubscription(sub.id) }}
-                          disabled={loadingRefresh}
-                          title="Обновить подписку"
-                          className="h-7 w-7"
+                    {/* Остаток: дни и трафик. */}
+                    <div className="flex items-center gap-2">
+                      <span
+                        title={sub.expireDate ? `Срок: ${sub.expireDate}` : 'Срок не указан провайдером'}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11.5px] font-semibold tabular-nums',
+                          u.daysLeft !== null && u.daysLeft <= 3
+                            ? 'border-st-warn/40 bg-st-warn/10 text-st-warn-text'
+                            : 'border-foreground/[0.08] bg-foreground/[0.04] text-foreground/85'
+                        )}
+                      >
+                        <Clock className="size-3.5" />
+                        {daysText(u.daysLeft, sub.expireDate)}
+                      </span>
+                      {u.leftBytes !== null && u.totalBytes !== null && u.usedPct !== null && (
+                        <span
+                          title={`Использовано ${gb(sub.usedBytes ?? 0)} из ${gb(u.totalBytes)}`}
+                          className="inline-flex items-center gap-2 rounded-lg border border-foreground/[0.08] bg-foreground/[0.04] px-2 py-1 text-[11.5px] font-semibold tabular-nums"
                         >
-                          <RefreshCw className={cn('h-3.5 w-3.5', busy && 'animate-spin')} />
-                        </Button>
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          onClick={() => { void handlePingAll() }}
-                          disabled={testingPings}
-                          title="Замерить пинг всех серверов"
-                          className="h-7 w-7"
-                        >
-                          <Activity className={cn('h-3.5 w-3.5', testingPings && 'animate-pulse text-st-warn-text')} />
-                        </Button>
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          onClick={() => setRemovingSub(sub)}
-                          title="Удалить подписку и её серверы"
-                          className="h-7 w-7 text-destructive hover:text-destructive"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
+                          <span className="h-1.5 w-14 overflow-hidden rounded-full bg-foreground/10">
+                            <span
+                              className={cn('block h-full rounded-full', u.usedPct >= 90 ? 'bg-st-warn' : 'bg-primary')}
+                              style={{ width: `${Math.max(3, 100 - u.usedPct)}%` }}
+                            />
+                          </span>
+                          <span className={u.usedPct >= 90 ? 'text-st-warn-text' : 'text-foreground/85'}>{gb(u.leftBytes)}</span>
+                        </span>
+                      )}
                     </div>
 
-                    {/* Progress bar */}
-                    {sub.usedBytes !== null && sub.totalBytes !== null && (
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between text-xs text-muted-foreground">
-                          <span>{sub.expireDate ? `Срок: ${sub.expireDate}` : 'Активна'}</span>
-                          <span className="font-mono text-primary">
-                            {(sub.usedBytes / (1024 * 1024 * 1024)).toFixed(2)} ГБ /{' '}
-                            {(sub.totalBytes / (1024 * 1024 * 1024)).toFixed(2)} ГБ
-                          </span>
+                    <div className="flex items-center">
+                      {/* Только эта подписка; пока идёт — «Остановить». */}
+                      <OpsIconButton
+                        kind="refresh"
+                        ops={ops}
+                        scope={{ type: 'sub', subId: sub.id }}
+                        title="Обновить только эту подписку"
+                        activeHere={busy || (loadingRefresh && opView?.scope === 'all')}
+                      />
+                      <OpsIconButton
+                        kind="ping"
+                        ops={ops}
+                        scope={{ type: 'sub', subId: sub.id }}
+                        title="Проверить пинг серверов этой подписки"
+                        disabled={subNodes.length === 0}
+                        activeHere={testingPings && opView?.scope === 'sub' && opView.subId === sub.id}
+                      />
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        onClick={() => setRemovingSub(sub)}
+                        title="Удалить подписку и её серверы"
+                        className="h-7 w-7 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  {(sub.announcements?.length || sub.webPageUrl || sub.supportUrl || sub.premiumUrl || sub.hintsText || sub.hwidRequired) && (
+                    <div className="space-y-2 px-4 pb-3">
+                      <SubLinks sub={sub} />
+                      <SubAnnouncements items={sub.announcements} collapsible={collapsed} />
+                      <SubscriptionProviderInfo sub={sub} hintsIgnored={Boolean(settings?.ignoreProviderSettings)} />
+                    </div>
+                  )}
+
+                  {/* Серверы этой подписки. Свёрнутая панель их прячет —
+                      иначе при пяти провайдерах до нужного не долистать. */}
+                  {!collapsed && (
+                    <div className="border-t border-foreground/[0.06] px-2 pt-2 pb-2">
+                      {visibleNodes.length > 0 ? (
+                        <WindowedRows
+                          items={visibleNodes}
+                          getKey={nodeKey}
+                          renderItem={renderAutoRow}
+                          gap={6}
+                          estimate={54}
+                          className="space-y-1.5"
+                        />
+                      ) : (
+                        <div className="py-4 text-center text-[12px] text-muted-foreground">
+                          {subNodes.length === 0
+                            ? 'В этой подписке пока нет серверов — нажмите «Обновить».'
+                            : 'В этой подписке ничего не найдено по запросу.'}
                         </div>
-                        <div className="w-full bg-secondary/80 h-2 rounded-full overflow-hidden">
-                          <div
-                            className="bg-primary h-full transition-all duration-500 shadow-sm"
-                            style={{
-                              width: `${Math.min(
-                                100,
-                                Math.round((sub.usedBytes / sub.totalBytes) * 100)
-                              )}%`
-                            }}
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Те же объявления, что и на главной — тот же вид: отделены
-                        линией, эмодзи вынесено в отдельную колонку, а не оставлено
-                        внутри текста. Раньше здесь была вторая, непохожая
-                        вёрстка, и один и тот же текст выглядел по-разному на двух
-                        вкладках. */}
-                    {sub.announcements && sub.announcements.length > 0 && (
-                      <div className="pt-3 mt-1 border-t border-border/50 space-y-1.5">
-                        {sub.announcements.map((ann, idx) => {
-                          let emoji = 'ℹ️'
-                          if (ann.includes('📶') || ann.includes('LTE')) emoji = '📶'
-                          else if (ann.includes('⚠️') || ann.includes('Глушат')) emoji = '⚠️'
-                          else if (ann.includes('⛔') || ann.includes('Перестало')) emoji = '⛔'
-                          else if (ann.includes('🆔') || ann.includes('⏱️')) emoji = '🆔'
-
-                          const cleanText = stripLeadingEmoji(ann)
-                          return (
-                            <div
-                              key={idx}
-                              className="flex items-start gap-2 text-[11px] leading-relaxed text-st-warn-text"
-                            >
-                              <span className="shrink-0">{emoji}</span>
-                              <span>{cleanText || ann}</span>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    )}
-
-                    {/* Серверы этой подписки. Свёрнутая карточка их прячет —
-                        иначе при пяти провайдерах до нужного не долистать. */}
-                    {!collapsed && (
-                      <div className="pt-1 space-y-2">
-                        {visibleNodes.length > 0 ? (
-                          visibleNodes.map((node) => renderServerRow(node))
-                        ) : (
-                          <div className="py-3 text-center text-[11px] text-muted-foreground">
-                            {subNodes.length === 0
-                              ? 'В этой подписке пока нет серверов — нажмите «Обновить».'
-                              : 'В этой подписке ничего не найдено по запросу.'}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
+                      )}
+                    </div>
+                  )}
+                </LzPanel>
               )
             })}
-
-
 
             {/* Серверы вне подписок: добавленные ссылкой вручную. Их не
                 удаляет и не перезаписывает ни одно обновление подписки. */}
             {manualNodes.length > 0 && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between px-0.5">
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Добавлены вручную ({manualNodes.length})
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => { void handleClearManualNodes() }}
-                    className="h-6 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 gap-1"
-                    title="Удалить все серверы, добавленные вручную или оставшиеся от старых подписок"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                    Очистить все
-                  </Button>
+              <LzPanel className="p-0">
+                <div className="px-4 py-3">
+                  <LzSectionHead
+                    title={`Добавлены вручную · ${manualNodes.length}`}
+                    hint="Серверы, добавленные ссылкой, и оставшиеся от удалённых подписок. Обновление подписок их не трогает."
+                    right={
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => { void handleClearManualNodes() }}
+                        className="h-8 gap-1.5 rounded-xl text-xs text-destructive hover:text-destructive"
+                        title="Удалить все серверы, добавленные вручную или оставшиеся от старых подписок"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Удалить все
+                      </Button>
+                    }
+                  />
                 </div>
-                {manualNodes.map((node) => renderServerRow(node, true))}
-              </div>
+                <div className="border-t border-foreground/[0.06] px-2 pt-2 pb-2">
+                  <WindowedRows
+                    items={manualNodes}
+                    getKey={nodeKey}
+                    renderItem={renderManualRow}
+                    gap={6}
+                    estimate={54}
+                    className="space-y-1.5"
+                  />
+                </div>
+              </LzPanel>
             )}
 
-            {filteredNodes.length === 0 && (
-              <div className="text-center py-10 text-xs text-muted-foreground">
-                {nodes.length === 0
-                  ? 'Серверов пока нет. Вставьте ссылку на подписку сверху.'
-                  : 'По вашему запросу ничего не найдено.'}
-              </div>
+            {nodes.length === 0 ? (
+              <LzPanel className="px-4">
+                <EmptyState
+                  icon={<Server />}
+                  title="Серверов пока нет"
+                  text="Вставьте ссылку на подписку в поле выше — серверы появятся здесь, пинг проверится сам."
+                />
+              </LzPanel>
+            ) : (
+              filteredNodes.length === 0 && (
+                <div className="py-8 text-center text-[12px] text-muted-foreground">По вашему запросу ничего не найдено.</div>
+              )
             )}
           </div>
         )}
@@ -3274,6 +3092,7 @@ export default function IncyPage(): React.ReactElement {
         {/* TAB: ROUTING — what goes through the tunnel and what does not */}
         {activeTab === 'routing' && settings && (
           <div className="space-y-4">
+            <RouteMemoryCard />
             <RoutingProfiles
               settings={settings}
               onChanged={loadData}
@@ -3419,9 +3238,11 @@ export default function IncyPage(): React.ReactElement {
                 </div>
 
                 {isConnected && (
-                  <p className="text-[11px] text-st-warn-text pt-1">
-                    Изменения применятся после переподключения.
-                  </p>
+                  <ApplyNote
+                    tour="incy-apply-note-routing"
+                    connected={isConnected}
+                    killSwitch={Boolean(settings?.killSwitch)}
+                  />
                 )}
               </CardContent>
             </Card>
@@ -3431,6 +3252,16 @@ export default function IncyPage(): React.ReactElement {
         {/* TAB 3: SETTINGS (Full INCY Options) */}
         {activeTab === 'settings' && settings && (
           <div className="space-y-4">
+            <NodeChainCard
+              onChanged={loadData}
+              exitKey={status.activeNodeId || status.selectedNodeId || null}
+              onSelectExit={handleSelectNode}
+              nodes={nodes}
+              pinging={pingingNodeIds}
+              pingBusy={testingPings}
+              onPing={(ids) => startPing({ type: 'ids', ids, label: 'узлы цепочки' })}
+              onStopPing={() => void ops.stop()}
+            />
             {/* Оформление */}
             <Card className="cyber-card">
               <CardHeader>
@@ -3484,7 +3315,7 @@ export default function IncyPage(): React.ReactElement {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="flex items-center justify-between">
+                <div data-tour="incy-autoconnect" className="flex items-center justify-between">
                   <div className="flex flex-col">
                     <Label className="text-sm">Автоподключение</Label>
                     <span className="text-xs text-muted-foreground">
@@ -3497,12 +3328,18 @@ export default function IncyPage(): React.ReactElement {
                   />
                 </div>
 
-                <div className="flex items-center justify-between">
+                {window.api.platform !== 'linux' && <>
+                <div data-tour="incy-killswitch" className="flex items-center justify-between">
                   <div className="flex flex-col">
-                    <Label className="text-sm">Kill Switch</Label>
+                    <Label className="text-sm">
+                      Kill Switch{' '}
+                      <Hint text="Что гарантируется: если ядро VPN неожиданно завершилось, программа сразу поднимает блокировку, которая отклоняет всё, что шло бы через VPN, и переподключается. Пропускаются: адрес VPN-сервера, локальная сеть, loopback, российские сайты при «Раздельно». Чего нет: правил брандмауэра. Блокировка действует, пока работает LAZEYKA или ядро блокировки; при ручном отключении и при выходе из программы она снимается. В первые 1–2 секунды после обрыва и во время смены узла защиты нет." />
+                    </Label>
                     <span className="text-xs text-muted-foreground">
-                      Если VPN оборвётся, трафик, который шёл через VPN, блокируется до переподключения. Российские
-                      сайты и локальная сеть продолжают работать. Режимы TUN и «Системный прокси».
+                      Если ядро VPN неожиданно завершится, всё, что шло через VPN, блокируется до переподключения.
+                      Российские сайты и локальная сеть работают. Не срабатывает при ручном отключении и выходе из
+                      программы. В режиме «Системный прокси» закрываются только программы, ходящие через системный
+                      прокси; в режиме «Только прокси» не действует.
                     </span>
                   </div>
                   <Switch
@@ -3511,7 +3348,10 @@ export default function IncyPage(): React.ReactElement {
                   />
                 </div>
 
-                <div className="flex items-center justify-between">
+                <KillSwitchResetRow />
+                </>}
+
+                <div data-tour="incy-reconnect-on-drop" className="flex items-center justify-between">
                   <div className="flex flex-col">
                     <Label className="text-sm">Переподключаться при обрыве</Label>
                     <span className="text-xs text-muted-foreground">
@@ -3527,11 +3367,12 @@ export default function IncyPage(): React.ReactElement {
                   />
                 </div>
 
-                <div className="flex items-center justify-between">
+                <div data-tour="incy-hijack-dns" className="flex items-center justify-between">
                   <div className="flex flex-col">
                     <Label className="text-sm">Перехватывать системный DNS</Label>
                     <span className="text-xs text-muted-foreground">
-                      Направлять DNS-запросы ОС через тоннель
+                      Запросы имён сайтов от программ ядро обрабатывает само и отправляет через туннель. Выключено: запросы идут
+                      как обычные соединения. Только режим TUN.
                     </span>
                   </div>
                   <Switch
@@ -3540,11 +3381,13 @@ export default function IncyPage(): React.ReactElement {
                   />
                 </div>
 
-                <div className="flex items-center justify-between">
+                <div data-tour="incy-allow-lan" className="flex items-center justify-between">
                   <div className="flex flex-col">
-                    <Label className="text-sm">Разрешить LAN подключения</Label>
+                    <Label className="text-sm">Открыть прокси для устройств в сети</Label>
                     <span className="text-xs text-muted-foreground">
-                      Исключить локальную сеть из VPN тоннеля
+                      Другие устройства домашней сети (телефон, приставка) смогут подключаться к локальному прокси
+                      этого компьютера. Включайте вместе с логином и паролем: иначе прокси открыт всем в сети.
+                      Сам доступ к локальной сети из VPN всегда разрешён.
                     </span>
                   </div>
                   <Switch
@@ -3553,10 +3396,13 @@ export default function IncyPage(): React.ReactElement {
                   />
                 </div>
 
-                <div className="flex items-center justify-between">
+                <div data-tour="incy-lan-via-proxy" className="flex items-center justify-between">
                   <div className="flex flex-col">
-                    <Label className="text-sm">LAN через прокси</Label>
-                    <span className="text-xs text-muted-foreground">Направить локальный трафик через VPN прокси</span>
+                    <Label className="text-sm">Устройства сети выходят через VPN</Label>
+                    <span className="text-xs text-muted-foreground">
+                      Касается только устройств, подключённых к вашему прокси (нужен переключатель выше). Выключено: их
+                      трафик идёт напрямую, мимо VPN.
+                    </span>
                   </div>
                   <Switch
                     checked={settings.lanViaProxy}
@@ -3564,11 +3410,12 @@ export default function IncyPage(): React.ReactElement {
                   />
                 </div>
 
-                <div className="flex items-center justify-between">
+                <div data-tour="incy-block-udp" className="flex items-center justify-between">
                   <div className="flex flex-col">
                     <Label className="text-sm">Блокировать UDP</Label>
                     <span className="text-xs text-muted-foreground">
-                      Отключает UDP-протоколы (QUIC, голосовые звонки, онлайн-игры)
+                      Отключает UDP-протоколы (QUIC, голосовые звонки, онлайн-игры). Запросы DNS при включённом перехвате
+                      выше не страдают; без перехвата DNS по UDP тоже блокируется.
                     </span>
                   </div>
                   <Switch
@@ -3578,17 +3425,28 @@ export default function IncyPage(): React.ReactElement {
                 </div>
 
                 {/* SOCKS5 Auth */}
-                <div className="pt-2 border-t border-border/50 space-y-2">
+                <div data-tour="incy-socks-auth" className="pt-2 border-t border-border/50 space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="flex flex-col">
                       <Label className="text-sm">SOCKS5 / HTTP авторизация</Label>
                       <span className="text-xs text-muted-foreground">
-                        Защита локального прокси логином и паролем
+                        Защита локального прокси логином и паролем. Не действует в режиме «Системный прокси»: ОС не
+                        умеет передавать пароль.
                       </span>
                     </div>
                     <Switch
                       checked={settings.socksAuth}
-                      onCheckedChange={(v) => handleUpdateSettings({ socksAuth: v })}
+                      onCheckedChange={(v) =>
+                        handleUpdateSettings(
+                          v && (!settings.socksUser?.trim() || !settings.socksPass?.trim())
+                            ? {
+                                socksAuth: true,
+                                socksUser: `incy_${Math.random().toString(36).slice(2, 8)}`,
+                                socksPass: Math.random().toString(36).slice(2, 12)
+                              }
+                            : { socksAuth: v }
+                        )
+                      }
                     />
                   </div>
 
@@ -3597,6 +3455,7 @@ export default function IncyPage(): React.ReactElement {
                       <div className="flex items-center gap-2">
                         <span className="w-16 text-muted-foreground">Логин:</span>
                         <Input
+                          data-sensitive="link"
                           value={settings.socksUser}
                           onChange={(e) => handleUpdateSettings({ socksUser: e.target.value })}
                           className="h-7 text-xs font-mono"
@@ -3605,6 +3464,7 @@ export default function IncyPage(): React.ReactElement {
                       <div className="flex items-center gap-2">
                         <span className="w-16 text-muted-foreground">Пароль:</span>
                         <Input
+                          data-sensitive="link"
                           value={settings.socksPass}
                           onChange={(e) => handleUpdateSettings({ socksPass: e.target.value })}
                           className="h-7 text-xs font-mono"
@@ -3617,17 +3477,11 @@ export default function IncyPage(): React.ReactElement {
                   )}
                 </div>
 
-                <div className="flex items-center justify-between pt-2 border-t border-border/50">
-                  <Label className="text-sm">Локальный Mixed порт (SOCKS5 + HTTP)</Label>
-                  <div className="flex items-center gap-2">
-                    <Input
-                      type="number"
-                      value={settings.mixedPort}
-                      onChange={(e) => handleUpdateSettings({ mixedPort: Number(e.target.value) || 20808 })}
-                      className="w-24 h-7 text-xs font-mono"
-                    />
-                  </div>
-                </div>
+                <MixedPortField settings={settings} onUpdate={handleUpdateSettings} />
+
+                <ExtraBypassEditor settings={settings} onUpdate={handleUpdateSettings} />
+
+                <ApplyNote tour="incy-apply-note-connection" connected={isConnected} killSwitch={settings.killSwitch} />
               </CardContent>
             </Card>
 
@@ -3641,7 +3495,7 @@ export default function IncyPage(): React.ReactElement {
               </CardHeader>
               <CardContent className="space-y-3">
                 {/* Fragmentation */}
-                <div className="space-y-2">
+                <div data-tour="incy-fragmentation" className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="flex flex-col">
                       <Label className="text-sm">Фрагментация TLS Hello</Label>
@@ -3657,42 +3511,40 @@ export default function IncyPage(): React.ReactElement {
                   </div>
 
                   {settings.fragmentation && (
-                    <div className="grid grid-cols-3 gap-2 p-2.5 rounded-lg border border-border bg-card/30">
-                      <div>
-                        <Label className="text-[10px] text-muted-foreground">Packets</Label>
-                        <Input
-                          value={settings.fragmentationPackets}
-                          onChange={(e) => handleUpdateSettings({ fragmentationPackets: e.target.value })}
-                          className="h-6 text-xs font-mono mt-0.5"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-[10px] text-muted-foreground">Length</Label>
-                        <Input
-                          value={settings.fragmentationLength}
-                          onChange={(e) => handleUpdateSettings({ fragmentationLength: e.target.value })}
-                          className="h-6 text-xs font-mono mt-0.5"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-[10px] text-muted-foreground">Interval</Label>
-                        <Input
-                          value={settings.fragmentationInterval}
-                          onChange={(e) => handleUpdateSettings({ fragmentationInterval: e.target.value })}
-                          className="h-6 text-xs font-mono mt-0.5"
-                        />
-                      </div>
+                    <div
+                      className="grid grid-cols-3 gap-2 p-2.5 rounded-lg border border-border bg-card/30"
+                      title="Packets: что дробить (tlshello, число или диапазон 1-3, all). Length: размер частей в байтах. Interval: пауза между частями, мс."
+                    >
+                      <DraftField
+                        label="Packets"
+                        value={settings.fragmentationPackets}
+                        validate={validPackets}
+                        onCommit={(v) => void handleUpdateSettings({ fragmentationPackets: v.toLowerCase() })}
+                      />
+                      <DraftField
+                        label="Length"
+                        value={settings.fragmentationLength}
+                        validate={validRange}
+                        onCommit={(v) => void handleUpdateSettings({ fragmentationLength: v })}
+                      />
+                      <DraftField
+                        label="Interval"
+                        value={settings.fragmentationInterval}
+                        validate={validRange}
+                        onCommit={(v) => void handleUpdateSettings({ fragmentationInterval: v })}
+                      />
                     </div>
                   )}
                 </div>
 
                 {/* Noises */}
-                <div className="space-y-2 pt-2 border-t border-border/50">
+                <div data-tour="incy-noises" className="space-y-2 pt-2 border-t border-border/50">
                   <div className="flex items-center justify-between">
                     <div className="flex flex-col">
-                      <Label className="text-sm">Noises (Шумовые пакеты)<NotWired label="только Xray" reason="Работает только на ядре Xray. Узлы из JSON-подписки обслуживает sing-box, где шумовых пакетов нет — для них переключатель не действует." /></Label>
+                      <Label className="text-sm">Noises (Шумовые пакеты)<NotWired label="только UDP" reason="Шум отправляется перед соединением и действует только на UDP-транспорты: Hysteria2, QUIC и XHTTP поверх HTTP/3. На обычные узлы VLESS по TCP он не влияет. Требует ядра Xray." /></Label>
                       <span className="text-xs text-muted-foreground">
-                        Отправка ложных данных перед полезной нагрузкой
+                        Ложные пакеты перед соединением. Действует только на UDP-транспорты (Hysteria2, QUIC, XHTTP поверх
+                        HTTP/3); на обычные VLESS-узлы по TCP не влияет.
                       </span>
                     </div>
                     <Switch
@@ -3703,42 +3555,49 @@ export default function IncyPage(): React.ReactElement {
 
                   {settings.noises && (
                     <div className="grid grid-cols-3 gap-2 p-2.5 rounded-lg border border-border bg-card/30">
-                      <div>
-                        <Label className="text-[10px] text-muted-foreground">Type</Label>
-                        <Input
-                          value={settings.noisesType}
-                          onChange={(e) => handleUpdateSettings({ noisesType: e.target.value })}
-                          className="h-6 text-xs font-mono mt-0.5"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-[10px] text-muted-foreground">Packet</Label>
-                        <Input
-                          value={settings.noisesPacket}
-                          onChange={(e) => handleUpdateSettings({ noisesPacket: e.target.value })}
-                          className="h-6 text-xs font-mono mt-0.5"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-[10px] text-muted-foreground">Delay</Label>
-                        <Input
-                          value={settings.noisesDelay}
-                          onChange={(e) => handleUpdateSettings({ noisesDelay: e.target.value })}
-                          className="h-6 text-xs font-mono mt-0.5"
-                        />
-                      </div>
+                      <DraftField
+                        label="Type"
+                        value={settings.noisesType}
+                        validate={(v) => (/^(rand|str|hex)$/i.test(v) ? null : 'Допустимо: rand, str или hex')}
+                        onCommit={(v) => void handleUpdateSettings({ noisesType: v.toLowerCase() })}
+                      />
+                      <DraftField
+                        label="Packet"
+                        value={settings.noisesPacket}
+                        validate={(v) =>
+                          settings.noisesType === 'rand' ? validRange(v) : v.trim() ? null : 'Нужны данные пакета'
+                        }
+                        onCommit={(v) => void handleUpdateSettings({ noisesPacket: v })}
+                      />
+                      <DraftField
+                        label="Delay"
+                        value={settings.noisesDelay}
+                        validate={validRange}
+                        onCommit={(v) => void handleUpdateSettings({ noisesDelay: v })}
+                      />
                     </div>
                   )}
                 </div>
 
+                {/* Подсказки провайдера и защищённый поиск адреса сервера */}
+                <IgnoreProviderSettingsRow settings={settings} onUpdate={handleUpdateSettings} />
+                <SecureServerLookupRow settings={settings} onUpdate={handleUpdateSettings} />
+
                 {/* Multiplexing */}
-                <div className="space-y-2 pt-2 border-t border-border/50">
+                <div data-tour="incy-multiplexing" className="space-y-2 pt-2 border-t border-border/50">
                   <div className="flex items-center justify-between">
                     <div className="flex flex-col">
                       <Label className="text-sm">Мультиплексирование (MUX / h2mux)<NotWired label="нужен сервер" reason="Требует поддержки на стороне сервера. Если провайдер её не включил, туннель установится, но данные передаваться не будут." /></Label>
                       <span className="text-xs text-muted-foreground">
-                        Объединение множества соединений в единый поток
+                        Объединение множества соединений в единый поток. Для узлов с flow (например, VLESS + Reality +
+                        Vision) и XHTTP не включается: с ними соединение не поднялось бы.
                       </span>
+                      {settings.multiplexing && activeOrSelectedNode?.flow && (
+                        <span className="mt-0.5 text-[11px] text-st-warn-text">
+                          Выбранный узел использует flow {activeOrSelectedNode.flow}: мультиплексирование к нему не
+                          применяется (это нормально).
+                        </span>
+                      )}
                     </div>
                     <Switch
                       checked={settings.multiplexing}
@@ -3794,8 +3653,11 @@ export default function IncyPage(): React.ReactElement {
                 </div>
 
                 {/* Preferred IP */}
-                <div className="space-y-1.5 pt-2 border-t border-border/50">
-                  <Label className="text-xs font-semibold">Предпочтительный IP</Label>
+                <div data-tour="incy-preferred-ip" className="space-y-1.5 pt-2 border-t border-border/50">
+                  <Label className="text-xs font-semibold">
+                    Предпочтительный IP{' '}
+                    <Hint text="IPV4: сайты открываются по IPv4 (IPv6 закрыт, программы сами переходят на IPv4). Авто сейчас то же, что IPV4: туннель IPv6 по умолчанию не пропускает. IPV6: IPv6 пропускается через туннель и выбирается первым, но сервер должен его поддерживать. Только для DNS и режима TUN." />
+                  </Label>
                   <div className="grid grid-cols-3 gap-1.5">
                     {(['IPV4', 'IPV6', 'AUTO'] as const).map((ipMode) => (
                       <Button
@@ -3805,14 +3667,17 @@ export default function IncyPage(): React.ReactElement {
                         onClick={() => handleUpdateSettings({ preferredIp: ipMode })}
                         className="text-xs h-7"
                       >
-                        {ipMode}
+                        {ipMode === 'AUTO' ? 'Авто (= IPV4)' : ipMode}
                       </Button>
                     ))}
                   </div>
                 </div>
 
+                <SniffingRow settings={settings} onUpdate={handleUpdateSettings} />
+                <QuicBlockRow settings={settings} onUpdate={handleUpdateSettings} />
+
                 {/* VPN DNS Selection */}
-                <div className="space-y-1.5 pt-2 border-t border-border/50">
+                <div data-tour="incy-vpn-dns" className="space-y-1.5 pt-2 border-t border-border/50">
                   <Label className="text-xs font-semibold">VPN DNS сервер</Label>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                     {(['Cloudflare + Google', 'Google DNS', 'Cloudflare DNS', 'Quad9', 'Xbox DNS', 'Custom'] as const).map((dns) => (
@@ -3828,14 +3693,23 @@ export default function IncyPage(): React.ReactElement {
                     ))}
                   </div>
                   {settings.vpnDns === 'Custom' && (
-                    <Input paste
+                    <DraftField
                       value={settings.customDns || ''}
-                      onChange={(e) => handleUpdateSettings({ customDns: e.target.value })}
-                      placeholder="Введите IP DNS через запятую (напр. 77.88.8.8, 1.1.1.1)"
+                      placeholder="Один адрес: 77.88.8.8 или https://dns.example/dns-query"
                       className="h-7 text-xs font-mono mt-1"
+                      validate={(v) =>
+                        /^(?:(?:https?|tls|quic|h3|tcp|udp):\/\/[^\s,]+|[0-9a-fA-F:.]+)$/.test(v)
+                          ? null
+                          : 'Нужен один адрес: IP (77.88.8.8) или https://…, tls://…'
+                      }
+                      onCommit={(v) => void handleUpdateSettings({ customDns: v })}
                     />
                   )}
+                  <p className="text-[11px] text-muted-foreground">
+                    Свой DNS используется и для запросов через туннель, и для сайтов напрямую: укажите один адрес.
+                  </p>
                 </div>
+                <ApplyNote tour="incy-apply-note-tunnel" connected={isConnected} killSwitch={settings.killSwitch} />
               </CardContent>
             </Card>
 
@@ -3873,10 +3747,10 @@ export default function IncyPage(): React.ReactElement {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between pt-2 border-t border-border/50">
+                <div data-tour="incy-update-on-launch" className="flex items-center justify-between pt-2 border-t border-border/50">
                   <div className="flex flex-col">
                     <Label className="text-sm">Обновлять при старте</Label>
-                    <span className="text-xs text-muted-foreground">Проверять новые сервера при запуске</span>
+                    <span className="text-xs text-muted-foreground">Обновлять подписки через 20 секунд после запуска программы</span>
                   </div>
                   <Switch
                     checked={settings.updateOnLaunch}
@@ -3884,10 +3758,12 @@ export default function IncyPage(): React.ReactElement {
                   />
                 </div>
 
-                <div className="flex items-center justify-between">
+                <div data-tour="incy-ping-on-launch" className="flex items-center justify-between">
                   <div className="flex flex-col">
                     <Label className="text-sm">Замерять пинг при запуске</Label>
-                    <span className="text-xs text-muted-foreground">Тестировать задержку всех узлов</span>
+                    <span className="text-xs text-muted-foreground">
+                      Один раз замерять задержку всех серверов, когда после запуска впервые открыт раздел INCY
+                    </span>
                   </div>
                   <Switch
                     checked={settings.pingOnLaunch}
@@ -3895,7 +3771,7 @@ export default function IncyPage(): React.ReactElement {
                   />
                 </div>
 
-                <div className="flex items-center justify-between">
+                <div data-tour="incy-ping-on-update" className="flex items-center justify-between">
                   <div className="flex flex-col">
                     <Label className="text-sm">Замерять пинг при обновлении подписки</Label>
                     <span className="text-xs text-muted-foreground">Автоматически опрашивать сервера после нажатия кнопки «Обновить»</span>
@@ -3984,7 +3860,7 @@ export default function IncyPage(): React.ReactElement {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="space-y-1.5">
+                <div data-tour="incy-ping-method" className="space-y-1.5">
                   <Label className="text-xs font-semibold">Способ замера</Label>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                     {(['incy', 'tcp', 'http_get', 'http_head'] as const).map((proto) => (
@@ -3998,19 +3874,21 @@ export default function IncyPage(): React.ReactElement {
                         {proto === 'incy'
                           ? 'Умный'
                           : proto === 'tcp'
-                            ? 'Быстрый'
+                            ? 'Быстрый (TCP)'
                             : proto === 'http_head'
-                              ? 'HTTP HEAD'
-                              : 'HTTP GET'}
+                              ? 'Запрос HEAD'
+                              : 'Запрос GET'}
                       </Button>
                     ))}
                   </div>
                   <p className="text-[11px] text-muted-foreground">
                     {settings.pingProtocol === 'incy'
-                      ? 'Рекомендуется. Показывает задержку до сервера, но только если через него реально проходит трафик: сервер с открытым портом и упавшим VPN будет «нет ответа», а не «1 мс». Замер всех серверов — 20–30 с.'
+                      ? 'Рекомендуется. Сначала замеряет задержку до сервера (TCP-рукопожатие), затем проверяет настоящим запросом через сам сервер: число — это задержка до сервера, но показывается только если через него реально идёт трафик. Сервер с открытым портом и упавшим VPN будет «нет ответа», а не «1 мс». Замер всех серверов — 20–30 с.'
                       : settings.pingProtocol === 'tcp'
-                      ? 'Только задержка до сервера (TCP-рукопожатие, для UDP-узлов — ICMP), 1–2 с на весь список. Не проверяет, работает ли VPN: упавший сервер может показать хороший пинг.'
-                      : 'Время до первого байта ответа на тестовый URL через сам сервер. Число больше обычного пинга (в нём рукопожатие с сервером), зато проверяет, что трафик идёт.'}
+                      ? 'Только задержка до сервера: время TCP-рукопожатия (для UDP-узлов — ICMP-пинг; если сервер его не отвечает, будет «нет ответа»). 1–2 с на весь список. Не проверяет, работает ли VPN: сервер с упавшим VPN может показать хороший пинг.'
+                      : settings.pingProtocol === 'http_head'
+                        ? 'Настоящий запрос HEAD к тестовому адресу через сам сервер: время до начала ответа. Число больше обычного пинга (в нём рукопожатие с сервером), зато доказывает, что трафик идёт. Запрос HEAD не скачивает тело ответа.'
+                        : 'Настоящий запрос GET к тестовому адресу через сам сервер: время до первого байта ответа. Число больше обычного пинга (в нём рукопожатие с сервером), зато доказывает, что трафик идёт.'}
                   </p>
                 </div>
 
@@ -4053,13 +3931,20 @@ export default function IncyPage(): React.ReactElement {
                   </div>
                 </div>
 
-                <div className="space-y-1.5 pt-2 border-t border-border/50">
-                  <Label className="text-xs font-semibold">Тестовый URL</Label>
-                  <Input paste
+                <div data-tour="incy-ping-url" className="space-y-1.5 pt-2 border-t border-border/50">
+                  <Label className="text-xs font-semibold">Тестовый адрес</Label>
+                  <DraftField
                     value={settings.pingTestUrl}
-                    onChange={(e) => handleUpdateSettings({ pingTestUrl: e.target.value })}
                     className="h-7 text-xs font-mono"
+                    validate={(v) =>
+                      /^https?:\/\/[^\s/]+\S*$/i.test(v) ? null : 'Нужен адрес вида https://www.gstatic.com/generate_204'
+                    }
+                    onCommit={(v) => void handleUpdateSettings({ pingTestUrl: v })}
                   />
+                  <p className="text-[11px] text-muted-foreground">
+                    Адрес для режимов «Умный» и «Запрос»: он же проверяет узел при автопереключении и восстановлении после
+                    обрыва. В режиме «Быстрый» не используется.
+                  </p>
                   <div className="flex gap-1.5 pt-1">
                     {[
                       { name: 'Google 204', url: 'https://www.gstatic.com/generate_204' },
@@ -4079,7 +3964,7 @@ export default function IncyPage(): React.ReactElement {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between pt-2 border-t border-border/50">
+                <div data-tour="incy-ping-timeout" className="flex items-center justify-between pt-2 border-t border-border/50">
                   <div className="flex flex-col">
                     <Label className="text-sm">Таймаут пинга</Label>
                     <span className="text-xs text-muted-foreground">Максимальное время ожидания ответа</span>
@@ -4114,7 +3999,7 @@ export default function IncyPage(): React.ReactElement {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="space-y-1.5">
+                <div data-tour="incy-udp-timeout" className="space-y-1.5">
                   <Label className="text-sm">Тайм-аут простоя UDP</Label>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                     {[
@@ -4143,7 +4028,7 @@ export default function IncyPage(): React.ReactElement {
                   </p>
                 </div>
 
-                <div className="space-y-1.5 pt-2 border-t border-border/50">
+                <div data-tour="incy-tun-stack" className="space-y-1.5 pt-2 border-t border-border/50">
                   <Label className="text-sm">Сетевой стек TUN</Label>
                   <div className="grid grid-cols-3 gap-1.5">
                     {([
@@ -4172,36 +4057,17 @@ export default function IncyPage(): React.ReactElement {
                   </p>
                 </div>
 
-                <div className="space-y-1.5 pt-2 border-t border-border/50">
-                  <Label className="text-sm">MTU адаптера TUN</Label>
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {[
-                      { v: 0, l: 'Авто' },
-                      { v: 1500, l: '1500' },
-                      { v: 1400, l: '1400' },
-                      { v: 1280, l: '1280' }
-                    ].map((o) => (
-                      <Button
-                        key={o.v}
-                        size="sm"
-                        variant={(settings.tunMtu ?? 0) === o.v ? 'default' : 'outline'}
-                        onClick={() => handleUpdateSettings({ tunMtu: o.v })}
-                        className="text-xs h-7"
-                      >
-                        {o.l}
-                      </Button>
-                    ))}
-                  </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    Оставьте «Авто». Уменьшайте, если часть сайтов не открывается или загрузки обрываются, особенно на
-                    мобильном интернете. Только для режима TUN.
-                  </p>
-                </div>
+                <MtuPicker settings={settings} onUpdate={handleUpdateSettings} />
 
-                <div className="flex items-center justify-between pt-2 border-t border-border/50">
+                <ExcludedRoutesEditor settings={settings} onUpdate={handleUpdateSettings} />
+
+                <div data-tour="incy-disconnect-on-sleep" className="flex items-center justify-between pt-2 border-t border-border/50">
                   <div className="flex flex-col">
                     <Label className="text-sm">Отключать при переходе в спящий режим</Label>
-                    <span className="text-xs text-muted-foreground">Автоматически разрывать туннель при сне</span>
+                    <span className="text-xs text-muted-foreground">
+                      Разрывать туннель при сне и подключать снова после пробуждения. Это отключение по вашему выбору:
+                      Kill Switch в это время не блокирует трафик.
+                    </span>
                   </div>
                   <Switch
                     checked={settings.disconnectOnSleep}
@@ -4209,7 +4075,7 @@ export default function IncyPage(): React.ReactElement {
                   />
                 </div>
 
-                <div className="flex items-center justify-between pt-2 border-t border-border/50">
+                <div data-tour="incy-memory-monitor" className="flex items-center justify-between pt-2 border-t border-border/50">
                   <div className="flex flex-col">
                     <Label className="text-sm">Монитор памяти</Label>
                     <span className="text-xs text-muted-foreground">
@@ -4221,6 +4087,9 @@ export default function IncyPage(): React.ReactElement {
                     onCheckedChange={(v) => handleUpdateSettings({ memoryMonitor: v })}
                   />
                 </div>
+
+                <VerboseCoreLogRow settings={settings} onUpdate={handleUpdateSettings} />
+                <ApplyNote tour="incy-apply-note-performance" connected={isConnected} killSwitch={settings.killSwitch} />
               </CardContent>
             </Card>
 
@@ -4231,6 +4100,11 @@ export default function IncyPage(): React.ReactElement {
 
         {/* TAB 4: STATS */}
         {activeTab === 'stats' && <StatsTab stats={stats} isConnected={isConnected} onReset={handleResetStats} />}
+        {activeTab === 'stats' && (
+          <div className="mt-4">
+            <ConnectionsPanel />
+          </div>
+        )}
 
 
 

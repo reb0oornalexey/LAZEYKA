@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+if [ -d /run/systemd/system ] && systemctl is-active --quiet lazeyka-zapret.service; then
+  systemctl stop lazeyka-zapret.service
+fi
+
+if [ -d /run/systemd/system ] && systemctl is-active --quiet lazeyka-incy-tun.service; then
+  systemctl stop lazeyka-incy-tun.service
+fi
+
+# FPM calls this hook only for removal and does not pass dpkg arguments.
+if [ -e /etc/systemd/resolved.conf.d/95-lazeyka.conf ] && [ -x /usr/lib/lazeyka/dns-control ]; then
+  /usr/lib/lazeyka/dns-control reset
+fi

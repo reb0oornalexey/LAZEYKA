@@ -1,6 +1,9 @@
 import { useAppearanceStore, snapshotOf } from './store'
 import { effectiveTokens } from './resolve'
 import { CONTRAST_PAIRS, type ContrastPair } from './contrast'
+import { ADVANCED_PAIRS } from './pairs'
+
+export { ADVANCED_PAIRS }
 import { parseColor, formatColor } from './color'
 import { getAverage } from './bg-media'
 import { tokenHex } from './probe'
@@ -65,18 +68,39 @@ export interface Failing {
   ratio: number
 }
 
+/** На что ложится фон пары: другая поверхность (кнопка на панели) или то, что под панелями. */
+function under(eff: Record<string, string>, pair: ContrastPair, bd: { canvas: Rgba; opacity: number }): Rgba {
+  return pair.on ? surface(eff, pair.on, bd) : bd.canvas
+}
+
+/** Фактический цвет фона пары. */
+function pairBg(eff: Record<string, string>, pair: ContrastPair, bd: { canvas: Rgba; opacity: number }): Rgba {
+  if (!pair.on) return surface(eff, pair.bg, bd)
+  const c = rgba(valueOf(eff, pair.bg)) ?? BLACK
+  return flatten(c, under(eff, pair, bd))
+}
+
 function ratioOf(s: State, eff: Record<string, string>, pair: ContrastPair): number | null {
   const fg = rgba(valueOf(eff, pair.fg))
   if (!fg) return null
-  const bd = backdrop(s, eff)
-  const bg = surface(eff, pair.bg, bd)
-  return contrast(fg, bg)
+  return contrast(fg, pairBg(eff, pair, backdrop(s, eff)))
 }
 
-function failingList(s: State): Failing[] {
+/**
+ * Фон задан обычным цветом? У некоторых элементов по умолчанию градиент (например, фон
+ * уведомления об ошибке) — его одним числом не оценить, такие пары пропускаем.
+ */
+function plainColor(eff: Record<string, string>, key: string): boolean {
+  if (eff[key] !== undefined) return !/gradient|url\(/i.test(eff[key])
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(`--${key}`)
+  return !/gradient|url\(/i.test(raw)
+}
+
+function failingList(s: State, pairs: ContrastPair[]): Failing[] {
   const eff = effOf(s)
   const out: Failing[] = []
-  for (const p of CONTRAST_PAIRS) {
+  for (const p of pairs) {
+    if (!plainColor(eff, p.bg)) continue
     const r = ratioOf(s, eff, p)
     if (r != null && r < p.min) out.push({ pair: p, ratio: r })
   }
@@ -84,23 +108,29 @@ function failingList(s: State): Failing[] {
 }
 
 /** Все проблемные пары за один проход: по ключу цвета (худшая пара) и общее число. */
-export function failingMap(s: State): { byKey: Map<string, Failing>; total: number } {
+export function failingMap(
+  s: State,
+  pairs: ContrastPair[] = CONTRAST_PAIRS
+): { byKey: Map<string, Failing>; total: number; list: Failing[] } {
   const eff = effOf(s)
   const bd = backdrop(s, eff)
   const byKey = new Map<string, Failing>()
+  const list: Failing[] = []
   let total = 0
-  for (const p of CONTRAST_PAIRS) {
+  for (const p of pairs) {
+    if (!plainColor(eff, p.bg)) continue
     const fg = rgba(valueOf(eff, p.fg))
     if (!fg) continue
-    const r = contrast(fg, surface(eff, p.bg, bd))
+    const r = contrast(fg, pairBg(eff, p, bd))
     if (r >= p.min) continue
     total++
+    list.push({ pair: p, ratio: r })
     for (const key of [p.fg, p.bg]) {
       const cur = byKey.get(key)
       if (!cur || r < cur.ratio) byKey.set(key, { pair: p, ratio: r })
     }
   }
-  return { byKey, total }
+  return { byKey, total, list }
 }
 
 const hexOf = (c: Rgba): string => formatColor({ r: c.r, g: c.g, b: c.b, a: c.a })
@@ -117,14 +147,14 @@ export function autoFixToken(key: string, pair: ContrastPair): void {
   if (key === pair.fg) {
     const fg = rgba(valueOf(eff, pair.fg))
     if (!fg) return
-    const bg = surface(eff, pair.bg, bd)
+    const bg = pairBg(eff, pair, bd)
     s.setToken(key, hexOf(solveForeground(fg, bg, pair.min)))
   } else {
     const bg = rgba(valueOf(eff, pair.bg))
     const fg = rgba(valueOf(eff, pair.fg))
     if (!bg || !fg) return
-    const panel = PANEL.has(pair.bg)
-    s.setToken(key, hexOf(solveBackground(bg, fg, bd.canvas, panel ? bd.opacity : 1, pair.min)))
+    const panel = !pair.on && PANEL.has(pair.bg)
+    s.setToken(key, hexOf(solveBackground(bg, fg, under(eff, pair, bd), panel ? bd.opacity : 1, pair.min)))
   }
 }
 
@@ -145,23 +175,31 @@ function pairRatio(pair: ContrastPair): number | null {
   return ratioOf(s, effOf(s), pair)
 }
 
+/** Фактический контраст пары для показа в интерфейсе; null — фон не одноцветный (градиент), оценить нельзя. */
+export function pairRatioShown(pairs: ContrastPair[]): (number | null)[] {
+  const s = useAppearanceStore.getState()
+  const eff = effOf(s)
+  return pairs.map((p) => (plainColor(eff, p.bg) ? ratioOf(s, eff, p) : null))
+}
+
 /**
  * «Исправить всё»: по каждой плохой паре сначала правим цвет текста/акцента;
  * если это не помогло (цвет перекрыт или упёрся в предел) — правим фон пары.
  */
-export function autoFixAll(): void {
+export function autoFixAll(pairs: ContrastPair[] = CONTRAST_PAIRS): void {
   for (let pass = 0; pass < 4; pass++) {
-    const list = failingList(useAppearanceStore.getState())
+    const list = failingList(useAppearanceStore.getState(), pairs)
     if (list.length === 0) return
     for (const f of list) {
       const before = pairRatio(f.pair)
       if (before == null || before >= f.pair.min) continue
-      releaseSystemAccent(f.pair.fg)
-      autoFixToken(f.pair.fg, f.pair)
+      const order = f.pair.prefer === 'bg' ? [f.pair.bg, f.pair.fg] : [f.pair.fg, f.pair.bg]
+      releaseSystemAccent(order[0])
+      autoFixToken(order[0], f.pair)
       const after = pairRatio(f.pair)
       if (after != null && after >= f.pair.min) continue
-      releaseSystemAccent(f.pair.bg)
-      autoFixToken(f.pair.bg, f.pair)
+      releaseSystemAccent(order[1])
+      autoFixToken(order[1], f.pair)
     }
   }
 }

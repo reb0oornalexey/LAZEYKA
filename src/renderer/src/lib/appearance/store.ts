@@ -37,6 +37,8 @@ interface AppearanceState extends AppearanceSnapshot {
   setToken: (key: string, value: string) => void
   resetToken: (key: string) => void
   resetTokens: () => void
+  /** Убрать правки нескольких цветов одним шагом истории (например, «Сбросить компонент»). */
+  resetTokenKeys: (keys: string[]) => void
   setSettings: (patch: Partial<AppearanceSettings>) => void
   resetSettings: () => void
   setMode: (mode: AppearanceMode) => void
@@ -81,6 +83,34 @@ const newId = (): string => `c-${Math.random().toString(36).slice(2, 10)}`
 
 function mergeSettings(raw: Partial<AppearanceSettings> | undefined): AppearanceSettings {
   return { ...DEFAULT_SETTINGS, ...(raw ?? {}) }
+}
+
+/**
+ * Числа из чужого файла темы — в допустимые пределы (как в главном процессе при
+ * сохранении). Иначе, например, размер текста 500% применялся до перезапуска.
+ */
+function clampSettings(s: AppearanceSettings): AppearanceSettings {
+  const n = (v: unknown, min: number, max: number, def: number): number =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : def
+  const d = DEFAULT_SETTINGS
+  return {
+    ...s,
+    fontScale: n(s.fontScale, 0.85, 1.3, d.fontScale),
+    radius: n(s.radius, 0, 1.5, d.radius),
+    sidebarWidth: Math.round(n(s.sidebarWidth, 180, 300, d.sidebarWidth)),
+    bgBlur: n(s.bgBlur, 0, 40, d.bgBlur),
+    bgDim: n(s.bgDim, 0, 0.9, d.bgDim),
+    bgBrightness: n(s.bgBrightness, 0.5, 1.5, d.bgBrightness),
+    bgSaturation: n(s.bgSaturation, 0, 2, d.bgSaturation),
+    panelOpacity: n(s.panelOpacity, 0.15, 1, d.panelOpacity),
+    bgGradientAngle: n(s.bgGradientAngle, 0, 360, d.bgGradientAngle),
+    uiShadow: n(s.uiShadow, 0, 1, d.uiShadow),
+    uiBorder: n(s.uiBorder, 0, 3, d.uiBorder),
+    fontCustom: typeof s.fontCustom === 'string' ? s.fontCustom.replace(/[^\p{L}\p{N} _-]/gu, '').slice(0, 40) : '',
+    bgDimColor: isSafeCssValue(s.bgDimColor) ? s.bgDimColor : d.bgDimColor,
+    bgGradientFrom: isSafeCssValue(s.bgGradientFrom) ? s.bgGradientFrom : d.bgGradientFrom,
+    bgGradientTo: isSafeCssValue(s.bgGradientTo) ? s.bgGradientTo : d.bgGradientTo
+  }
 }
 
 export const useAppearanceStore = create<AppearanceState>((set, get) => {
@@ -210,6 +240,16 @@ export const useAppearanceStore = create<AppearanceState>((set, get) => {
       commit({ tokens: next }, `rtok:${key}`)
     },
     resetTokens: () => commit({ tokens: {} }, 'reset-tokens'),
+    resetTokenKeys: (keys) => {
+      const next = { ...get().tokens }
+      let changed = false
+      for (const k of keys)
+        if (k in next) {
+          delete next[k]
+          changed = true
+        }
+      if (changed) commit({ tokens: next }, `rtoks:${keys.join(',')}`)
+    },
     setSettings: (patch) => commit({ settings: { ...get().settings, ...patch } }, `set:${Object.keys(patch).join(',')}`),
     resetSettings: () => commit({ settings: { ...DEFAULT_SETTINGS } }, 'reset-settings'),
     setMode: (mode) => commit({ mode }, 'mode'),
@@ -286,7 +326,7 @@ export const useAppearanceStore = create<AppearanceState>((set, get) => {
           mode: d.mode === 'light' ? 'light' : 'dark',
           tokens,
           // Картинку фона из чужого файла не берём — только числовые и цветовые настройки.
-          settings: { ...mergeSettings(d.settings), bgImage: '' }
+          settings: { ...clampSettings(mergeSettings(d.settings)), bgImage: '' }
         }
         const s = get()
         lastKey = ''

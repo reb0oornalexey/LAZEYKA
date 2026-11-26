@@ -1,6 +1,6 @@
-import anime from '@renderer/assets/wallpapers/anime.webp?inline'
-import crimson from '@renderer/assets/wallpapers/crimson.webp?inline'
-import orange from '@renderer/assets/wallpapers/orange.webp?inline'
+import anime from '@renderer/assets/wallpapers/anime.webp?url'
+import crimson from '@renderer/assets/wallpapers/crimson.webp?url'
+import orange from '@renderer/assets/wallpapers/orange.webp?url'
 
 export interface BuiltinWallpaper {
   id: string
@@ -9,7 +9,7 @@ export interface BuiltinWallpaper {
   src: string
 }
 
-/** Встроенные обои. Хранятся в настройках как `builtin:<имя>`; картинки вшиты в приложение. */
+/** Встроенные обои. Хранятся в настройках как `builtin:<имя>`; картинки лежат отдельными файлами рядом с бандлом (не base64 внутри JS). */
 export const BUILTIN_WALLPAPERS: BuiltinWallpaper[] = [
   { id: 'builtin:anime', category: 'Аниме', name: 'Ночной город', src: anime },
   { id: 'builtin:crimson', category: 'Аниме', name: 'Багровый взгляд', src: crimson },

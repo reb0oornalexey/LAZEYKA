@@ -1,0 +1,19 @@
+[Unit]
+Description=LAZEYKA Zapret
+After=network.target
+
+[Service]
+Type=exec
+RuntimeDirectory=lazeyka-zapret
+ExecStartPre=/bin/sh /opt/LAZEYKA/resources/zapret/firewall.sh check
+ExecStart=/bin/sh /opt/LAZEYKA/resources/zapret/engine.sh
+ExecStartPost=/bin/sh /opt/LAZEYKA/resources/zapret/firewall.sh install
+ExecStopPost=/bin/sh /opt/LAZEYKA/resources/zapret/firewall.sh remove
+TimeoutStartSec=8
+TimeoutStopSec=4
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_SETGID CAP_SETUID
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET

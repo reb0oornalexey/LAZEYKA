@@ -1,0 +1,66 @@
+/* Сценарии (Е4). Только transform / opacity на маленьких элементах; при
+   «Анимации: выкл.» общее правило main.css обнуляет длительности. */
+
+/* Новый шаг в конструкторе: выезжает из точки на линии. */
+@keyframes sc-step-in {
+  from {
+    opacity: 0;
+    transform: translateX(-10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.sc-step-in {
+  animation: sc-step-in 0.34s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Палитра действий и выбор значка поверх колонки «Сделать». */
+@keyframes sc-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.sc-sheet-in {
+  animation: sc-sheet-in 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Окно конструктора. */
+@keyframes sc-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.sc-dialog-in {
+  animation: sc-dialog-in 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Кнопка запуска чуть «нажимается». */
+.sc-run:not(:disabled):active {
+  transform: scale(0.94);
+}
+
+/* Шаг, к которому перешли из палитры: короткая вспышка рамки. */
+@keyframes sc-flash {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  30% {
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 45%, transparent);
+  }
+}
+.sc-flash {
+  animation: sc-flash 1s ease-out;
+}

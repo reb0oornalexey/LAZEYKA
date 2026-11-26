@@ -144,7 +144,13 @@ const SwitcherCard: React.FC<SwitcherCardProps> = ({
             on ? 'bg-primary' : errored ? 'bg-st-err' : 'bg-muted-foreground/40'
           )} />
           <span className={on ? 'text-st-ok-text' : errored ? 'text-st-err-text' : 'text-muted-foreground'}>
-            {stateText[status.state]}
+            {status.state === 'starting' && status.phase === 'verifying'
+              ? 'Запущен, проверяю…'
+              : status.state === 'starting' && status.phase === 'waiting'
+                ? 'Жду сеть…'
+                : status.state === 'starting' && status.phase === 'retrying'
+                  ? 'Повторный запуск…'
+                  : stateText[status.state]}
           </span>
         </div>
         {footer && (

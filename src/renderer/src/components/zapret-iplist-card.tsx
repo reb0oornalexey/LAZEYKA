@@ -1,19 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import {
-  AlertTriangle,
-  ChevronDown,
-  ChevronRight,
-  ListChecks,
-  Loader2,
-  PlusCircle,
-  RotateCcw,
-  Star,
-  Trash2,
-  ClipboardPaste
-} from 'lucide-react'
-import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
+import { AlertTriangle, Check, ChevronDown, ListChecks, Loader2, PlusCircle, RotateCcw, Star, Trash2, ClipboardPaste } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import { EmptyState } from '@renderer/components/lz'
+import { Rows, SettingRow, SettingsGroup } from '@renderer/components/settings/setting-row'
 import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
 import { readClipboardText } from '@renderer/utils/clipboard-field'
 import {
@@ -32,7 +22,7 @@ interface Props {
 }
 
 const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason }) => {
-  const [open, setOpen] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
   const [snapshot, setSnapshot] = useState<IpListSnapshot | null>(null)
   const [sets, setSets] = useState<CuratedIpSet[]>([])
   const [picked, setPicked] = useState<Set<string>>(new Set())
@@ -180,241 +170,199 @@ const ZapretIpListCard: React.FC<Props> = ({ disabled = false, disabledReason })
 
   const pickedCount = useMemo(() => picked.size, [picked])
 
+  const lock = disabled || busy
+  const nothing = pickedCount === 0 && custom.trim() === ''
+
+  if (!snapshot) {
+    return (
+      <SettingsGroup title="Список сайтов и IP" data-tour="zapret-lists">
+        <EmptyState
+          icon={<ListChecks />}
+          title="Список не прочитан"
+          text="Не удалось прочитать lists/list-general.txt. Установите или обновите сборку Zapret кнопкой в шапке раздела."
+        />
+      </SettingsGroup>
+    )
+  }
+
   return (
-    <Card className="cyber-card">
-      <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
-        <div className="min-w-0 flex-1">
-          <CardTitle className="flex items-center gap-2">
-            <ListChecks className="h-4 w-4 text-muted-foreground" />
-            Список хостов и IP
-            {snapshot && (
-              <span className="text-xs font-normal text-muted-foreground">
-                {snapshot.total} запис{endingFor(snapshot.total)} в list-general.txt
-              </span>
-            )}
-          </CardTitle>
-        </div>
-        <Button
-          variant={open ? 'secondary' : 'outline'}
-          size="sm"
-          disabled={disabled}
-          title={disabled ? disabledReason : undefined}
-          onClick={() => setOpen((v) => !v)}
-          className="shrink-0"
-        >
-          {open
-            ? <><ChevronDown className="h-3.5 w-3.5" /> Свернуть</>
-            : <><ChevronRight className="h-3.5 w-3.5" /> Управление списком</>}
-        </Button>
-      </CardHeader>
-
-      {open && (
-        <CardContent className="space-y-4 pt-0">
-          {!snapshot ? (
-            <p className="text-sm text-muted-foreground">
-              Не удалось прочитать <code className="text-xs">lists/list-general.txt</code>.
-              Установите или обновите Zapret-бандл.
-            </p>
-          ) : (
-            <>
-              <div>
-                <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
-                  Готовые наборы
-                </div>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {sets.map((s) => {
-                    const checked = picked.has(s.id)
-                    // Счётчик приходит с бэкенда: у авторского пака содержимое
-                    // лежит в файле, и `cidrs` намеренно пустой.
-                    const count = s.entryCount ?? s.cidrs.length
-                    // Набор из файла, которого нет в сборке. Показать «0 зап.»
-                    // значило бы соврать: пак не пустой, его просто не
-                    // положили рядом с приложением.
-                    const missing = s.available === false
-                    return (
-                      <label
-                        key={s.id}
-                        className={cn(
-                          'flex select-none items-start gap-2.5 rounded-xl border p-3 transition-all',
-                          missing
-                            ? 'cursor-not-allowed border-st-warn/40 bg-st-warn/[0.04]'
-                            : 'cursor-pointer',
-                          checked
-                            ? 'border-primary/60 bg-primary/10 '
-                            : s.recommended && !missing
-                              ? 'border-st-warn/50 bg-st-warn/[0.06] hover:bg-st-warn/10'
-                              : !missing && 'border-border/70 bg-card/40 hover:bg-foreground/[0.04]',
-                          // Авторский пак занимает всю ширину: он покрывает
-                          // почти все наборы ниже, и ставить его в один ряд с
-                          // ними как равный вариант — вводить в заблуждение.
-                          s.recommended && 'sm:col-span-2',
-                          (disabled || busy) && 'pointer-events-none opacity-50'
-                        )}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={missing}
-                          onChange={() => togglePicked(s.id)}
-                          className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-primary disabled:cursor-not-allowed"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="flex items-center gap-1.5 min-w-0">
-                              {s.recommended && (
-                                <Star className="size-3.5 shrink-0 fill-st-warn text-st-warn-text" />
-                              )}
-                              <span className="text-xs font-semibold text-foreground truncate">
-                                {s.name}
-                              </span>
-                              {s.recommended && (
-                                <span className="shrink-0 rounded-full border border-st-warn/40 bg-st-warn/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-st-warn-text">
-                                  от автора · рекомендуется
-                                </span>
-                              )}
-                            </span>
-                            <span
-                              className={cn(
-                                'shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-mono',
-                                missing
-                                  ? 'border-st-warn/50 bg-st-warn/15 text-st-warn-text'
-                                  : s.recommended
-                                    ? 'border-st-warn/40 bg-st-warn/10 text-st-warn-text'
-                                    : 'border-border/40 bg-foreground/[0.06] text-muted-foreground'
-                              )}
-                            >
-                              {missing ? 'нет файла' : `${count.toLocaleString('ru-RU')} зап.`}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
-                            {s.description}
-                          </p>
-                          {missing && (
-                            <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-relaxed text-st-warn-text">
-                              <AlertTriangle className="mt-px size-3.5 shrink-0" />
-                              <span>
-                                Файл пака не найден в этой сборке
-                                (<code className="font-mono">resources\lists\list-general-author.txt</code>).
-                                Он появится после полной переустановки или обновления через
-                                fast-update.bat.
-                              </span>
-                            </p>
-                          )}
-                        </div>
-                      </label>
-                    )
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <span className="text-xs uppercase tracking-wide text-muted-foreground font-mono">Свои хосты / IP</span>
-                  <button
-                    type="button"
-                    disabled={disabled || busy}
-                    onClick={async () => {
-                      const text = (await readClipboardText()).trim()
-                      if (!text) {
-                        toast.info('Буфер обмена пуст')
-                        return
-                      }
-                      // Дописываем с новой строки — уже введённое не теряется.
-                      setCustom((prev) => (prev.trim() ? `${prev.replace(/\s+$/, '')}\n${text}` : text))
-                    }}
-                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-primary hover:bg-primary/10 disabled:opacity-40 cursor-pointer"
-                    title="Вставить из буфера обмена (или правая кнопка мыши в поле)"
-                  >
-                    <ClipboardPaste className="size-3.5" />
-                    Вставить
-                  </button>
-                </div>
-                <textarea
-                  value={custom}
-                  onChange={(e) => setCustom(e.target.value)}
-                  disabled={disabled || busy}
-                  placeholder={'example.com\n*.example.org\n1.2.3.4\n2606:4700::/32'}
-                  rows={4}
-                  spellCheck={false}
-                  className={cn(
-                    'w-full rounded-xl border border-border/80 bg-background/50 p-3 font-mono text-xs',
-                    'placeholder:text-muted-foreground/60 focus:border-primary/60 focus:ring-1 focus:ring-primary/40 focus:outline-none transition-all',
-                    (disabled || busy) && 'pointer-events-none opacity-50'
-                  )}
-                />
-                <p className="mt-1.5 text-[11px] text-muted-foreground">
-                  По одному в строке. Поддерживаются домены, IPv4/IPv6 и CIDR. Невалидные строки игнорируются. Правая
-                  кнопка мыши в поле — вставить из буфера.
-                </p>
-              </div>
-
-              {snapshot.preview.length > 0 && (
-                <div>
-                  <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground font-mono">
-                    Текущий список (первые {snapshot.preview.length} из {snapshot.total})
-                  </div>
-                  <pre className="max-h-32 overflow-auto rounded-xl border border-border/70 bg-black/40 p-3 font-mono text-[11px] leading-snug">
-                    {snapshot.preview.join('\n')}
-                    {snapshot.total > snapshot.preview.length ? '\n…' : ''}
-                  </pre>
-                </div>
-              )}
-
-              <div className="flex flex-wrap items-center gap-2 pt-1">
-                <Button
-                  size="sm"
-                  onClick={() => { void apply('append') }}
-                  disabled={disabled || busy || (pickedCount === 0 && custom.trim() === '')}
-                  title="Дописать выбранное к текущему списку. Существующие записи сохранятся, дубли не продублируются."
-                >
-                  {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlusCircle className="h-3.5 w-3.5" />}
-                  Добавить к списку
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={requestReplace}
-                  disabled={disabled || busy || (pickedCount === 0 && custom.trim() === '')}
-                  title={`Удалить текущие ${snapshot.total} записей и оставить только выбранное`}
-                  className={cn(
-                    confirmReplace &&
-                      'border-st-err/60 bg-st-err/10 text-st-err-text hover:text-st-err-text hover:bg-st-err/15'
-                  )}
-                >
-                  {confirmReplace
-                    ? `Точно стереть ${snapshot.total.toLocaleString('ru-RU')}? Нажмите ещё раз`
-                    : 'Заменить список'}
-                </Button>
-                <div className="ml-auto flex items-center gap-2">
-                  {snapshot.hasBackup && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => { void restore() }}
-                      disabled={disabled || busy}
-                      title="Отменить последние правки (снимок создаётся автоматически при первом изменении)"
+    <div className="grid items-start gap-3 lg:grid-cols-[1.15fr_1fr]" data-tour="zapret-lists">
+      <SettingsGroup
+        title="Готовые наборы"
+        hint="Наборы адресов, которые Zapret будет обрабатывать. Отметьте нужные и нажмите «Добавить к списку»."
+        sub={pickedCount ? `Отмечено: ${pickedCount}` : 'Отметьте нужные наборы'}
+      >
+        <Rows>
+          {sets.map((s) => {
+            const checked = picked.has(s.id)
+            // Счётчик приходит с бэкенда: у авторского пака содержимое
+            // лежит в файле, и `cidrs` намеренно пустой.
+            const count = s.entryCount ?? s.cidrs.length
+            // Набор из файла, которого нет в сборке. Показать «0 зап.»
+            // значило бы соврать: пак не пустой, его просто не положили рядом с приложением.
+            const missing = s.available === false
+            return (
+              <SettingRow
+                key={s.id}
+                id={`zapret-set-${s.id}`}
+                icon={s.recommended ? <Star /> : <ListChecks />}
+                on={checked}
+                disabled={lock || missing}
+                onToggle={lock || missing ? undefined : () => togglePicked(s.id)}
+                title={
+                  <span className="flex items-center gap-1.5">
+                    <span className="truncate">{s.name}</span>
+                    {s.recommended && <span className="shrink-0 rounded-md bg-primary/12 px-1.5 py-px text-[11px] font-semibold text-primary">от автора, рекомендуем</span>}
+                  </span>
+                }
+                desc={
+                  missing ? (
+                    <span className="flex items-start gap-1.5 text-st-warn-text">
+                      <AlertTriangle className="mt-px size-3.5 shrink-0" />
+                      <span>
+                        Файла пака нет в этой сборке (resources\lists\list-general-author.txt). Он появится после полной переустановки или обновления через fast-update.bat.
+                      </span>
+                    </span>
+                  ) : (
+                    s.description
+                  )
+                }
+                control={
+                  <>
+                    <span className={cn('text-[12px] tabular-nums', missing ? 'text-st-warn-text' : 'text-muted-foreground')}>
+                      {missing ? 'нет файла' : count.toLocaleString('ru-RU')}
+                    </span>
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked={checked}
+                      aria-label={s.name}
+                      disabled={lock || missing}
+                      onClick={() => togglePicked(s.id)}
+                      className={cn(
+                        'flex size-5 cursor-pointer items-center justify-center rounded-[6px] border transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-not-allowed',
+                        checked ? 'border-primary bg-primary text-primary-foreground' : 'border-foreground/25'
+                      )}
                     >
-                      <RotateCcw className="h-3.5 w-3.5" />
-                      Из бэкапа
-                    </Button>
-                  )}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => { void clearAll() }}
-                    disabled={disabled || busy || snapshot.total === 0}
-                    className="text-st-err-text hover:text-st-err-text"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    Очистить
-                  </Button>
-                </div>
-              </div>
-            </>
-          )}
-        </CardContent>
-      )}
-    </Card>
+                      {checked && <Check className="size-3.5" strokeWidth={3} />}
+                    </button>
+                  </>
+                }
+              />
+            )
+          })}
+        </Rows>
+      </SettingsGroup>
+
+      <SettingsGroup
+        title="Свои сайты и IP"
+        hint="По одному в строке: домены, IPv4/IPv6 и CIDR. Неверные строки пропускаются. Правая кнопка мыши в поле — вставить из буфера."
+        sub={`В list-general.txt ${snapshot.total.toLocaleString('ru-RU')} запис${endingFor(snapshot.total)}${disabled && disabledReason ? ` · ${disabledReason}` : ''}`}
+        right={
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={lock}
+            className="h-8 rounded-lg text-xs"
+            title="Вставить из буфера обмена (или правая кнопка мыши в поле)"
+            onClick={async () => {
+              const text = (await readClipboardText()).trim()
+              if (!text) {
+                toast.info('Буфер обмена пуст')
+                return
+              }
+              // Дописываем с новой строки — уже введённое не теряется.
+              setCustom((prev) => (prev.trim() ? `${prev.replace(/\s+$/, '')}\n${text}` : text))
+            }}
+          >
+            <ClipboardPaste className="size-3.5" />
+            Вставить
+          </Button>
+        }
+      >
+        <div className="space-y-3 px-3 pt-1 pb-2">
+          <textarea
+            value={custom}
+            onChange={(e) => setCustom(e.target.value)}
+            disabled={lock}
+            placeholder={'example.com\n*.example.org\n1.2.3.4\n2606:4700::/32'}
+            rows={6}
+            spellCheck={false}
+            className={cn(
+              'custom-scrollbar w-full resize-y rounded-xl border border-[color:var(--input-border)] bg-[color:var(--input-bg)] p-3 font-mono text-xs',
+              'placeholder:text-muted-foreground/60 outline-none transition-colors focus-visible:border-[color:var(--input-focus-border)]',
+              lock && 'pointer-events-none opacity-50'
+            )}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => void apply('append')}
+              disabled={lock || nothing}
+              className="h-8 rounded-lg text-xs"
+              title="Дописать выбранное к текущему списку. Существующие записи сохранятся, дубли не продублируются."
+            >
+              {busy ? <Loader2 className="size-3.5 animate-spin" /> : <PlusCircle className="size-3.5" />}
+              Добавить к списку
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={requestReplace}
+              disabled={lock || nothing}
+              title={`Удалить текущие ${snapshot.total} записей и оставить только выбранное`}
+              className={cn('h-8 rounded-lg text-xs', confirmReplace && 'border-st-err/60 bg-st-err/10 text-st-err-text hover:bg-st-err/15 hover:text-st-err-text')}
+            >
+              {confirmReplace ? `Точно стереть ${snapshot.total.toLocaleString('ru-RU')}? Нажмите ещё раз` : 'Заменить список'}
+            </Button>
+          </div>
+
+          <div className="rounded-xl border border-foreground/[0.08] bg-foreground/[0.03]">
+            <div className="flex items-center gap-1 px-2 py-1.5">
+              <button
+                type="button"
+                onClick={() => setPreviewOpen((v) => !v)}
+                aria-expanded={previewOpen}
+                disabled={snapshot.preview.length === 0}
+                className="inline-flex flex-1 cursor-pointer items-center gap-1.5 rounded-lg px-1 text-left text-[12px] font-semibold text-foreground disabled:cursor-default disabled:text-muted-foreground"
+              >
+                <ChevronDown className={cn('size-3.5 transition-transform', !previewOpen && '-rotate-90')} />
+                Сейчас в списке
+                <span className="font-normal text-muted-foreground tabular-nums">{snapshot.total.toLocaleString('ru-RU')}</span>
+              </button>
+              {snapshot.hasBackup && (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => void restore()}
+                  disabled={lock}
+                  title="Отменить правки: вернуть снимок, сделанный при первом изменении"
+                >
+                  <RotateCcw className="size-3" />
+                  Из бэкапа
+                </Button>
+              )}
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => void clearAll()}
+                disabled={lock || snapshot.total === 0}
+                className="text-st-err-text hover:text-st-err-text"
+              >
+                <Trash2 className="size-3" />
+                Очистить
+              </Button>
+            </div>
+            {previewOpen && snapshot.preview.length > 0 && (
+              <pre className="custom-scrollbar max-h-40 overflow-auto border-t border-foreground/[0.07] px-3 py-2 font-mono text-[11px] leading-snug text-muted-foreground">
+                {snapshot.preview.join('\n')}
+                {snapshot.total > snapshot.preview.length ? `\n… ещё ${(snapshot.total - snapshot.preview.length).toLocaleString('ru-RU')}` : ''}
+              </pre>
+            )}
+          </div>
+        </div>
+      </SettingsGroup>
+    </div>
   )
 }
 

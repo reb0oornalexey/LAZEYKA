@@ -1,4 +1,5 @@
 import { ChildProcess, spawn, exec, execFile } from 'child_process'
+import { emitServiceStatusChanged } from '../utils/status-bus'
 import { createConnection, createServer } from 'net'
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import path from 'path'
@@ -80,11 +81,12 @@ function setStatus(next: Partial<CoreStatus>): void {
   const prev = status.state
   status = { ...status, ...next }
   broadcast('tgws:status', status)
+  emitServiceStatusChanged()
 
   if (prev !== 'running' && status.state === 'running') {
-    showSystemNotification('Telegram Proxy запущен', 'Локальный MTProto прокси активен')
+    showSystemNotification('Telegram Proxy запущен', 'Локальный MTProto прокси активен', undefined, 'actions')
   } else if (prev !== 'error' && status.state === 'error' && status.lastError) {
-    showSystemNotification('Ошибка Telegram Proxy', status.lastError)
+    showSystemNotification('Ошибка Telegram Proxy', status.lastError, undefined, 'errors')
   }
 }
 
@@ -499,7 +501,7 @@ function pipeLines(stream: NodeJS.ReadableStream | null | undefined): void {
 /** Окружение python: на macOS не подмешиваем пользовательский site и чужие PYTHONHOME/PYTHONPATH. */
 function pythonEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8' }
-  if (process.platform === 'darwin') {
+  if (process.platform !== 'win32') {
     env.PYTHONNOUSERSITE = '1'
     delete env.PYTHONHOME
     delete env.PYTHONPATH
@@ -520,6 +522,7 @@ async function startTgwsImpl(): Promise<void> {
   // запасным вариантом, только если встроенного Python нет (старая сборка
   // или пользователь явно указал свой exe в настройках).
   const cli = cfg0.tgws.binaryPath ? null : tgwsCliPaths()
+  if (process.platform === 'linux' && !cli) throw new Error('Для Telegram-прокси нужны Python 3 и встроенный пакет TgWsProxy')
   const bin = cli ? cli.python : cfg0.tgws.binaryPath || tgwsBinaryPath()
   if (!existsSync(bin)) {
     setStatus({ state: 'error', lastError: `TgWsProxy binary not found: ${bin}` })

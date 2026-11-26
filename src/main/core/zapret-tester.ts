@@ -13,9 +13,11 @@ import {
   stopZapret,
   withZapretLock
 } from './zapret'
-import { getAppConfig } from '../config'
+import { getAppConfig, patchAppConfig } from '../config'
 import { getGameFilterVars } from './zapret-service-settings'
 import { macApplyStrategyForTest, macStopForTest, requireZapretMacInstalled } from './zapret-mac'
+import { claimZapretBusy, releaseZapretBusy } from './zapret-busy'
+import { applyLinuxZapretStrategy, linuxZapretSystemState, stopLinuxZapret } from './zapret-linux'
 
 // HTTPS hosts that DPI bypass solutions are typically tested against.
 const HTTP_TARGETS: string[] = [
@@ -35,9 +37,10 @@ const PROBE_TIMEOUT_MS = 5000
 const STRATEGY_WARMUP_MS = 4500
 const STRATEGY_BOOT_TIMEOUT_MS = 6000
 const PASS_THRESHOLD = 0.5
-const RESULTS_FILENAME = 'zapret-test-results.json'
+const RESULTS_FILENAME = process.platform === 'linux' ? 'zapret-test-results-linux.json' : 'zapret-test-results.json'
 // macOS: стратегию применяет root-служба (перезапуск движка), а не .bat-файл.
 const IS_MAC = process.platform === 'darwin'
+const IS_LINUX = process.platform === 'linux'
 const MAC_STRATEGY_WARMUP_MS = 1500
 
 // Same shape as the renderer-side type in renderer/utils/ipc.ts —
@@ -69,6 +72,8 @@ interface TestProgress {
   strategy?: string
   report?: StrategyTestReport
   message?: string
+  /** Во время проверки: результаты уже проверенных стратегий этого прогона (живой ход в каталоге). */
+  done?: Record<string, StrategyTestResult>
 }
 
 let runningPromise: Promise<StrategyTestReport> | null = null
@@ -181,6 +186,7 @@ async function probeOne(url: string): Promise<ProbeResult> {
 }
 
 async function probeAll(): Promise<ProbeResult[]> {
+  if (IS_LINUX) return Promise.all(HTTP_TARGETS.map(probeOne))
   const results: ProbeResult[] = []
   for (const url of HTTP_TARGETS) {
     results.push(await probeOne(url))
@@ -267,17 +273,18 @@ async function testOneStrategy(batPath: string): Promise<{
 }
 
 /** macOS: применить стратегию в службе и прогнать те же проверки, что и на Windows. */
-async function testOneStrategyMac(id: string): Promise<{
+async function testOneStrategyUnix(id: string): Promise<{
   okCount: number
   totalCount: number
   score: number
   passed: boolean
 }> {
-  if (!(await macApplyStrategyForTest(id))) {
+  if (IS_LINUX) await applyLinuxZapretStrategy(id)
+  else if (!(await macApplyStrategyForTest(id))) {
     return { okCount: 0, totalCount: HTTP_TARGETS.length, score: 0, passed: false }
   }
   // «running» значит, что движок поднят и правила pf загружены; небольшая пауза — на ARP/первые пакеты.
-  await sleep(MAC_STRATEGY_WARMUP_MS)
+  if (IS_MAC) await sleep(MAC_STRATEGY_WARMUP_MS)
   const results = await probeAll()
   const okCount = results.filter((r) => r.ok).length
   const totalCount = results.length
@@ -290,8 +297,16 @@ async function testOneStrategyMac(id: string): Promise<{
  * the entire duration so a user toggle waits for us to finish (or queues
  * behind us). Returns the persisted report.
  */
-export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<StrategyTestReport> {
+export interface StrategyTestOptions {
+  resume?: boolean
+  file?: string
+  autoSelect?: boolean
+}
+
+export function runStrategyTests(opts: StrategyTestOptions = {}): Promise<StrategyTestReport> {
   if (runningPromise) return runningPromise
+  // Автоподбор или проверка из конструктора тоже запускают winws — не одновременно.
+  claimZapretBusy('test')
   stopRequested = false
 
   runningPromise = (async () => {
@@ -299,12 +314,15 @@ export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<Strat
     if (IS_MAC) requireZapretMacInstalled()
     const startedAt = Date.now()
 
-    const strategies = listStrategies()
+    const catalog = listStrategies()
+    const single = opts.file !== undefined
+    const strategies = single ? catalog.filter((s) => s.file === opts.file) : catalog
+    if (single && strategies.length === 0) throw new Error('Стратегия не найдена в каталоге')
     const total = strategies.length
     // Продолжение: берём результаты прошлого (остановленного) прогона и
     // тестируем только то, что ещё не проверено.
-    const prev = opts.resume ? getStrategyTestResults() : null
-    const resumeFrom = prev?.partial ? prev : null
+    const prev = single || opts.resume ? getStrategyTestResults() : null
+    const resumeFrom = !single && prev?.partial ? prev : null
     if (total === 0) {
       const empty: StrategyTestReport = {
         ranAt: startedAt,
@@ -322,7 +340,8 @@ export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<Strat
     broadcast('zapret:testProgress', {
       phase: 'starting',
       total,
-      current: 0
+      current: 0,
+      strategy: single ? strategies[0].file : undefined
     })
 
     const results: Record<string, StrategyTestResult> = {}
@@ -340,50 +359,61 @@ export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<Strat
     }
 
     try {
-      if (wasRunning) {
+      if (wasRunning && !IS_LINUX) {
         await stopZapret().catch(() => void 0)
       }
       await withZapretLock(async () => {
-        await killWinws()
-        await sleep(300)
+        const originalLinux = IS_LINUX ? await linuxZapretSystemState() : null
+        try {
+          await killWinws()
+          await sleep(300)
 
-        for (let i = 0; i < strategies.length; i++) {
-          const s = strategies[i]
-          if (results[s.file]) continue
-          if (stopRequested) { stopped = true; break }
-          broadcast('zapret:testProgress', {
-            phase: 'testing',
-            current: i + 1,
-            total,
-            strategy: s.file
-          })
-          const batPath = path.join(zapretBundleDir(), s.file)
-          if (!IS_MAC && !existsSync(batPath)) {
-            results[s.file] = {
-              tested: true,
-              passed: false,
-              okCount: 0,
-              totalCount: HTTP_TARGETS.length,
-              score: 0
+          for (let i = 0; i < strategies.length; i++) {
+            const s = strategies[i]
+            if (results[s.file]) continue
+            if (stopRequested) { stopped = true; break }
+            broadcast('zapret:testProgress', {
+              phase: 'testing',
+              current: i + 1,
+              total,
+              strategy: s.file,
+              done: { ...results }
+            })
+            const batPath = path.join(zapretBundleDir(), s.file)
+            if (!IS_MAC && !IS_LINUX && !existsSync(batPath)) {
+              results[s.file] = {
+                tested: true,
+                passed: false,
+                okCount: 0,
+                totalCount: HTTP_TARGETS.length,
+                score: 0
+              }
+              continue
             }
-            continue
+            try {
+              const r = IS_MAC || IS_LINUX ? await testOneStrategyUnix(s.file) : await testOneStrategy(batPath)
+              results[s.file] = { tested: true, ...r }
+              if (r.passed && r.score > bestScore) {
+                bestScore = r.score
+                bestStrategy = s.file
+              }
+            } catch (e) {
+              if (IS_LINUX) throw e
+              console.warn(`[zapret-tester] ${s.file} threw:`, e)
+              results[s.file] = {
+                tested: true,
+                passed: false,
+                okCount: 0,
+                totalCount: HTTP_TARGETS.length,
+                score: 0
+              }
+            }
           }
-          try {
-            const r = IS_MAC ? await testOneStrategyMac(s.file) : await testOneStrategy(batPath)
-            results[s.file] = { tested: true, ...r }
-            if (r.passed && r.score > bestScore) {
-              bestScore = r.score
-              bestStrategy = s.file
-            }
-          } catch (e) {
-            console.warn(`[zapret-tester] ${s.file} threw:`, e)
-            results[s.file] = {
-              tested: true,
-              passed: false,
-              okCount: 0,
-              totalCount: HTTP_TARGETS.length,
-              score: 0
-            }
+        } finally {
+          if (originalLinux?.state === 'active' && originalLinux.strategy) {
+            await applyLinuxZapretStrategy(originalLinux.strategy)
+          } else if (originalLinux) {
+            await stopLinuxZapret()
           }
         }
       })
@@ -391,8 +421,38 @@ export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<Strat
       testError = e instanceof Error ? e : new Error(String(e))
     }
 
+    if (IS_LINUX && testError) throw testError
+    if (IS_LINUX && stopRequested) stopped = true
+    if (IS_LINUX && opts.autoSelect && !single && !stopped && bestStrategy) {
+      const selected = cfg?.zapret?.activeStrategy
+      if (selected && results[selected]?.score === bestScore) bestStrategy = selected
+      if (selected !== bestStrategy) {
+        const latest = await getAppConfig()
+        if (latest.zapret?.activeStrategy === selected && latest.zapret) {
+          await patchAppConfig({ zapret: { ...latest.zapret, activeStrategy: bestStrategy } })
+          if (wasRunning) {
+            try {
+              await startZapret()
+            } catch (error) {
+              await patchAppConfig({ zapret: latest.zapret })
+              throw error
+            }
+          }
+        }
+      }
+    }
     // macOS: тест оставил службу запущенной — если Zapret до теста не работал, выключаем.
     if (IS_MAC && !wasRunning) await withZapretLock(() => macStopForTest())
+
+    if (single && prev) {
+      for (const { file } of catalog) {
+        if (!results[file] && prev.results[file]) results[file] = prev.results[file]
+      }
+      bestStrategy = catalog.reduce<string | undefined>((best, { file }) => {
+        const result = results[file]
+        return result?.passed && (!best || result.score > results[best].score) ? file : best
+      }, undefined)
+    }
 
     const report: StrategyTestReport = {
       ranAt: startedAt,
@@ -400,8 +460,8 @@ export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<Strat
       bundleVersion: cfg?.zapret?.installedVersion,
       results,
       bestStrategy,
-      totalStrategies: total,
-      ...(stopped ? { partial: true } : {})
+      totalStrategies: catalog.length,
+      ...((single ? prev?.partial && Object.keys(results).length < catalog.length : stopped) ? { partial: true } : {})
     }
     if (resumeFrom) report.durationMs += resumeFrom.durationMs
     saveReport(report)
@@ -409,7 +469,7 @@ export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<Strat
     // Restore user's zapret if it was running before. Done OUTSIDE the
     // lock so `startZapret()` can take the lock itself in the normal
     // way — we already released ours by exiting the withZapretLock body.
-    if (wasRunning) {
+    if (wasRunning && !IS_LINUX) {
       try { await startZapret() } catch { /* surfaced via status */ }
     }
 
@@ -425,11 +485,10 @@ export function runStrategyTests(opts: { resume?: boolean } = {}): Promise<Strat
       broadcast('zapret:testProgress', { phase: 'completed', report })
     }
     return report
-  })()
-
-  runningPromise.finally(() => {
+  })().finally(() => {
     runningPromise = null
     stopRequested = false
+    releaseZapretBusy('test')
   })
 
   return runningPromise

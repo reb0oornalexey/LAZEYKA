@@ -30,6 +30,20 @@ export const defaultConfig: AppConfig = {
   language: 'en-US',
   autoCheckUpdate: true,
   maxLogDays: 7,
+  // Е6: всё «как было до появления настроек».
+  startPage: 'home',
+  windowAlwaysOnTop: false,
+  windowZoom: 1,
+  hintMode: 'full',
+  trayStatusTooltip: true,
+  notifyKinds: { actions: true, updates: true, errors: true, author: true },
+  subTrafficNotifyPct: 10,
+  updatesViaIncy: false,
+  backupBeforeUpdate: true,
+  // Новые горячие клавиши по умолчанию не назначены.
+  prematchToggleShortcut: undefined,
+  miniWindowShortcut: undefined,
+  muteSoundsShortcut: undefined,
   disableGPU: false,
   tgws: {
     enabled: false,

@@ -8,6 +8,7 @@ import { getIncyStatus, connectIncyNode, disconnectIncy } from '../core/incy-eng
 import { getPendingAppUpdate, openUpdateWindow } from '../core/app-update-watcher'
 import { getAppConfigSync, patchAppConfig } from '../config'
 import { appLog } from '../utils/app-logger'
+import { trayTooltipText, watchServiceStatusForTray } from './tray-tooltip'
 
 let tray: Tray | null = null
 let rebuildInterval: NodeJS.Timeout | null = null
@@ -101,6 +102,12 @@ export async function createTray(): Promise<void> {
     const activeStrategy = cfg.zapret?.activeStrategy
 
     const anyRunning = tgws.state === 'running' || zapret.state === 'running' || incy.state === 'running'
+    // Е6: что включено — в подсказке значка (Настройки → Запуск и окно).
+    try {
+      const tip = await trayTooltipText({ zapret: zapret.state, tgws: tgws.state, incy: incy.state, activeNodeId: incy.activeNodeId })
+      if (tray && !tray.isDestroyed()) tray.setToolTip(tip)
+    } catch { /* подсказка не важна */ }
+    if (!tray || tray.isDestroyed()) return
     if (anyRunning !== currentIconOn) {
       tray.setImage(loadTrayImage(anyRunning))
       currentIconOn = anyRunning
@@ -189,6 +196,8 @@ export async function createTray(): Promise<void> {
   // Expose rebuild() so external triggers (window show/hide/minimize) can
   // refresh the «Показать/Скрыть окно» label instantly via refreshTray().
   rebuildTrayMenu = rebuild
+  // Е6: состояние служб в подсказке и меню — сразу при смене, без ожидания 10 с.
+  watchServiceStatusForTray(refreshTray)
   await rebuild()
   // Refresh menu on a lazy interval; event-driven refreshTray() handles immediate updates
   rebuildInterval = setInterval(rebuild, 10000)
@@ -210,4 +219,4 @@ export function destroyTray(): void {
  * hidden window and no way to restore it. */
 export function isTrayActive(): boolean {
   return tray !== null && !tray.isDestroyed()
-}
+}

@@ -4,13 +4,18 @@ import { dialog, BrowserWindow } from 'electron'
 import { getAppConfig, patchAppConfig } from '../config'
 import { zapretBundleDir } from '../utils/dirs'
 import { getActiveFakesState, setActiveFake, setGameFilterMode, setIpsetFilterMode } from './zapret-service-settings'
+import { randomBytes } from 'node:crypto'
+import { configForExport, configForImport } from './profile-sanitize'
+import { isAcceptableStrategyValue, listStrategyFiles } from './zapret-strategy'
+import { isLinuxZapretStrategy, resolveLinuxStrategy } from './zapret-linux'
 
 export interface LazeykaProfileBundle {
   format: 'lazeyka-profile'
   version: 1 | 2
   exportedAt: number
   appName: 'LAZEYKA'
-  config: AppConfig
+  /** Без секретов и служебных меток — см. profile-sanitize.ts. */
+  config: Partial<AppConfig>
   hostListContent?: string
   lists?: Record<string, string>
   activeDiscordFake?: string | null
@@ -32,6 +37,12 @@ export async function exportLazeykaProfile(): Promise<{ success: boolean; filePa
     return { success: false, message: 'Отменено пользователем' }
   }
 
+  writeFileSync(filePath, JSON.stringify(await buildLazeykaProfile(), null, 2), 'utf-8')
+  return { success: true, filePath, message: 'Профиль успешно экспортирован' }
+}
+
+/** Собрать профиль .lazeyka (без диалога): экспорт и копии перед обновлением (Е6). */
+export async function buildLazeykaProfile(): Promise<LazeykaProfileBundle> {
   const config = await getAppConfig()
   const listsMap: Record<string, string> = {}
 
@@ -56,15 +67,14 @@ export async function exportLazeykaProfile(): Promise<{ success: boolean; filePa
     version: 2,
     exportedAt: Date.now(),
     appName: 'LAZEYKA',
-    config,
+    // Секрет прокси Telegram, зерно устройства и прочие ключи в профиль не идут.
+    config: configForExport(config) as Partial<AppConfig>,
     hostListContent: listsMap['list-general.txt'] || '',
     lists: listsMap,
     activeDiscordFake: fakes.discordActive,
     activeGameFake: fakes.gameActive
   }
-
-  writeFileSync(filePath, JSON.stringify(bundle, null, 2), 'utf-8')
-  return { success: true, filePath, message: 'Профиль успешно экспортирован' }
+  return bundle
 }
 
 export async function importLazeykaProfile(): Promise<{ success: boolean; message: string }> {
@@ -90,6 +100,11 @@ export async function importLazeykaProfile(): Promise<{ success: boolean; messag
     throw new Error(`Не удалось прочитать файл: ${e.message || String(e)}`)
   }
 
+  return restoreLazeykaProfile(content)
+}
+
+/** Применить профиль из текста файла (импорт и «Восстановить» копии перед обновлением). */
+export async function restoreLazeykaProfile(content: string): Promise<{ success: boolean; message: string }> {
   let bundle: any
   try {
     bundle = JSON.parse(content)
@@ -106,18 +121,37 @@ export async function importLazeykaProfile(): Promise<{ success: boolean; messag
   // 1. Restore config
   // Пути к исполняемым файлам из чужого профиля не принимаем: tgws.binaryPath
   // запускается с правами администратора, и присланный «профиль» мог
-  // подсунуть любой exe (в том числе с сетевой папки).
+  // подсунуть любой exe (в том числе с сетевой папки). Секреты (прокси
+  // Telegram, зерно устройства) тоже не принимаем — остаются свои.
+  const notes: string[] = []
   if (bundle.config && typeof bundle.config === 'object') {
-    const strip = (o: any): any => {
-      if (!o || typeof o !== 'object' || Array.isArray(o)) return o
-      const out: any = {}
-      for (const [k, v] of Object.entries(o)) {
-        if (/(binary|bundle|exe)Path$/i.test(k)) continue
-        out[k] = strip(v)
+    const incoming = configForImport(bundle.config) as Partial<AppConfig>
+    // Стратегия Zapret запускается от администратора: только имя из своей папки стратегий.
+    const z = incoming.zapret as Partial<ZapretConfig> | undefined
+    if (z && 'activeStrategy' in z && z.activeStrategy !== undefined) {
+      if (process.platform === 'linux' && typeof z.activeStrategy === 'string') {
+        const mapped = resolveLinuxStrategy(z.activeStrategy, false)
+        if (mapped) z.activeStrategy = mapped
       }
-      return out
+      const ok =
+        process.platform === 'win32'
+          ? listStrategyFiles(zapretBundleDir()).includes(String(z.activeStrategy))
+          : process.platform === 'linux'
+          ? isLinuxZapretStrategy(z.activeStrategy)
+          : isAcceptableStrategyValue(z.activeStrategy, process.platform)
+      if (!ok) {
+        delete z.activeStrategy
+        notes.push('стратегия Zapret из профиля не найдена — выберите её заново')
+      }
     }
-    await patchAppConfig(strip(bundle.config))
+    await patchAppConfig(incoming)
+  }
+  // Секрета прокси Telegram нет (новая установка или старый конфиг) — создаём свой.
+  {
+    const cfg = await getAppConfig()
+    if (cfg.tgws && !/^[0-9a-f]{32}$/i.test(cfg.tgws.secret ?? '')) {
+      await patchAppConfig({ tgws: { ...cfg.tgws, secret: randomBytes(16).toString('hex') } })
+    }
   }
 
   // 2. Restore hostlists
@@ -160,5 +194,10 @@ export async function importLazeykaProfile(): Promise<{ success: boolean; messag
     try { await setIpsetFilterMode(bundle.config.zapret.ipsetMode as any) } catch { /* ignore */ }
   }
 
-  return { success: true, message: 'Настройки и профиль успешно восстановлены' }
+  return {
+    success: true,
+    message: notes.length
+      ? `Настройки и профиль восстановлены (${notes.join('; ')})`
+      : 'Настройки и профиль успешно восстановлены'
+  }
 }

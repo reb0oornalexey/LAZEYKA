@@ -24,6 +24,7 @@ import {
 import { showSystemNotification } from '../utils/notifications'
 import { macServiceState, notifyMacService } from './incy-mac-service'
 import { appLog } from '../utils/app-logger'
+import { getAppConfigSync } from '../config'
 
 // ---- Sleep / wake ---------------------------------------------------------
 
@@ -129,10 +130,13 @@ let lastTrafficNoticeDay = ''
 export function checkSubscriptionTraffic(): void {
   const settings = loadIncySettings()
   if ((Number(settings.expireNotifyDays) || 0) <= 0) return
+  // Порог — «Настройки → Уведомления» (по умолчанию 10 %, как было).
+  const pctRaw = Number(getAppConfigSync().subTrafficNotifyPct)
+  const pct = Number.isFinite(pctRaw) && pctRaw >= 1 && pctRaw <= 50 ? pctRaw : 10
   const low = loadIncySubscriptions()
     .filter((s) => typeof s.totalBytes === 'number' && (s.totalBytes as number) > 0 && typeof s.usedBytes === 'number')
     .map((s) => ({ sub: s, left: (s.totalBytes as number) - (s.usedBytes as number), total: s.totalBytes as number }))
-    .filter((x) => x.left / x.total < 0.1)
+    .filter((x) => x.left / x.total < pct / 100)
     .sort((a, b) => a.left / a.total - b.left / b.total)
   if (low.length === 0 || lastTrafficNoticeDay === todayKey()) return
   lastTrafficNoticeDay = todayKey()
@@ -142,7 +146,7 @@ export function checkSubscriptionTraffic(): void {
     left <= 0 ? 'LAZEYKA — трафик подписки закончился' : 'LAZEYKA — трафик подписки на исходе',
     left <= 0
       ? `У «${sub.title}» израсходован весь трафик (${gb(total)} ГБ). Пополните подписку.`
-      : `У «${sub.title}» осталось ${gb(left)} ГБ из ${gb(total)} ГБ (меньше 10 %).`
+      : `У «${sub.title}» осталось ${gb(left)} ГБ из ${gb(total)} ГБ (меньше ${pct} %).`
   )
 }
 

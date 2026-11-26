@@ -27,3 +27,8 @@ release-notes-v*.md
 
 # macOS: ядра INCY, кладутся в CI скриптом scripts/fetch-mac-binaries.mjs
 resources-mac/
+
+# Stream Deck: собранный архив плагина
+streamdeck/dist/
+
+resources-linux/

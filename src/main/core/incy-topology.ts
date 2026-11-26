@@ -47,6 +47,8 @@
  */
 
 import type { IncyNode, IncySettings } from './incy-engine'
+import { nodeNeedsXray } from './incy-links'
+import { wantsXrayShaping } from './incy-finalmask'
 
 /** Protocols Xray-core can carry. Hysteria2 is deliberately absent. */
 const XRAY_PROTOCOLS: ReadonlySet<IncyNode['protocol']> = new Set([
@@ -126,6 +128,11 @@ export function corePreferenceFor(node: IncyNode, settings?: IncySettings): Incy
     return 'xray'
   }
 
+  // Hysteria2 из ссылки с параметрами, которые знает только Xray (закрепление
+  // сертификата `pinSHA256`, маски `fm`), собирается для Xray. Без таких
+  // параметров выбор прежний — sing-box.
+  if (node.protocol === 'hysteria2' && !node.rawOutbound && nodeNeedsXray(node)) return 'xray'
+
   // Otherwise Hysteria2 / WireGuard are served by sing-box.
   if (SINGBOX_ONLY_PROTOCOLS.has(node.protocol)) return 'sing-box'
 
@@ -137,6 +144,11 @@ export function corePreferenceFor(node: IncyNode, settings?: IncySettings): Incy
   if (node.network === 'xhttp' && XRAY_PROTOCOLS.has(node.protocol)) return 'xray'
   if (node.protocol === 'shadowsocks' && node.plugin) return 'sing-box'
 
+  // Параметры из ссылки (ECH, закрепление сертификата, finalmask, параметры
+  // XHTTP …) есть только у Xray: узел с ними идёт через него, иначе они
+  // молча потерялись бы.
+  if (XRAY_PROTOCOLS.has(node.protocol) && nodeNeedsXray(node)) return 'xray'
+
   // URI-parsed node: both cores can carry it, so prefer the simpler path.
   //
   // sing-box alone means no SOCKS bridge, no second process to exclude from
@@ -144,7 +156,10 @@ export function corePreferenceFor(node: IncyNode, settings?: IncySettings): Incy
   // imperfectly. Xray is worth the extra moving parts only when the user
   // actually asked for something it alone provides — fragmentation or noise
   // packets. Both default to off, so the common case is the simple one.
-  const wantsXrayOnly = Boolean(settings?.fragmentation || settings?.noises)
+  // Учитываются и подсказки провайдера для узла: они включают фрагментацию
+  // только для его подписки. Без подсказок и параметров в ссылке результат тот
+  // же, что был: решает общий переключатель.
+  const wantsXrayOnly = settings ? wantsXrayShaping(node, settings) : false
   if (wantsXrayOnly && XRAY_PROTOCOLS.has(node.protocol)) return 'xray'
 
   return 'sing-box'
@@ -210,7 +225,7 @@ export function planTopology(
       usedPorts: [ports.front, ports.clashApi],
       reason:
         'xray.exe ещё не загружен — узел временно обслуживается ядром sing-box ' +
-        '(фрагментация и шумы недоступны до загрузки Xray)'
+        '(фрагментация, шумы и параметры узла только для Xray недоступны до загрузки Xray)'
     }
   }
 
@@ -254,4 +269,167 @@ export function planTopology(
  */
 export function usesXrayOnlyFeatures(settings: IncySettings): boolean {
   return Boolean(settings.noises || settings.fragmentation)
+}
+
+// ---- Цепочка узлов (двойной VPN) --------------------------------------------
+//
+// Вход → выход: исходящее соединение узла-выхода идёт через узел-вход
+// (`detour` в sing-box). Функция выключена, пока в настройках не задан
+// `chainEntryNodeId`; весь код ниже вызывается только при заданном значении.
+
+/** Тег исходящего узла-входа в конфиге sing-box. */
+export const CHAIN_ENTRY_TAG = 'chain-entry'
+
+export const CHAIN_ONLY_SINGBOX_REASON = 'Цепочка работает только для узлов на ядре sing-box'
+
+export type ChainCore = 'sing-box' | 'xray'
+export type ChainVerdict = { ok: true; core?: ChainCore } | { ok: false; reason: string }
+
+const PROTO_NAME: Record<string, string> = {
+  vless: 'VLESS',
+  vmess: 'VMess',
+  trojan: 'Trojan',
+  shadowsocks: 'Shadowsocks',
+  hysteria2: 'Hysteria2',
+  hysteria: 'Hysteria',
+  wireguard: 'WireGuard',
+  tuic: 'TUIC'
+}
+const protoName = (p: string): string => PROTO_NAME[p] ?? p
+
+/** Протокол узла как его видит ядро: у конфига провайдера — из самого конфига. */
+function chainProto(node: IncyNode): string {
+  const raw = node.rawOutbound as { type?: string; protocol?: string } | undefined
+  if (raw && node.rawOutboundDialect === 'sing-box' && typeof raw.type === 'string') return raw.type.toLowerCase()
+  if (raw && node.rawOutboundDialect === 'xray' && typeof raw.protocol === 'string') return raw.protocol.toLowerCase()
+  return node.protocol
+}
+
+/** Транспорт конфига Xray поверх UDP (QUIC/KCP) — через первый сервер его не провести надёжно. */
+function xrayUdpTransport(node: IncyNode): boolean {
+  const raw = node.rawOutbound as { streamSettings?: { network?: string } } | undefined
+  const n = String(raw?.streamSettings?.network ?? node.network ?? '').toLowerCase()
+  return n === 'kcp' || n === 'mkcp' || n === 'quic'
+}
+
+/** Каким ядром собирается узел в цепочке; null — в цепочку не встраивается. */
+function chainCoreOf(node: IncyNode, settings?: IncySettings): ChainCore | null {
+  if (node.id.startsWith('node-warp-') || node.protocol === 'wireguard' || chainProto(node) === 'wireguard') return null
+  if (node.rawOutbound) {
+    if (node.rawOutboundDialect === 'sing-box') return (node.rawOutbound as { detour?: unknown }).detour === undefined ? 'sing-box' : null
+    if (node.rawOutboundDialect === 'xray') {
+      const raw = node.rawOutbound as { streamSettings?: { sockopt?: { dialerProxy?: unknown } }; proxySettings?: unknown }
+      return raw.streamSettings?.sockopt?.dialerProxy === undefined && raw.proxySettings === undefined ? 'xray' : null
+    }
+    return null
+  }
+  return corePreferenceFor(node, settings) === 'xray' ? 'xray' : 'sing-box'
+}
+
+/** Выход: только протоколы поверх TCP — их соединение можно провести через первый сервер. */
+const EXIT_TCP = new Set(['vless', 'vmess', 'trojan', 'shadowsocks'])
+/** Вход на sing-box: TCP-протоколы и Hysteria2/TUIC (TCP-соединения через них работают). */
+const ENTRY_SINGBOX = new Set(['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'tuic'])
+/** Вход на Xray: всё, что умеет Xray, кроме служебного. */
+const ENTRY_XRAY = new Set(['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria', 'hysteria2', 'socks', 'http'])
+
+/** Может ли узел быть выходом цепочки (без учёта входа). Для списка «Узел-выход». */
+export function chainExitEligible(node: IncyNode, settings?: IncySettings): ChainVerdict {
+  const who = `«${node.name}»`
+  if (node.id.startsWith('node-warp-')) return { ok: false, reason: `${who} — это WARP, его нельзя поставить выходом цепочки` }
+  const core = chainCoreOf(node, settings)
+  const proto = chainProto(node)
+  if (!core) return { ok: false, reason: `${who} не встраивается в цепочку (${protoName(proto)})` }
+  if (!EXIT_TCP.has(proto)) {
+    return { ok: false, reason: `${who} работает на ${protoName(proto)} (по UDP) — выходом цепочки может быть только VLESS, VMess, Trojan или Shadowsocks` }
+  }
+  if (core === 'xray' && xrayUdpTransport(node)) return { ok: false, reason: `${who} использует транспорт поверх UDP (KCP/QUIC) — выходом цепочки быть не может` }
+  return { ok: true, core }
+}
+
+/**
+ * Можно ли собрать цепочку «вход → выход» надёжно.
+ *
+ * Два вида: оба узла на ядре sing-box (выход получает `detour`) или оба на Xray (выход получает
+ * `sockopt.dialerProxy`). Смешать нельзя — второй сервер должен подключаться внутри того же ядра.
+ * `topology` — раскладка ядер для узла-выхода (null — не известна). Отказ — с понятной причиной.
+ */
+export function chainEligibility(
+  exit: IncyNode | undefined,
+  entry: IncyNode | undefined,
+  topology: IncyTopology | null,
+  settings?: IncySettings
+): ChainVerdict {
+  if (!entry) return { ok: false, reason: 'Узел-вход не найден в списке серверов' }
+  if (!exit) return { ok: false, reason: 'Сначала выберите узел-выход' }
+  if (entry.id === exit.id || (entry.server && entry.server === exit.server && entry.port === exit.port)) {
+    return { ok: false, reason: 'Узел-вход не может совпадать с узлом-выходом' }
+  }
+  const e = chainExitEligible(exit, settings)
+  if (!e.ok) return e
+  const core = e.core as ChainCore
+  if (core === 'sing-box' && topology && topology.kind !== 'SINGBOX_ONLY') {
+    if (settings && usesXrayOnlyFeatures(settings)) {
+      return {
+        ok: false,
+        reason: 'Включены «Фрагментация» или «Шумы» — с ними выход работает на ядре Xray, а этот вход — на sing-box. Выключите их в настройках INCY или выберите вход того же вида'
+      }
+    }
+    return { ok: false, reason: CHAIN_ONLY_SINGBOX_REASON }
+  }
+  const who = `«${entry.name}»`
+  const entryProto = chainProto(entry)
+  if (entry.id.startsWith('node-warp-') || entryProto === 'wireguard') return { ok: false, reason: `${who} — WireGuard/WARP, входом цепочки быть не может` }
+  if (core === 'sing-box') {
+    if (entry.rawOutbound && entry.rawOutboundDialect !== 'sing-box') {
+      return { ok: false, reason: `${who} — конфиг для ядра Xray, а выход работает на sing-box. Выберите вход того же вида или выход-конфиг Xray` }
+    }
+    if (chainCoreOf(entry, settings) !== 'sing-box') return { ok: false, reason: `${who} использует параметры, которые понимает только ядро Xray, а выход — на sing-box` }
+    if (!ENTRY_SINGBOX.has(entryProto)) return { ok: false, reason: `${who} на ${protoName(entryProto)} не может быть входом цепочки` }
+    return { ok: true, core }
+  }
+  // Выход на Xray: вход тоже должен собираться ядром Xray.
+  if (entry.rawOutbound && entry.rawOutboundDialect !== 'xray') {
+    return { ok: false, reason: `${who} — конфиг для ядра sing-box, а выход работает на Xray. Выберите вход того же вида` }
+  }
+  if (!entry.rawOutbound && !XRAY_PROTOCOLS.has(entry.protocol)) {
+    return { ok: false, reason: `${who} на ${protoName(entryProto)} ядро Xray собрать не может — выберите другой вход` }
+  }
+  if (entry.rawOutbound && chainCoreOf(entry, settings) !== 'xray') return { ok: false, reason: `${who} уже настроен провайдером на подключение через другой сервер` }
+  if (!ENTRY_XRAY.has(entryProto)) return { ok: false, reason: `${who} на ${protoName(entryProto)} не может быть входом цепочки` }
+  return { ok: true, core }
+}
+
+/**
+ * Два готовых исходящих sing-box → пара для цепочки.
+ *
+ * Выход (тег `proxy`, на него ссылаются все правила) получает
+ * `detour: "chain-entry"`; вход переименовывается и сам detour иметь не может.
+ */
+export function buildChainOutbounds(
+  exitOutbound: Record<string, unknown>,
+  entryOutbound: Record<string, unknown>
+): { ok: true; outbounds: Record<string, unknown>[] } | { ok: false; reason: string } {
+  if (!exitOutbound || !entryOutbound) return { ok: false, reason: CHAIN_ONLY_SINGBOX_REASON }
+  if (exitOutbound.detour !== undefined || entryOutbound.detour !== undefined) {
+    return { ok: false, reason: CHAIN_ONLY_SINGBOX_REASON }
+  }
+  const exit = { ...exitOutbound, tag: 'proxy', detour: CHAIN_ENTRY_TAG }
+  const entry = { ...entryOutbound, tag: CHAIN_ENTRY_TAG }
+  return { ok: true, outbounds: [exit, entry] }
+}
+
+/** Что произошло с цепочкой в текущей сессии (для интерфейса). */
+export interface ChainSessionState {
+  entryNodeId: string
+  exitNodeId: string
+  applied: boolean
+  reason?: string
+}
+let chainSession: ChainSessionState | null = null
+export function setChainSession(s: ChainSessionState | null): void {
+  chainSession = s
+}
+export function getChainSession(): ChainSessionState | null {
+  return chainSession
 }

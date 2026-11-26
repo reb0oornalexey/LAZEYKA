@@ -7,6 +7,7 @@ import { init, platform } from '@renderer/utils/init'
 import '@renderer/assets/main.css'
 import App from '@renderer/App'
 import UpdateWindow from '@renderer/components/update-window'
+import MiniWindow from '@renderer/components/mini-window'
 import BaseErrorBoundary from './components/base/base-error-boundary'
 import { Toaster } from './components/ui/sonner'
 import { appQuit } from './utils/ipc'
@@ -38,9 +39,21 @@ init().then(() => {
 // #/update-window — для него рисуем только окно обновления, без сайдбара,
 // сторов и подписок главного окна.
 const isUpdateWindow = window.location.hash.startsWith('#/update-window')
+// Мини-окно (#/mini) — тоже отдельное окно без сайдбара.
+const isMiniWindow = window.location.hash.startsWith('#/mini')
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
-  isUpdateWindow ? (
+  isMiniWindow ? (
+    <React.StrictMode>
+      <NextThemesProvider attribute="class" enableSystem defaultTheme="dark">
+        <BaseErrorBoundary>
+          <AppConfigProvider>
+            <MiniWindow />
+          </AppConfigProvider>
+        </BaseErrorBoundary>
+      </NextThemesProvider>
+    </React.StrictMode>
+  ) : isUpdateWindow ? (
     <React.StrictMode>
       <NextThemesProvider attribute="class" enableSystem defaultTheme="dark">
         <BaseErrorBoundary>

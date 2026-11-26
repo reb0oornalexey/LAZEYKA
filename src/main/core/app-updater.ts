@@ -12,6 +12,7 @@ import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 import { appLog } from '../utils/app-logger'
 import { sourceforgeUrlFor, MIRROR_MIN_BYTES_PER_SEC, MIRROR_PROBE_MS } from '../utils/mirror'
 
+import { updateFetch } from './update-route'
 import { fetchLatestGithubRelease, fetchGithubReleases, type GhRelease } from '../utils/github-release'
 
 const REPO = 'reb0oornalexey/LAZEYKA'
@@ -135,6 +136,7 @@ function hydrateCacheFromDisk(): void {
 export async function checkAppUpdate(force = false): Promise<AppUpdateInfo> {
   hydrateCacheFromDisk()
   const installed = app.getVersion()
+  if (process.platform === 'linux') return { installed, hasUpdate: false }
   const cfg = await getAppConfig()
   const dismissedTag = cfg.dismissedAppUpdateTag
   const dismissedUntil = cfg.dismissedAppUpdateUntil
@@ -372,7 +374,8 @@ async function downloadToFile(
       if (received > 0) headers.Range = `bytes=${received}-`
 
       armStall()
-      const res = await fetch(currentUrl, { headers, signal: controller.signal, redirect: 'follow' })
+      // Е6: через VPN INCY, если так настроено и он подключён (иначе напрямую, как раньше).
+      const res = await updateFetch(currentUrl, { headers, signal: controller.signal, redirect: 'follow' })
 
       // Докачку попросили, но сервер отдал файл целиком — начинаем заново,
       // иначе в файл дописались бы байты с начала и он стал бы мусором.
@@ -464,7 +467,13 @@ export async function installAppUpdate(
   assetUrl: string,
   expectedVersion?: string
 ): Promise<{ scheduled: true }> {
+  if (process.platform === 'linux') throw new Error('На Linux обновите пакет LAZEYKA через менеджер пакетов')
   if (!assetUrl) throw new Error('Пустая ссылка на установщик')
+  // Е6: копия настроек (.lazeyka) в папке данных перед обновлением — если включено.
+  {
+    const { backupProfileBeforeUpdate } = await import('./profile-backups')
+    await backupProfileBeforeUpdate(expectedVersion)
+  }
   if (process.platform === 'darwin') {
     // macOS: без Apple Developer ID автозамена .app невозможна — открываем
     // загрузку .dmg в браузере, дальше пользователь перетаскивает приложение сам.

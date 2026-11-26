@@ -42,9 +42,7 @@ export const PvPopover: React.FC<{ pop: PvPopState | null; onClose: () => void }
             <button
               type="button"
               onClick={() => {
-                const ui = useUiState.getState()
-                ui.focusControl(group.props[0].key)
-                if (ui.drawer) ui.setDrawer(false)
+                useUiState.getState().focusControl(group.props[0].key, group.comp)
                 onClose()
               }}
               className="mt-1 w-full cursor-pointer rounded-lg px-1.5 py-1 text-left text-[11px] font-medium text-primary hover:bg-primary/10"

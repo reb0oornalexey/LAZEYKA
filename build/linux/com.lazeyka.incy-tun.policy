@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <action id="com.lazeyka.incy.tun">
+    <description>Start the LAZEYKA VPN tunnel</description>
+    <description xml:lang="ru">Запуск VPN-туннеля LAZEYKA</description>
+    <message>Administrator authentication is required to start the VPN tunnel.</message>
+    <message xml:lang="ru">Подтвердите запуск VPN-туннеля.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/lazeyka/incy-tun</annotate>
+  </action>
+</policyconfig>

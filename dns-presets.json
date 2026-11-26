@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "updated": "2026-11-20",
+  "presets": [
+    {
+      "id": "dns-ai",
+      "name": "DNS-AI (dns-ai.ru)",
+      "description": "Открывает зарубежные нейросети и AI-сервисы, режет рекламу и трекеры, без журнала запросов. IPv4 + IPv6, только шифрованный DoH",
+      "ipv4": [
+        "194.87.196.13",
+        "45.151.102.219"
+      ],
+      "ipv6": [
+        "2a00:b700:5::3:62",
+        "2a12:5940:d4ef::219"
+      ],
+      "doh": "https://dns.dns-ai.ru/dns-query",
+      "dohOnly": true,
+      "tags": [
+        "ai",
+        "adblock",
+        "privacy"
+      ],
+      "site": "https://dns-ai.ru/#setup",
+      "updated": "2026-10-18"
+    },
+    {
+      "id": "magicdns",
+      "name": "MagicDNS (magicdns.ru)",
+      "description": "Открывает Gemini, ChatGPT, Claude, AI Studio и игровые сервисы; российские сайты идут напрямую, режет рекламу. Только шифрованный DoH",
+      "ipv4": [
+        "217.144.190.216",
+        "109.120.187.249"
+      ],
+      "ipv6": [],
+      "doh": "https://api.magicinfo.art/rpc",
+      "dohOnly": true,
+      "tags": [
+        "ai",
+        "gaming",
+        "adblock"
+      ],
+      "site": "https://magicdns.ru/",
+      "updated": "2026-11-12"
+    },
+    {
+      "id": "cloudflare",
+      "name": "Cloudflare 1.1.1.1",
+      "description": "Самый быстрый и конфиденциальный DNS",
+      "ipv4": [
+        "1.1.1.1",
+        "1.0.0.1"
+      ],
+      "ipv6": [
+        "2606:4700:4700::1111",
+        "2606:4700:4700::1001"
+      ],
+      "doh": "https://cloudflare-dns.com/dns-query",
+      "dohOnly": false,
+      "tags": [
+        "fast",
+        "privacy"
+      ]
+    },
+    {
+      "id": "google",
+      "name": "Google 8.8.8.8",
+      "description": "Максимальная стабильность и глобальное покрытие",
+      "ipv4": [
+        "8.8.8.8",
+        "8.8.4.4"
+      ],
+      "ipv6": [
+        "2001:4860:4860::8888",
+        "2001:4860:4860::8844"
+      ],
+      "doh": "https://dns.google/dns-query",
+      "dohOnly": false,
+      "tags": [
+        "stable"
+      ]
+    },
+    {
+      "id": "adguard",
+      "name": "AdGuard DNS",
+      "description": "Блокировка рекламы, трекеров и фишинга на уровне DNS",
+      "ipv4": [
+        "94.140.14.14",
+        "94.140.15.15"
+      ],
+      "ipv6": [
+        "2a10:50c0::ad1:ff",
+        "2a10:50c0::ad2:ff"
+      ],
+      "doh": "https://dns.adguard-dns.com/dns-query",
+      "dohOnly": false,
+      "tags": [
+        "adblock",
+        "security"
+      ]
+    },
+    {
+      "id": "quad9",
+      "name": "Quad9 9.9.9.9",
+      "description": "Безопасность и защита от вредоносных доменов",
+      "ipv4": [
+        "9.9.9.9",
+        "149.112.112.112"
+      ],
+      "ipv6": [
+        "2620:fe::fe",
+        "2620:fe::9"
+      ],
+      "doh": "https://dns.quad9.net/dns-query",
+      "dohOnly": false,
+      "tags": [
+        "security",
+        "privacy"
+      ]
+    },
+    {
+      "id": "xbox-dns",
+      "name": "Xbox DNS (xbox-dns.ru)",
+      "description": "Обход ограничений Xbox Live / Microsoft и ускорение отклика",
+      "ipv4": [
+        "111.88.96.54",
+        "111.88.96.55"
+      ],
+      "ipv6": [],
+      "doh": "https://xbox-dns.ru/dns-query",
+      "dohOnly": false,
+      "tags": [
+        "gaming"
+      ]
+    }
+  ]
+}

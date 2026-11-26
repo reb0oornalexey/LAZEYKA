@@ -12,16 +12,19 @@ export const useZapretStore = create<ZapretStore>((set) => ({
 }))
 
 let listener: ((event: unknown, payload: CoreStatus) => void) | null = null
+// Отписка — функцией, которую вернул on(): removeListener через мост не находит слушателя.
+let offIpc: (() => void) | null = null
 
 export const attachZapretStore = (): (() => void) => {
   // Hard-reset to dodge HMR/StrictMode duplicate listeners.
   window.electron.ipcRenderer.removeAllListeners('zapret:status')
   listener = (_e, payload) => useZapretStore.getState().setStatus(payload)
-  window.electron.ipcRenderer.on('zapret:status', listener)
+  offIpc = window.electron.ipcRenderer.on('zapret:status', listener)
   zapretStatus().then((s) => useZapretStore.getState().setStatus(s)).catch(() => void 0)
   return () => {
     if (listener) {
-      window.electron.ipcRenderer.removeListener('zapret:status', listener)
+      offIpc?.()
+      offIpc = null
       listener = null
     }
   }

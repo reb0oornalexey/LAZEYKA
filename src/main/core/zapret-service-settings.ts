@@ -2,12 +2,14 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameS
 import path from 'node:path'
 import crypto from 'node:crypto'
 import os from 'node:os'
-import { exec } from 'node:child_process'
+import { exec, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { zapretBundleDir, tgwsCliPaths } from '../utils/dirs'
 import { isRunningAsAdmin } from '../utils/elevation'
 import { mergeLazeykaIpset } from './zapret-iplist'
 import { getAppConfig, patchAppConfig } from '../config'
+import { parseScQuery } from './zapret-logic'
+import { decodeConsole } from '../utils/console-decode'
 import { macGetIpsetMode, macIpsetSnapshot, macMarkIpsetLoaded, macSetIpsetMode } from './zapret-mac'
 
 const execAsync = promisify(exec)
@@ -517,45 +519,55 @@ function parseStrategyArgsForService(batPath: string, bundleDir: string): string
   return args
 }
 
+/** execFile с windowsHide и таймаутом: код выхода, текст (OEM/UTF-8 → строка), признак таймаута. */
+function runTool(
+  file: string,
+  args: string[],
+  timeoutMs: number
+): Promise<{ code: number | null; out: string; failed: boolean }> {
+  return new Promise((resolve) => {
+    try {
+      execFile(file, args, { windowsHide: true, timeout: timeoutMs, encoding: 'buffer', maxBuffer: 1024 * 1024 }, (err, stdout) => {
+        const e = err as (NodeJS.ErrnoException & { killed?: boolean }) | null
+        resolve({
+          code: !e ? 0 : typeof e.code === 'number' ? e.code : null,
+          out: stdout ? decodeConsole(stdout) : '',
+          failed: Boolean(e && (e.killed || typeof e.code === 'string'))
+        })
+      })
+    } catch {
+      resolve({ code: null, out: '', failed: true })
+    }
+  })
+}
+
 export async function getZapretWindowsServiceStatus(): Promise<ZapretServiceStatus> {
   let installed = false
   let running = false
   let strategyName: string | null = null
 
-  try {
-    const { stdout } = await execAsync('sc.exe query zapret', { windowsHide: true })
-    installed = true
-    running = /\b(?:RUNNING|4\s+RUNNING)\b/i.test(stdout) || /:\s*4\b/.test(stdout)
-  } catch (err: any) {
-    const out = String(err?.stdout || '')
-    if (out && !/1060|FAILED|сбой|does not exist|не существует|не установлена/i.test(out)) {
-      if (/\b(?:RUNNING|STOPPED|PAUSED|START_PENDING|STOP_PENDING)\b/i.test(out)) {
-        installed = true
-        running = /\bRUNNING\b/i.test(out)
-      }
-    }
+  // Разбор по структуре вывода (русская Windows: заголовки переведены, код/имя состояния — нет).
+  // Служба «не установлена» = код 1060; таймаут или сбой запуска sc.exe не считаем за «не установлена».
+  const q = await runTool('sc.exe', ['query', 'zapret'], 5000)
+  if (!q.failed) {
+    const parsed = parseScQuery(q.out, q.code)
+    installed = parsed.found
+    running = parsed.state === 'running'
   }
 
   if (installed) {
-    try {
-      const { stdout: regOut } = await execAsync(
-        'reg.exe query "HKLM\\System\\CurrentControlSet\\Services\\zapret" /v zapret-discord-youtube',
-        { windowsHide: true }
-      )
-      const match = regOut.match(/zapret-discord-youtube\s+REG_SZ\s+(.+)/i)
-      if (match) strategyName = match[1].trim()
-    } catch {
-      strategyName = null
-    }
+    const reg = await runTool(
+      'reg.exe',
+      ['query', 'HKLM\\System\\CurrentControlSet\\Services\\zapret', '/v', 'zapret-discord-youtube'],
+      5000
+    )
+    const match = reg.out.match(/zapret-discord-youtube\s+REG_SZ\s+(.+)/i)
+    if (match) strategyName = match[1].trim()
   }
 
   let windivertRunning = false
-  try {
-    const { stdout: wdOut } = await execAsync('sc.exe query WinDivert', { windowsHide: true })
-    windivertRunning = /\bRUNNING\b/i.test(wdOut)
-  } catch {
-    windivertRunning = false
-  }
+  const wd = await runTool('sc.exe', ['query', 'WinDivert'], 5000)
+  if (!wd.failed) windivertRunning = parseScQuery(wd.out, wd.code).state === 'running'
 
   return { installed, running, strategyName, windivertRunning }
 }

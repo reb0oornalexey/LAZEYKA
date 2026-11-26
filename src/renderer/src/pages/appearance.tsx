@@ -1,172 +1,369 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { Eye, EyeOff, MousePointerClick, PanelRightOpen, Redo2, RotateCcw, Undo, Undo2, X } from 'lucide-react'
+import { Popover } from 'radix-ui'
+import {
+  Check,
+  Eye,
+  History,
+  LayoutGrid,
+  MessageCircleQuestion,
+  MousePointerClick,
+  MoreHorizontal,
+  Paintbrush,
+  PanelRightClose,
+  PanelRightOpen,
+  Redo2,
+  RotateCcw,
+  SlidersHorizontal,
+  SwatchBook,
+  Undo2
+} from 'lucide-react'
 import BasePage from '@renderer/components/base/base-page'
 import { Button } from '@renderer/components/ui/button'
-import { Switch } from '@renderer/components/ui/switch'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { cn } from '@renderer/lib/utils'
 import { useAppearanceStore } from '@renderer/lib/appearance/store'
 import { useUiState, type AppearanceTab } from '@renderer/lib/appearance/ui-state'
 import { ThemeCard } from '@renderer/components/appearance/preset-bar'
 import { WallpaperCard } from '@renderer/components/appearance/wallpaper-grid'
+import { ThemeGallery } from '@renderer/components/hub/theme-gallery'
 import { SystemCard } from '@renderer/components/appearance/system-card'
 import { AdvancedTab, ColorsTab } from '@renderer/components/appearance/token-editor'
 import { InterfaceTab } from '@renderer/components/appearance/settings-panel'
 import { InfoTip } from '@renderer/components/appearance/section'
 import { Preview } from '@renderer/components/appearance/preview'
 import { flushAppearanceSave } from '@renderer/lib/appearance/runtime'
+import { AppearanceConsole } from '@renderer/components/appearance/appearance-console'
+import { Segmented } from '@renderer/components/lz'
+import { useTourTab } from '@renderer/lib/tour-focus'
 
-const TABS: { id: AppearanceTab; label: string }[] = [
-  { id: 'themes', label: 'Темы и фон' },
-  { id: 'colors', label: 'Цвета' },
-  { id: 'interface', label: 'Интерфейс' },
-  { id: 'advanced', label: 'Расширенные' }
+// Ключи вкладок не меняются (на них ссылаются экскурсия и переходы из предпросмотра) — только подписи.
+const TABS: { id: AppearanceTab; label: string; short?: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { id: 'themes', label: 'Темы и фон', short: 'Темы', icon: LayoutGrid },
+  { id: 'colors', label: 'Цвета', icon: SwatchBook },
+  { id: 'interface', label: 'Элементы', icon: Paintbrush },
+  { id: 'advanced', label: 'Тонкая настройка', short: 'Тонкая', icon: SlidersHorizontal }
 ]
 
-const WIDE_PX = 720
+/** С этой ширины окна предпросмотр стоит колонкой справа, меньше — выезжает по кнопке. */
+const WIDE_QUERY = '(min-width: 1280px)'
 
 const isEditable = (t: EventTarget | null): boolean =>
   t instanceof HTMLElement && (t.isContentEditable || t instanceof HTMLTextAreaElement || (t instanceof HTMLInputElement && !['range', 'checkbox'].includes(t.type)))
 
-/** Шапка предпросмотра: все действия здесь, внизу ничего нет. Ряд переносится, ничего не обрезается. */
-const PreviewBar: React.FC = () => {
-  const compare = useAppearanceStore((s) => s.compare)
-  const canUndo = useAppearanceStore((s) => s.past.length > 0)
-  const canRedo = useAppearanceStore((s) => s.future.length > 0)
-  const hasEdits = useAppearanceStore((s) => Object.keys(s.tokens).length > 0)
-  const states = useUiState((s) => s.showStates)
-  const cfg = useUiState((s) => s.configMode)
-  const { undo, redo, setCompare, revertToBaseline, resetTokens } = useAppearanceStore.getState()
-  return (
-    <div className="mb-1.5 min-w-0 space-y-1">
-      <div className="flex min-w-0 items-center gap-1.5">
-        <span className="text-[13px] font-semibold">Предпросмотр</span>
-        <InfoTip text={<>Изменения применяются сразу ко всему приложению. Нажмите на элемент, чтобы перейти к его настройке. Если интерфейс стал нечитаемым — <b>Ctrl+Shift+R</b> на любой странице сбросит оформление к «Тёмная».</>} />
-        <button type="button" title="Показать подсказку ещё раз" onClick={() => useUiState.getState().showCoach()} className="flex size-4 cursor-pointer items-center justify-center rounded-full border border-border text-[10px] font-bold text-muted-foreground hover:border-primary hover:text-foreground">
-          ?
-        </button>
-        {compare && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary">как было</span>}
-        <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-1 text-[11px]" title="Включено: клик по элементу открывает его настройки. Выключено: элементы предпросмотра работают как обычно">
-          Режим настройки
-          <Switch size="sm" checked={cfg} onCheckedChange={(v) => useUiState.getState().setConfigMode(v)} />
-        </label>
-        <label className="flex shrink-0 cursor-pointer items-center gap-1 text-[11px]" title="Наведение, фокус и отключённое состояние рядом">
-          Состояния
-          <Switch size="sm" checked={states} onCheckedChange={(v) => useUiState.getState().setShowStates(v)} />
-        </label>
-      </div>
-      <div className="flex min-w-0 flex-wrap items-center gap-1">
-        <Button size="icon-xs" variant="ghost" title="Отменить (Ctrl+Z)" disabled={!canUndo} onClick={undo}>
-          <Undo2 />
-        </Button>
-        <Button size="icon-xs" variant="ghost" title="Повторить (Ctrl+Shift+Z)" disabled={!canRedo} onClick={redo}>
-          <Redo2 />
-        </Button>
-        <Button size="xs" variant={compare ? 'default' : 'outline'} title="Показать предпросмотр с тем оформлением, которое было при открытии страницы" onClick={() => setCompare(!compare)}>
-          {compare ? <EyeOff /> : <Eye />} Сравнить
-        </Button>
-        <Button size="xs" variant="outline" title="Вернуть всё, как было при открытии страницы" disabled={!canUndo} onClick={() => { revertToBaseline(); toast.success('Возвращено к состоянию при открытии') }}>
-          <Undo /> Отменить изменения
-        </Button>
-        <Button size="xs" variant="outline" title="Убрать правки цветов поверх выбранной темы" disabled={!hasEdits} onClick={resetTokens}>
-          <RotateCcw /> Сбросить к пресету
-        </Button>
-      </div>
-    </div>
-  )
+/** Ширина окна — только по событию изменения (matchMedia), без опроса. */
+function useWideWindow(): boolean {
+  const [wide, setWide] = useState(() => window.matchMedia(WIDE_QUERY).matches)
+  useEffect(() => {
+    const mq = window.matchMedia(WIDE_QUERY)
+    const on = (): void => setWide(mq.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
+  return wide
 }
 
-const HINT_KEY = 'lazeyka.appearance.hintDismissed'
-
-/** Подсказка над предпросмотром; закрытие запоминается. */
-const PreviewHint: React.FC = () => {
-  const [hidden, setHidden] = useState(() => {
-    try {
-      return localStorage.getItem(HINT_KEY) === '1'
-    } catch {
-      return false
-    }
-  })
-  if (hidden) return null
-  return (
-    <div className="mb-1.5 flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-2 py-1 text-[11px]">
-      <MousePointerClick className="size-3.5 shrink-0 text-primary" />
-      <span className="min-w-0 flex-1">Нажмите на любой элемент, чтобы перейти к его настройке</span>
-      <button
-        type="button"
-        title="Скрыть подсказку"
-        onClick={() => {
-          setHidden(true)
-          try {
-            localStorage.setItem(HINT_KEY, '1')
-          } catch {
-            /* noop */
-          }
-        }}
-        className="flex size-4 cursor-pointer items-center justify-center rounded text-muted-foreground hover:text-foreground"
-      >
-        <X className="size-3" />
-      </button>
-    </div>
-  )
-}
-
-/** Всплывающая подсказка при первом заходе, со стрелкой на макет. */
-const CoachMark: React.FC = () => (
-  <div className="absolute inset-x-3 top-3 z-30 flex flex-col items-center">
-    <div className="relative w-full max-w-72 rounded-xl border-2 border-primary bg-popover p-3 text-popover-foreground shadow-2xl">
-      <div className="flex gap-2 text-xs leading-snug">
-        <MousePointerClick className="mt-0.5 size-4 shrink-0 text-primary" />
-        <span>Нажмите на любой элемент в предпросмотре — откроется его настройка. Наведите, чтобы увидеть, что это.</span>
-      </div>
-      <Button size="xs" className="mt-2 ml-auto flex" onClick={() => useUiState.getState().dismissCoach()}>
-        Понятно
-      </Button>
-      <span className="absolute -bottom-[7px] left-1/2 size-3 -translate-x-1/2 rotate-45 border-r-2 border-b-2 border-primary bg-popover" />
-    </div>
-  </div>
+/** Значок-кнопка с подсказкой при наведении. */
+const IconBtn: React.FC<{
+  tip: React.ReactNode
+  onClick?: () => void
+  disabled?: boolean
+  active?: boolean
+  children: React.ReactNode
+  label: string
+  className?: string
+}> = ({ tip, onClick, disabled, active, children, label, className }) => (
+  <Tooltip>
+    <TooltipTrigger asChild>
+      <span className="inline-flex">
+        <Button
+          size="icon-sm"
+          variant={active ? 'default' : 'ghost'}
+          aria-label={label}
+          aria-pressed={active}
+          disabled={disabled}
+          onClick={onClick}
+          className={cn('size-7', className)}
+        >
+          {children}
+        </Button>
+      </span>
+    </TooltipTrigger>
+    <TooltipContent side="bottom" className="max-w-60 text-xs">
+      {tip}
+    </TooltipContent>
+  </Tooltip>
 )
 
-const PreviewBox: React.FC = () => {
+/**
+ * «Сравнить с исходным»: короткое нажатие — переключить, удержание — смотреть, пока держите.
+ * Исходное — оформление на момент открытия страницы.
+ */
+const CompareButton: React.FC = () => {
+  const compare = useAppearanceStore((s) => s.compare)
+  const press = useRef<{ t: number; wasOn: boolean } | null>(null)
+  const set = useAppearanceStore.getState().setCompare
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          size="sm"
+          variant={compare ? 'default' : 'ghost'}
+          aria-pressed={compare}
+          className="h-7 gap-1 px-2 text-xs"
+          onPointerDown={() => {
+            press.current = { t: performance.now(), wasOn: compare }
+            if (!compare) set(true)
+          }}
+          onPointerUp={() => {
+            const p = press.current
+            press.current = null
+            if (!p) return
+            if (p.wasOn || performance.now() - p.t > 350) set(false)
+          }}
+          onPointerLeave={() => {
+            const p = press.current
+            if (p && !p.wasOn && performance.now() - p.t > 350) set(false)
+            press.current = null
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              set(!compare)
+            }
+          }}
+        >
+          <Eye className="size-3.5" />
+          {compare ? 'Исходное' : 'Сравнить'}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-60 text-xs">
+        Показать в предпросмотре оформление, которое было при открытии страницы. Нажмите — переключить, удерживайте — смотреть, пока держите.
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** Пункт меню «⋯» с пояснением; опасные действия просят подтверждения прямо в меню. */
+const MenuItem: React.FC<{
+  icon: React.ComponentType<{ className?: string }>
+  title: string
+  hint: string
+  disabled?: boolean
+  onClick: () => void
+  checked?: boolean
+}> = ({ icon: Icon, title, hint, disabled, onClick, checked }) => (
+  <button
+    type="button"
+    disabled={disabled}
+    onClick={onClick}
+    className="flex w-full cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-accent disabled:pointer-events-none disabled:opacity-45"
+  >
+    <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+    <span className="min-w-0 flex-1">
+      <span className="block text-xs font-medium">{title}</span>
+      <span className="block text-[11px] leading-snug text-muted-foreground">{hint}</span>
+    </span>
+    {checked !== undefined && (
+      <span className={cn('mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border', checked ? 'border-primary bg-primary text-primary-foreground' : 'border-border')}>
+        {checked && <Check className="size-3" />}
+      </span>
+    )}
+  </button>
+)
+
+type Confirm = 'revert' | 'reset' | null
+
+const MoreMenu: React.FC = () => {
+  const [open, setOpen] = useState(false)
+  const [confirm, setConfirm] = useState<Confirm>(null)
+  const canRevert = useAppearanceStore((s) => s.past.length > 0)
+  const hasEdits = useAppearanceStore((s) => Object.keys(s.tokens).length > 0)
+  const states = useUiState((s) => s.showStates)
+  const close = (): void => {
+    setOpen(false)
+    setConfirm(null)
+  }
+  const doConfirm = (): void => {
+    const st = useAppearanceStore.getState()
+    if (confirm === 'revert') {
+      st.revertToBaseline()
+      toast.success('Оформление возвращено к состоянию при открытии страницы')
+    } else if (confirm === 'reset') {
+      st.resetTokens()
+      toast.success('Правки цветов убраны, тема как в исходном виде')
+    }
+    close()
+  }
+  return (
+    <Popover.Root open={open} onOpenChange={(o) => (o ? setOpen(true) : close())}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Popover.Trigger asChild>
+            <Button size="icon-sm" variant="ghost" aria-label="Ещё" className="size-7">
+              <MoreHorizontal className="size-4" />
+            </Button>
+          </Popover.Trigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="text-xs">
+          Ещё: сброс, показ состояний, подсказка
+        </TooltipContent>
+      </Tooltip>
+      <Popover.Portal>
+        <Popover.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={12}
+          className="z-[190] w-72 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-2xl outline-none"
+        >
+          {confirm ? (
+            <div className="space-y-2 p-1.5">
+              <div className="text-xs font-semibold">{confirm === 'revert' ? 'Отменить все изменения за сеанс?' : 'Сбросить к выбранной теме?'}</div>
+              <div className="text-[11px] leading-snug text-muted-foreground">
+                {confirm === 'revert'
+                  ? 'Тема, цвета, фон и вид элементов вернутся к тому, что было при открытии страницы. Это можно отменить кнопкой «Отменить».'
+                  : 'Все ваши правки цветов поверх темы удалятся, фон и вид элементов останутся. Это можно отменить кнопкой «Отменить».'}
+              </div>
+              <div className="flex justify-end gap-1.5">
+                <Button size="xs" variant="ghost" onClick={() => setConfirm(null)}>
+                  Нет
+                </Button>
+                <Button size="xs" variant="destructive" onClick={doConfirm}>
+                  {confirm === 'revert' ? 'Отменить всё' : 'Сбросить'}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <MenuItem
+                icon={History}
+                title="Отменить все изменения за сеанс"
+                hint="Вернуть всё, как было при открытии этой страницы"
+                disabled={!canRevert}
+                onClick={() => setConfirm('revert')}
+              />
+              <MenuItem
+                icon={RotateCcw}
+                title="Сбросить к выбранной теме"
+                hint="Убрать свои правки цветов; фон и вид элементов не меняются"
+                disabled={!hasEdits}
+                onClick={() => setConfirm('reset')}
+              />
+              <div className="my-1 h-px bg-border" />
+              <MenuItem
+                icon={MousePointerClick}
+                title="Показывать состояния кнопок"
+                hint="В предпросмотре рядом: наведение, фокус, отключённая кнопка и поле с ошибкой"
+                checked={states}
+                onClick={() => useUiState.getState().setShowStates(!states)}
+              />
+              <MenuItem
+                icon={MessageCircleQuestion}
+                title="Показать подсказку снова"
+                hint="Как пользоваться предпросмотром"
+                onClick={() => {
+                  useUiState.getState().showCoach()
+                  close()
+                }}
+              />
+            </>
+          )}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  )
+}
+
+/** Панель предпросмотра: одна строка значков, подсказка при первом заходе, витрина. */
+const PreviewPanel: React.FC<{ compact?: boolean; onCollapse?: () => void }> = ({ compact, onCollapse }) => {
   const compare = useAppearanceStore((s) => s.compare)
   const baseline = useAppearanceStore((s) => s.baseline)
+  const canUndo = useAppearanceStore((s) => s.past.length > 0)
+  const canRedo = useAppearanceStore((s) => s.future.length > 0)
+  const cfg = useUiState((s) => s.configMode)
   const coach = useUiState((s) => s.coach)
+  const { undo, redo } = useAppearanceStore.getState()
   return (
-    <div className="relative size-full">
-      <Preview compareWith={compare && baseline ? baseline : null} />
-      {coach && <CoachMark />}
+    <div className="flex h-full min-h-0 flex-col gap-2">
+      <div className={cn('flex min-w-0 gap-0.5', compact ? 'flex-col items-stretch gap-1.5' : 'items-center')}>
+        <div className="flex min-w-0 items-center gap-1">
+          <span className="text-[13px] font-semibold text-[color:var(--text-title)]">Предпросмотр</span>
+          <InfoTip
+            text={
+              <>
+                Изменения применяются ко всей программе: меню слева и шапка тоже меняются. Здесь собраны все элементы в одном месте. Если интерфейс стал нечитаемым — <b>Ctrl+Shift+R</b> на любой странице вернёт тему «Тёмная».
+              </>
+            }
+          />
+          {onCollapse && (
+            <IconBtn label="Свернуть предпросмотр" tip="Свернуть предпросмотр в полоску справа — больше места для настроек" onClick={onCollapse} className="ml-auto">
+              <PanelRightClose className="size-4" />
+            </IconBtn>
+          )}
+        </div>
+        <div className={cn('flex items-center gap-0.5', compact ? 'rounded-lg border border-border bg-card/50 p-0.5' : 'ml-auto')}>
+          <IconBtn
+            label="Выбор элемента"
+            active={cfg}
+            onClick={() => useUiState.getState().setConfigMode(!cfg)}
+            tip={
+              cfg
+                ? 'Выбор элемента включён: нажмите на элемент в предпросмотре, чтобы открыть его цвета. Нажмите здесь, чтобы элементы работали как обычно.'
+                : 'Выбор элемента выключен: элементы предпросмотра работают как обычно. Нажмите, чтобы по нажатию открывались их цвета.'
+            }
+          >
+            <MousePointerClick className="size-3.5" />
+          </IconBtn>
+          <span className="mx-1 h-4 w-px bg-border" />
+          <IconBtn label="Отменить" tip="Отменить (Ctrl+Z)" disabled={!canUndo} onClick={undo}>
+            <Undo2 className="size-3.5" />
+          </IconBtn>
+          <IconBtn label="Повторить" tip="Повторить (Ctrl+Shift+Z)" disabled={!canRedo} onClick={redo}>
+            <Redo2 className="size-3.5" />
+          </IconBtn>
+          <span className={cn(compact && 'ml-auto')}>
+            <CompareButton />
+          </span>
+          <MoreMenu />
+        </div>
+      </div>
+      {coach && (
+        <div className="relative shrink-0 rounded-xl border border-primary/50 bg-popover p-3 text-popover-foreground shadow-lg">
+          <div className="flex gap-2 text-xs leading-snug">
+            <MousePointerClick className="mt-0.5 size-4 shrink-0 text-primary" />
+            <span className="min-w-0 flex-1">Нажмите на элемент в предпросмотре — откроется его настройка. При наведении видно, что это за элемент.</span>
+          </div>
+          <div className="mt-2 flex justify-end">
+            <Button size="xs" onClick={() => useUiState.getState().dismissCoach()}>
+              Понятно
+            </Button>
+          </div>
+          <span className="absolute -bottom-[7px] left-8 size-3 rotate-45 border-r border-b border-primary/50 bg-popover" />
+        </div>
+      )}
+      <div className="min-h-0 flex-1">
+        <Preview compact={compact} compareWith={compare && baseline ? baseline : null} />
+      </div>
     </div>
   )
 }
 
 const Appearance: React.FC = () => {
+  const [galleryRequest, setGalleryRequest] = useState(0)
   const loaded = useAppearanceStore((s) => s.loaded)
   const tab = useUiState((s) => s.tab)
-  const drawer = useUiState((s) => s.drawer)
-  const [wide, setWide] = useState(true)
-  const root = useRef<HTMLDivElement>(null)
+  const collapsed = useUiState((s) => s.pvCollapsed)
+  useTourTab<AppearanceTab>('/appearance', (t) => useUiState.getState().setTab(t))
+  const wide = useWideWindow()
 
-  // Точка отсчёта для «Сравнить» и «Отменить изменения» — состояние при открытии страницы.
+  // Точка отсчёта для «Сравнить» и «Отменить все изменения» — состояние при открытии страницы.
   useEffect(() => {
     if (loaded) useAppearanceStore.getState().markBaseline()
     return () => flushAppearanceSave()
   }, [loaded])
 
-  // Двухколоночный вид или выдвижная панель — по ширине страницы (только при изменении размера).
-  useEffect(() => {
-    const el = root.current
-    if (!el) return
-    const ro = new ResizeObserver(([e]) => setWide(e.contentRect.width >= WIDE_PX))
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [loaded])
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape' && useUiState.getState().drawer) {
-        useUiState.getState().setDrawer(false)
-        return
-      }
       if (!(e.ctrlKey || e.metaKey) || isEditable(e.target)) return
       const st = useAppearanceStore.getState()
       if (e.code === 'KeyZ' && !e.shiftKey) {
@@ -181,13 +378,20 @@ const Appearance: React.FC = () => {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  useEffect(() => {
+    if (tab !== 'themes') setGalleryRequest(0)
+  }, [tab])
+
   if (!loaded) return <BasePage title="Оформление" />
 
   const content =
     tab === 'themes' ? (
       <>
         <ThemeCard />
-        <WallpaperCard />
+        <div data-ctl="setting:wallpaper"><WallpaperCard /></div>
+        <div data-tour="theme-gallery">
+          <ThemeGallery openRequest={galleryRequest} />
+        </div>
         <SystemCard />
       </>
     ) : tab === 'colors' ? (
@@ -198,74 +402,53 @@ const Appearance: React.FC = () => {
       <AdvancedTab />
     )
 
+  const showPanel = wide || !collapsed
+  const setCollapsed = (v: boolean): void => useUiState.getState().setPvCollapsed(v)
+
   return (
-    <BasePage title="Оформление" contentClassName="overflow-hidden pb-3">
-      <div ref={root} className="relative h-full w-full max-w-full min-w-0 overflow-hidden px-4">
-        <div className={cn('grid h-full min-w-0 gap-4', wide ? 'grid-cols-[minmax(0,1fr)_minmax(320px,44%)]' : 'grid-cols-1')}>
+    <BasePage title="Оформление" contentClassName="overflow-hidden pb-4">
+      <div className="h-full w-full max-w-full min-w-0 overflow-hidden lz-page-x">
+        <div
+          className={cn(
+            'grid h-full min-w-0 gap-4 transition-[grid-template-columns] duration-200 ease-out',
+            wide ? 'grid-cols-[minmax(0,1fr)_minmax(380px,34%)]' : collapsed ? 'grid-cols-[minmax(0,1fr)_40px] gap-3' : 'grid-cols-[minmax(0,1fr)_clamp(296px,32%,340px)] gap-3'
+          )}
+        >
           <div className="@container flex min-h-0 min-w-0 flex-col">
-            <div className="mb-2 flex shrink-0 gap-0.5 ui-card rounded-xl border border-border bg-card p-0.5" role="tablist">
-              {TABS.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={tab === t.id}
-                  onClick={() => useUiState.getState().setTab(t.id)}
-                  className={cn(
-                    'h-8 flex-1 cursor-pointer truncate rounded-lg px-2 text-xs font-semibold transition-colors',
-                    tab === t.id ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-                  )}
-                >
-                  {t.label}
-                </button>
-              ))}
+            <AppearanceConsole onGallery={() => {
+              useUiState.getState().setTab('themes')
+              setGalleryRequest((request) => request + 1)
+            }} />
+            <Segmented
+              data-tour="appearance-tabs"
+              aria-label="Настройки оформления"
+              className="mb-3 shrink-0"
+              items={TABS}
+              value={tab}
+              onChange={useUiState.getState().setTab}
+            />
+            <div data-ap-scroll="" className="custom-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto pr-1.5 pb-2">
+              {content}
             </div>
-            <div className="custom-scrollbar min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1 pb-1">{content}</div>
           </div>
 
-          {wide && (
-            <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
-              <PreviewBar />
-              <PreviewHint />
-              <div className="min-h-0 flex-1">
-                <PreviewBox />
-              </div>
+          {showPanel ? (
+            <div data-tour="appearance-preview" className="flex min-h-0 min-w-0 flex-col">
+              <PreviewPanel compact={!wide} onCollapse={wide ? undefined : () => setCollapsed(true)} />
             </div>
-          )}
-        </div>
-
-        {!wide && (
-          <>
+          ) : (
             <button
               type="button"
-              onClick={() => useUiState.getState().setDrawer(true)}
-              className="absolute top-1/2 right-0 z-20 flex -translate-y-1/2 cursor-pointer items-center gap-1 rounded-l-xl border border-r-0 border-border bg-card px-1.5 py-3 text-xs font-semibold text-card-foreground shadow-lg hover:bg-accent"
-              style={{ writingMode: 'vertical-rl' }}
+              data-tour="appearance-preview-toggle"
+              onClick={() => setCollapsed(false)}
+              title="Развернуть предпросмотр всех элементов: шапка, меню, кнопки, поля, уведомления"
+              className="ui-card group flex min-h-0 cursor-pointer flex-col items-center gap-3 rounded-xl border border-border bg-card py-3 text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
             >
-              <PanelRightOpen className="size-3.5 rotate-90" /> Предпросмотр
+              <PanelRightOpen className="size-4 shrink-0 text-primary" />
+              <span className="text-xs font-semibold tracking-wide [writing-mode:vertical-rl]">Предпросмотр</span>
             </button>
-            <div
-              onClick={() => useUiState.getState().setDrawer(false)}
-              className={cn('absolute inset-0 z-30 bg-black/40 transition-opacity duration-200', drawer ? 'opacity-100' : 'pointer-events-none opacity-0')}
-            />
-            <aside
-              className={cn(
-                'absolute top-0 right-0 bottom-0 z-40 flex w-[380px] max-w-full flex-col rounded-l-2xl border-l border-border bg-card p-3 shadow-2xl transition-transform duration-200 ease-out',
-                drawer ? 'translate-x-0' : 'translate-x-full'
-              )}
-              aria-hidden={!drawer}
-            >
-              <div className="mb-1 flex items-center">
-                <div className="min-w-0 flex-1">{drawer && <PreviewBar />}</div>
-                <button type="button" title="Закрыть (Esc)" onClick={() => useUiState.getState().setDrawer(false)} className="ml-1 flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg hover:bg-accent">
-                  <X className="size-4" />
-                </button>
-              </div>
-              {drawer && <PreviewHint />}
-              <div className="min-h-0 flex-1">{drawer && <PreviewBox />}</div>
-            </aside>
-          </>
-        )}
+          )}
+        </div>
       </div>
     </BasePage>
   )

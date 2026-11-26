@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowDown, ArrowUp, Check, ChevronDown, Gauge, Loader2, Shield, Timer, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
-import { speedRun, speedRunNode, type IncyNode, type NetSpeedProgress, type NetSpeedResult, type SpeedService } from '@renderer/utils/ipc'
+import { speedRun, speedRunNode, speedStop, type IncyNode, type NetSpeedProgress, type NetSpeedResult, type SpeedService } from '@renderer/utils/ipc'
 
 const SERVICES: { id: SpeedService; name: string; hint: string }[] = [
   { id: 'yandex', name: 'Яндекс', hint: 'Интернетометр, серверы в РФ' },
@@ -46,7 +46,8 @@ export default function NetSpeedDialog({
   onClose,
   vpnOn,
   nodes,
-  initialNodeId
+  initialNodeId,
+  onResult
 }: {
   open: boolean
   onClose: () => void
@@ -54,6 +55,8 @@ export default function NetSpeedDialog({
   /** Вкладка INCY: можно выбрать сервер, замер идёт через него (временное ядро). */
   nodes?: IncyNode[]
   initialNodeId?: string | null
+  /** Итог замера (вкладка INCY показывает последний результат в плитке). */
+  onResult?: (r: NetSpeedResult, nodeId: string) => void
 }): React.ReactElement | null {
   const [service, setService] = useState<SpeedService>(readService)
   const [economy, setEconomy] = useState(false)
@@ -62,27 +65,37 @@ export default function NetSpeedDialog({
     if (open) setNodeId(nodes?.length ? (initialNodeId ?? nodes[0].id) : '')
   }, [open, initialNodeId, nodes])
   const [running, setRunning] = useState(false)
+  const ownRun = useRef(false)
+  const [stopping, setStopping] = useState(false)
+  const close = useCallback(() => {
+    if (running) {
+      setStopping(true)
+      void speedStop().catch(() => setStopping(false))
+    }
+    onClose()
+  }, [running, onClose])
   const [progress, setProgress] = useState<NetSpeedProgress | null>(null)
   const [result, setResult] = useState<NetSpeedResult | null>(null)
 
   useEffect(() => {
-    const on = (_e: unknown, p: NetSpeedProgress): void => setProgress(p)
-    window.electron.ipcRenderer.on('speed:progress', on)
-    return () => {
-      window.electron.ipcRenderer.removeAllListeners('speed:progress')
+    const on = (_e: unknown, p: NetSpeedProgress): void => {
+      if (ownRun.current) setProgress(p)
     }
+    return window.electron.ipcRenderer.on('speed:progress', on)
   }, [])
 
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape' && !running) onClose()
+      if (e.key === 'Escape') close()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, running, onClose])
+  }, [open, close])
 
   const start = async (): Promise<void> => {
+    if (ownRun.current) return
+    ownRun.current = true
     try {
       localStorage.setItem(STORE_KEY, service)
     } catch {
@@ -92,7 +105,9 @@ export default function NetSpeedDialog({
     setResult(null)
     setProgress({ phase: 'prepare' })
     try {
-      setResult(nodeId ? await speedRunNode(nodeId, service, economy) : await speedRun(service, economy))
+      const r = nodeId ? await speedRunNode(nodeId, service, economy) : await speedRun(service, economy)
+      setResult(r)
+      if (!r.error) onResult?.(r, nodeId)
     } catch (e) {
       setResult({
         service,
@@ -107,7 +122,9 @@ export default function NetSpeedDialog({
         error: e instanceof Error ? e.message : String(e)
       })
     } finally {
+      ownRun.current = false
       setRunning(false)
+      setStopping(false)
     }
   }
 
@@ -136,7 +153,7 @@ export default function NetSpeedDialog({
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !running) onClose()
+        if (e.target === e.currentTarget) close()
       }}
     >
       <div className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-border/70 bg-background shadow-2xl">
@@ -152,7 +169,7 @@ export default function NetSpeedDialog({
               {result?.server ? ` · ${result.server}` : ''}
             </div>
           </div>
-          <button type="button" disabled={running} className="cursor-pointer rounded-lg p-1 text-muted-foreground hover:bg-foreground/[0.06] disabled:opacity-40" onClick={onClose}>
+          <button type="button" aria-label="Закрыть" className="cursor-pointer rounded-lg p-1 text-muted-foreground hover:bg-foreground/[0.06]" onClick={close}>
             <X className="size-4" />
           </button>
         </div>
@@ -209,7 +226,7 @@ export default function NetSpeedDialog({
               />
             </div>
             <div className="flex justify-between text-[11px] text-muted-foreground">
-              <span>{running ? PHASE_TEXT[phase ?? 'prepare'] : result?.error ? `Не получилось: ${result.error}` : result ? `Готово · джиттер ${result.jitterMs ?? '—'} мс` : 'Замер длится ~25 секунд'}</span>
+              <span>{running ? (stopping ? 'Останавливаю…' : PHASE_TEXT[phase ?? 'prepare']) : result?.error === 'Замер остановлен' ? result.error : result?.error ? `Не получилось: ${result.error}` : result ? `Готово · джиттер ${result.jitterMs ?? '—'} мс` : 'Замер длится ~25 секунд'}</span>
               {result && !result.error && <span>скачано {result.downloadedMB} МБ · отдано {result.uploadedMB} МБ</span>}
             </div>
           </div>
@@ -224,10 +241,19 @@ export default function NetSpeedDialog({
               <input type="checkbox" className="accent-[color:var(--primary)]" checked={!economy} disabled={running} onChange={(e) => setEconomy(!e.target.checked)} />
               Полный замер без лимита трафика
             </label>
-            <Button onClick={() => void start()} disabled={running} className="min-w-36">
-              {running ? <Loader2 className="size-4 animate-spin" /> : <Gauge className="size-4" />}
-              {running ? 'Замеряю…' : result ? 'Ещё раз' : 'Начать'}
-            </Button>
+            {running ? (
+              <Button variant="outline" disabled={stopping} onClick={() => {
+                setStopping(true)
+                void speedStop().catch(() => setStopping(false))
+              }}>
+                {stopping && <Loader2 className="size-4 animate-spin" />}
+                {stopping ? 'Останавливаю…' : 'Остановить'}
+              </Button>
+            ) : (
+              <Button onClick={() => void start()} className="min-w-36">
+                <Gauge className="size-4" /> {result ? 'Ещё раз' : 'Начать'}
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -284,7 +310,7 @@ function NodePicker({
           open ? 'border-primary' : 'border-border hover:border-foreground/25'
         )}
       >
-        <span className="min-w-0 flex-1 truncate">{current ? `Через сервер: ${current.name}` : emptyLabel}</span>
+        <span data-sensitive="node" className="min-w-0 flex-1 truncate">{current ? `Через сервер: ${current.name}` : emptyLabel}</span>
         <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
       </button>
       {open && (

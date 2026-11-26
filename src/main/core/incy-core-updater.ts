@@ -233,7 +233,7 @@ async function fetchLatestRelease(spec: CoreSpec): Promise<GhRelease | null> {
 export async function checkCoreUpdates(): Promise<CoreUpdateState[]> {
   // macOS: ядра приходят в составе сборки (Windows-архивы тут не подходят);
   // автообновление ядер на Mac — следующий этап порта.
-  if (process.platform === 'darwin') return []
+  if (process.platform !== 'win32') return []
   const out: CoreUpdateState[] = []
 
   for (const spec of CORES) {
@@ -324,8 +324,8 @@ export async function installCoreUpdate(
   const spec = CORES.find((c) => c.id === id)
   if (!spec) return { id, success: false, message: `Неизвестное ядро: ${id}` }
   if (!assetUrl) return { id, success: false, message: 'Пустая ссылка на архив' }
-  if (process.platform === 'darwin') {
-    return { id, success: false, message: 'Обновление ядер на macOS пока не поддерживается' }
+  if (process.platform !== 'win32') {
+    return { id, success: false, message: 'Ядра обновляются вместе с приложением' }
   }
   // Ссылка приходит из окна программы, а файл потом запускается с правами
   // администратора — принимаем только релизы нужного репозитория на GitHub.

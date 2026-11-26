@@ -1,6 +1,6 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function isObject(item: any): boolean {
-  return item && typeof item === 'object' && !Array.isArray(item)
+function isObject(item: any): item is Record<string, unknown> {
+  return !!item && typeof item === 'object' && !Array.isArray(item)
 }
 
 function trimWrap(str: string): string {
@@ -10,23 +10,41 @@ function trimWrap(str: string): string {
   return str
 }
 
+const FORBIDDEN = new Set(['__proto__', 'constructor', 'prototype'])
+
+/**
+ * Слияние без побочных эффектов: аргументы не меняются, результат — новый
+ * объект. Раньше функция писала прямо в `target`, и после первого чтения
+ * конфига объект умолчаний уже содержал настройки пользователя, отчего
+ * «Сбросить настройки» записывал их обратно.
+ *
+ * Правила те же, что были:
+ *  - вложенные объекты сливаются рекурсивно;
+ *  - массивы и простые значения из `other` заменяют прежние;
+ *  - ключ с «!» на конце («appearance!») заменяет объект целиком;
+ *  - «<key>» читается как «key».
+ * Неизменённые вложенные объекты переиспользуются (не копируются) — менять
+ * результат на месте поэтому всё равно нельзя.
+ */
 export function deepMerge<T extends object>(target: T, other: Partial<T>): T {
-  for (const key in other) {
-    if (isObject(other[key])) {
-      if (key.endsWith('!')) {
-        const k = trimWrap(key.slice(0, -1))
-        target[k] = other[key]
-      } else {
-        const k = trimWrap(key)
-        if (!target[k]) Object.assign(target, { [k]: {} })
-        deepMerge(target[k] as object, other[k] as object)
-      }
-    } else if (Array.isArray(other[key])) {
-        const k = trimWrap(key)
-        Object.assign(target, { [k]: other[key] })
+  const out: Record<string, unknown> = isObject(target) ? { ...target } : {}
+  if (!isObject(other)) return out as T
+  for (const key of Object.keys(other)) {
+    if (FORBIDDEN.has(key)) continue
+    const value = (other as Record<string, unknown>)[key]
+    if (key.endsWith('!')) {
+      const k = trimWrap(key.slice(0, -1))
+      if (FORBIDDEN.has(k)) continue
+      out[k] = value
+      continue
+    }
+    const k = trimWrap(key)
+    if (FORBIDDEN.has(k)) continue
+    if (isObject(value)) {
+      out[k] = deepMerge(isObject(out[k]) ? (out[k] as object) : {}, value)
     } else {
-      Object.assign(target, { [key]: other[key] })
+      out[k] = value
     }
   }
-  return target as T
+  return out as T
 }

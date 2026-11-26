@@ -53,7 +53,9 @@ jobs:
         run: node scripts/fetch-mac-binaries.mjs ${{ matrix.arch }}
 
       - name: Сборка исходников
-        run: pnpm exec electron-vite build
+        run: |
+          pnpm typecheck
+          pnpm exec electron-vite build
 
       - name: Упаковка (.dmg + .zip, подпись ad-hoc)
         # Тестовые сборки (не релиз) — с номером сборки в имени файла, чтобы тестер
@@ -75,6 +77,7 @@ jobs:
           file "$APP/Contents/MacOS/LAZEYKA"
           file "$APP/Contents/MacOS/LAZEYKA" | grep -q "${{ matrix.arch == 'arm64' && 'arm64' || 'x86_64' }}"
           file "$APP/Contents/Resources/incy/sing-box" "$APP/Contents/Resources/incy/xray"
+          node scripts/smoke-native-runtime.mjs "$APP/Contents/Resources"
           ls -la dist/*.dmg dist/*.zip
 
       # Ad-hoc подпись проверяется «как получится»: без сертификата Apple

@@ -1,0 +1,54 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Раздел Telegram на языке «Сигнал»: радар датацентров и путь прокси.
+   Только transform / opacity / stroke-dashoffset на маленьких элементах.
+   При «Анимации: выкл.» общее правило main.css обнуляет длительность:
+   линии стоят точками, луч радара прячется (конечный кадр — прозрачный).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Точки бегут по линии «компьютер → датацентр», пока прокси работает. */
+@keyframes tg-flow {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
+.tg-flow {
+  stroke-dasharray: 0 8;
+  stroke-linecap: round;
+  animation: tg-flow 0.7s linear infinite;
+}
+
+/* Луч радара: проходит полукруг слева направо, пока идёт замер. */
+@keyframes tg-sweep {
+  0% {
+    transform: rotate(0deg);
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(180deg);
+    opacity: 0;
+  }
+}
+.tg-sweep {
+  transform-box: view-box;
+  animation: tg-sweep 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+/* Узел датацентра появляется на своём месте после замера (один раз). */
+@keyframes tg-pop {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.tg-pop {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: tg-pop 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}

@@ -1,4 +1,6 @@
 import { exec, execFile } from 'node:child_process'
+import { readdir, readlink, stat } from 'node:fs/promises'
+import path from 'node:path'
 import { collectRunningMacApps, outerBundle } from './mac-apps'
 
 export interface RunningProcessInfo {
@@ -16,6 +18,7 @@ export interface RunningProcessInfo {
  */
 export function listRunningProcesses(): Promise<RunningProcessInfo[]> {
   if (process.platform === 'darwin') return listRunningProcessesDarwin()
+  if (process.platform === 'linux') return listRunningProcessesLinux()
   return new Promise((resolve) => {
     exec(
       'chcp 65001 >nul && tasklist /V /FO CSV /NH',
@@ -101,6 +104,22 @@ export function listRunningProcesses(): Promise<RunningProcessInfo[]> {
   })
 }
 
+async function listRunningProcessesLinux(): Promise<RunningProcessInfo[]> {
+  const uid = process.getuid?.()
+  const entries = await readdir('/proc').catch(() => [] as string[])
+  const byPath = new Map<string, RunningProcessInfo>()
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue
+    const proc = `/proc/${entry}`
+    try {
+      if ((await stat(proc)).uid !== uid) continue
+      const exe = await readlink(proc + '/exe')
+      if (!exe.startsWith('/') || exe.endsWith(' (deleted)')) continue
+      byPath.set(exe, { name: path.basename(exe), title: exe, rule: exe })
+    } catch { /* exited during enumeration */ }
+  }
+  return [...byPath.values()].sort((a, b) => a.name.localeCompare(b.name))
+}
 /**
  * macOS: запущенные приложения, сгруппированные по бандлам `.app` (трафик
  * Chrome идёт из «Google Chrome Helper», а не из «Google Chrome»): название —

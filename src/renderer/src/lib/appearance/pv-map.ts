@@ -11,6 +11,8 @@ export interface PvGroup {
   label: string
   kind: 'container' | 'leaf'
   props: PvProp[]
+  /** Мастерская «Тонкой настройки», если первый цвет общий для нескольких компонентов. */
+  comp?: string
 }
 
 const p = (key: string, name: string): PvProp => ({ key, name })
@@ -49,7 +51,7 @@ export const PV: Record<string, PvGroup> = {
   'btn-outline': btn('outline', 'Контурная', [p('btn-outline-hover-border', 'Рамка при наведении')]),
   'btn-destructive': btn('destructive', 'Опасная'),
   'btn-ghost': btn('ghost', 'Прозрачная'),
-  'btn-focus': { label: 'Кнопка · фокус', kind: 'leaf', props: [p('ring', 'Рамка фокуса')] },
+  'btn-focus': { label: 'Кнопка · фокус', kind: 'leaf', props: [p('ring', 'Рамка фокуса')], comp: 'adv-buttons' },
   input: { label: 'Поле ввода', kind: 'leaf', props: [p('input-bg', 'Фон'), p('input-border', 'Рамка'), p('foreground', 'Текст'), p('muted-foreground', 'Подсказка')] },
   'input-focus': { label: 'Поле · фокус', kind: 'leaf', props: [p('input-focus-border', 'Рамка в фокусе'), p('input-focus-ring', 'Свечение')] },
   'input-invalid': { label: 'Поле · ошибка', kind: 'leaf', props: [p('destructive', 'Цвет ошибки')] },

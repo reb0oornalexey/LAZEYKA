@@ -18,6 +18,23 @@
  *   lazeyka://add/<url>          same, but a plain (url-encoded) address
  *   lazeyka://routing/add/<base64>   append routing rules
  *   lazeyka://restore/<base64>       subscription + settings from a backup link
+ *
+ * Простые команды для кнопок Stream Deck и ярлыков:
+ *   lazeyka://zapret/on|off|toggle
+ *   lazeyka://telegram/on|off|toggle     Telegram-прокси
+ *   lazeyka://exitlag/on|off|toggle      VPN только для игр из списка
+ *   lazeyka://scenario/<id>              применить сценарий
+ *   lazeyka://mini                       показать / скрыть мини-окно
+ * VPN уже управляется командами connect / disconnect / toggle выше.
+ * Разбор этих команд — в deeplink-parse.ts.
+ *
+ * Подпись (deeplink-sign.ts): ссылки, которые программа выдаёт для пультов,
+ * несут `?k=<код>` — HMAC секрета установки по конкретному действию. Такая
+ * ссылка выполняется сразу и главное окно не открывает. Без кода или с
+ * неверным кодом программа выходит на передний план и спрашивает
+ * «Внешняя ссылка просит: … Выполнить?». Без подтверждения и без подписи
+ * выполняется только lazeyka://mini (показывает окно, ничего не выключает).
+ * import / routing / restore спрашивают подтверждение всегда.
  */
 import { app, BrowserWindow, dialog } from 'electron'
 import {
@@ -31,6 +48,22 @@ import {
 } from './incy-engine'
 import { appLog } from '../utils/app-logger'
 import { showSystemNotification } from '../utils/notifications'
+import { parseSimpleCommand, wantedState, type SimpleCommand } from './deeplink-parse'
+import { startZapret, stopZapret, getZapretStatus } from './zapret'
+import { startTgws, stopTgws, getTgwsStatus } from './tgws'
+import { applyScenario, listScenarios } from './scenarios'
+import { toggleMiniWindow } from './mini-window'
+import { canonicalAction, describeAction, isWindowOnlyAction, verifyAction, SIGN_PARAM } from './deeplink-sign'
+import { getDeeplinkKey } from './deeplink-key'
+
+/**
+ * Вывести программу на передний план (главное окно). Задаётся из index.ts:
+ * прямой импорт index.ts отсюда дал бы цикл модулей.
+ */
+let bringToFront: () => Promise<void> = async () => void 0
+export function setDeepLinkFocusHandler(fn: () => Promise<void>): void {
+  bringToFront = fn
+}
 
 export const DEEPLINK_SCHEME = 'lazeyka'
 
@@ -54,7 +87,14 @@ export function registerDeepLinkScheme(): void {
 
 /** Pull the first `lazeyka://…` argument out of a process argv list. */
 export function findDeepLinkInArgv(argv: string[]): string | null {
-  return argv.find((a) => a.startsWith(`${DEEPLINK_SCHEME}://`)) ?? null
+  // Схема без учёта регистра: Windows может передать «LAZEYKA://…».
+  return argv.find((a) => a.toLowerCase().startsWith(`${DEEPLINK_SCHEME}://`)) ?? null
+}
+
+/** Ссылка без параметров (код подписи в лог не попадает). */
+function forLog(url: string): string {
+  const i = url.search(/[?#]/)
+  return (i >= 0 ? url.slice(0, i) : url).slice(0, 200)
 }
 
 function decodePayload(raw: string): string {
@@ -80,7 +120,7 @@ function decodePayload(raw: string): string {
 }
 
 function notify(title: string, body: string): void {
-  showSystemNotification(title, body)
+  showSystemNotification(title, body, undefined, 'actions')
   appLog('info', `[deeplink] ${title}: ${body}`)
 }
 
@@ -92,11 +132,21 @@ function notify(title: string, body: string): void {
  * правила маршрутизации и восстановление настроек применялись молча — так
  * можно было подсунуть чужую подписку или открыть локальный прокси в сеть.
  */
-async function confirmDeeplink(message: string, detail: string): Promise<boolean> {
-  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.isVisible()) ?? null
+async function confirmDeeplink(
+  message: string,
+  detail: string,
+  buttons: [string, string] = ['Применить', 'Отмена']
+): Promise<boolean> {
+  // Программа выходит на передний план: окно подтверждения не должно
+  // прятаться за браузером, который открыл ссылку.
+  await bringToFront().catch(() => void 0)
+  const win =
+    BrowserWindow.getFocusedWindow() ??
+    BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.isVisible()) ??
+    null
   const opts = {
     type: 'question' as const,
-    buttons: ['Применить', 'Отмена'],
+    buttons,
     defaultId: 1,
     cancelId: 1,
     noLink: true,
@@ -135,7 +185,7 @@ export async function handleDeepLink(url: string): Promise<void> {
   try {
     parsed = new URL(url)
   } catch {
-    appLog('warn', `[deeplink] Не удалось разобрать ссылку: ${url}`)
+    appLog('warn', `[deeplink] Не удалось разобрать ссылку: ${forLog(url)}`)
     return
   }
   if (parsed.protocol !== `${DEEPLINK_SCHEME}:`) return
@@ -148,9 +198,32 @@ export async function handleDeepLink(url: string): Promise<void> {
     .filter(Boolean)
   const command = (segments[0] || '').toLowerCase()
 
-  appLog('info', `[deeplink] Команда: ${command}`)
+  // Подпись: код из ?k= сверяется с HMAC секрета установки по действию.
+  const action = canonicalAction(segments)
+  let signed = false
+  if (action) {
+    try {
+      signed = verifyAction(getDeeplinkKey(), action, parsed.searchParams.get(SIGN_PARAM))
+    } catch (e) {
+      appLog('warn', `[deeplink] Секрет подписи недоступен: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  appLog('info', `[deeplink] Команда: ${command}${action ? (signed ? ' (подписана)' : ' (без подписи)') : ''}`)
 
   try {
+    if (action && !signed && !isWindowOnlyAction(action)) {
+      const ok = await confirmDeeplink(
+        `Внешняя ссылка просит: ${describeForUser(action)}. Выполнить?`,
+        'Ссылку lazeyka:// открыла другая программа или веб-страница. Ссылки из карточки «Кнопки для стрим-пульта» выполняются без этого вопроса.',
+        ['Да', 'Нет']
+      )
+      if (!ok) return
+    }
+    const simple = parseSimpleCommand(segments)
+    if (simple) {
+      await runSimpleCommand(simple)
+      return
+    }
     switch (command) {
       case 'connect':
       case 'open': {
@@ -173,6 +246,7 @@ export async function handleDeepLink(url: string): Promise<void> {
 
       case 'import':
       case 'add': {
+        await bringToFront().catch(() => void 0)
         const payload = decodePayload(segments.slice(1).join('/'))
         if (!payload) {
           notify('LAZEYKA', 'Ссылка не содержит подписку или конфигурацию')
@@ -191,6 +265,7 @@ export async function handleDeepLink(url: string): Promise<void> {
       }
 
       case 'routing': {
+        await bringToFront().catch(() => void 0)
         // routing/add/<base64> — append; routing/oneadd/<base64> — replace.
         const mode = (segments[1] || '').toLowerCase()
         const payload = decodePayload(segments.slice(2).join('/'))
@@ -224,6 +299,7 @@ export async function handleDeepLink(url: string): Promise<void> {
       }
 
       case 'restore': {
+        await bringToFront().catch(() => void 0)
         const payload = decodePayload(segments.slice(1).join('/'))
         let subsHint = ''
         try {
@@ -254,12 +330,84 @@ export async function handleDeepLink(url: string): Promise<void> {
       }
 
       default:
+        // Неизвестная команда — просто показываем программу, как при обычном запуске.
+        await bringToFront().catch(() => void 0)
         appLog('warn', `[deeplink] Неизвестная команда: ${command}`)
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     appLog('error', `[deeplink] ${command} завершилась ошибкой: ${message}`)
     notify('LAZEYKA', `Команда ${command} не выполнена: ${message}`)
+  }
+}
+
+/** Описание для окна подтверждения; у сценария — его имя, а не идентификатор. */
+function describeForUser(action: string): string {
+  const m = /^scenario\/(.+)$/.exec(action)
+  if (m) {
+    const sc = listScenarios().find((x) => x.id === m[1])
+    if (sc) return `применить сценарий «${sc.name}»`
+  }
+  return describeAction(action)
+}
+
+function tellWindows(channel: string, payload: unknown): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed() && !w.webContents.isDestroyed()) w.webContents.send(channel, payload)
+  }
+}
+
+/** Простые команды: службы, сценарий, мини-окно (подпись уже проверена в handleDeepLink). */
+async function runSimpleCommand(cmd: SimpleCommand): Promise<void> {
+  switch (cmd.kind) {
+    case 'invalid':
+      notify('LAZEYKA', `Ссылка не выполнена: ${cmd.reason}`)
+      return
+    case 'mini':
+      toggleMiniWindow()
+      return
+    case 'scenario': {
+      const sc = listScenarios().find((x) => x.id === cmd.id)
+      if (!sc) {
+        notify('LAZEYKA', 'Сценарий из ссылки не найден')
+        return
+      }
+      // Так же, как при нажатии горячей клавиши сценария: окно узнаёт о запуске.
+      tellWindows('scenario:running', sc.id)
+      try {
+        const steps = await applyScenario(sc.id)
+        const bad = steps.filter((x) => !x.ok)
+        tellWindows('scenario:applied', { id: sc.id, name: sc.name, emoji: sc.emoji, ok: bad.length === 0, at: Date.now(), steps })
+        notify(
+          `LAZEYKA — ${sc.emoji} ${sc.name}`,
+          bad.length ? `Не всё получилось: ${bad.map((b) => b.what).join(', ')}` : 'Сценарий выполнен'
+        )
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        tellWindows('scenario:applied', {
+          id: sc.id, name: sc.name, emoji: sc.emoji, ok: false, at: Date.now(),
+          steps: [{ what: 'Сценарий', ok: false, message }]
+        })
+        throw e
+      }
+      return
+    }
+    case 'service': {
+      if (cmd.service === 'zapret') {
+        const on = wantedState(cmd.action, getZapretStatus().state === 'running')
+        if (on) await startZapret()
+        else await stopZapret()
+      } else if (cmd.service === 'telegram') {
+        const on = wantedState(cmd.action, getTgwsStatus().state === 'running')
+        if (on) await startTgws()
+        else await stopTgws()
+      } else {
+        const { loadIncySettings, patchIncySettings } = await import('./incy-engine')
+        const on = wantedState(cmd.action, !!loadIncySettings().perAppProxy)
+        patchIncySettings({ perAppProxy: on })
+        notify('LAZEYKA — ExitLag', on ? 'Включён: VPN только для приложений из списка' : 'Выключен: весь трафик как обычно')
+      }
+    }
   }
 }
 

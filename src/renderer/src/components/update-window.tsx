@@ -1,5 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react'
 import { motion } from 'motion/react'
 import { useTheme } from 'next-themes'
 import {
@@ -70,48 +69,53 @@ function cleanBody(body: string): string {
   return body.replace(/^\s*#\s+[^\n]*\n+/, '').trim()
 }
 
+// react-markdown (~230 КБ) грузится отдельным файлом, только когда нужно показать заметки.
+const ReactMarkdown = lazy(() => import('react-markdown'))
+
 /** Markdown заметок к релизу в стиле приложения. */
 export function ReleaseBody({ body }: { body: string }): React.ReactElement {
   const text = cleanBody(body)
   if (!text) return <p className="text-xs text-muted-foreground">Описание к этой версии не добавлено.</p>
   return (
     <div className="text-[13px] leading-relaxed text-foreground/90 space-y-2">
-      <ReactMarkdown
-        components={{
-          h1: ({ children }) => <h3 className="text-sm font-bold text-foreground mt-3 first:mt-0">{children}</h3>,
-          h2: ({ children }) => (
-            <h4 className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-primary mt-4 first:mt-0 mb-1.5">
-              <span className="h-px w-3 bg-primary/60" />
-              {children}
-            </h4>
-          ),
-          h3: ({ children }) => <h5 className="text-xs font-semibold text-foreground mt-3 mb-1">{children}</h5>,
-          p: ({ children }) => <p className="text-[13px] text-foreground/85">{children}</p>,
-          ul: ({ children }) => <ul className="space-y-1.5">{children}</ul>,
-          ol: ({ children }) => <ol className="space-y-1.5 list-decimal pl-5">{children}</ol>,
-          li: ({ children }) => (
-            <li className="relative pl-4 text-[13px] text-foreground/85">
-              <span className="absolute left-0 top-[0.6em] size-1.5 rounded-full bg-primary/70 shadow-[0_0_6px_var(--primary)]" />
-              {children}
-            </li>
-          ),
-          strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
-          code: ({ children }) => (
-            <code className="rounded bg-foreground/[0.08] px-1 py-0.5 font-mono text-[11px]">{children}</code>
-          ),
-          a: ({ href, children }) => (
-            <button
-              type="button"
-              className="text-primary underline underline-offset-2 hover:opacity-80"
-              onClick={() => href && void openExternalUrl(href)}
-            >
-              {children}
-            </button>
-          )
-        }}
-      >
-        {text}
-      </ReactMarkdown>
+      <Suspense fallback={null}>
+        <ReactMarkdown
+          components={{
+            h1: ({ children }) => <h3 className="text-sm font-bold text-foreground mt-3 first:mt-0">{children}</h3>,
+            h2: ({ children }) => (
+              <h4 className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-primary mt-4 first:mt-0 mb-1.5">
+                <span className="h-px w-3 bg-primary/60" />
+                {children}
+              </h4>
+            ),
+            h3: ({ children }) => <h5 className="text-xs font-semibold text-foreground mt-3 mb-1">{children}</h5>,
+            p: ({ children }) => <p className="text-[13px] text-foreground/85">{children}</p>,
+            ul: ({ children }) => <ul className="space-y-1.5">{children}</ul>,
+            ol: ({ children }) => <ol className="space-y-1.5 list-decimal pl-5">{children}</ol>,
+            li: ({ children }) => (
+              <li className="relative pl-4 text-[13px] text-foreground/85">
+                <span className="absolute left-0 top-[0.6em] size-1.5 rounded-full bg-primary/70 shadow-[0_0_6px_var(--primary)]" />
+                {children}
+              </li>
+            ),
+            strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
+            code: ({ children }) => (
+              <code className="rounded bg-foreground/[0.08] px-1 py-0.5 font-mono text-[11px]">{children}</code>
+            ),
+            a: ({ href, children }) => (
+              <button
+                type="button"
+                className="text-primary underline underline-offset-2 hover:opacity-80"
+                onClick={() => href && void openExternalUrl(href)}
+              >
+                {children}
+              </button>
+            )
+          }}
+        >
+          {text}
+        </ReactMarkdown>
+      </Suspense>
     </div>
   )
 }

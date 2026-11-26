@@ -12,16 +12,19 @@ export const useTgwsStore = create<TgwsStore>((set) => ({
 }))
 
 let listener: ((event: unknown, payload: CoreStatus) => void) | null = null
+// Отписка — функцией, которую вернул on(): removeListener через мост не находит слушателя.
+let offIpc: (() => void) | null = null
 
 export const attachTgwsStore = (): (() => void) => {
   // Hard-reset to dodge HMR/StrictMode duplicate listeners.
   window.electron.ipcRenderer.removeAllListeners('tgws:status')
   listener = (_e, payload) => useTgwsStore.getState().setStatus(payload)
-  window.electron.ipcRenderer.on('tgws:status', listener)
+  offIpc = window.electron.ipcRenderer.on('tgws:status', listener)
   tgwsStatus().then((s) => useTgwsStore.getState().setStatus(s)).catch(() => void 0)
   return () => {
     if (listener) {
-      window.electron.ipcRenderer.removeListener('tgws:status', listener)
+      offIpc?.()
+      offIpc = null
       listener = null
     }
   }

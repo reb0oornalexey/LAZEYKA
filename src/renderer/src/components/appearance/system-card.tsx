@@ -7,6 +7,9 @@ import { SectionCard, InfoTip, SelectField } from './section'
 import { useAppearanceStore } from '@renderer/lib/appearance/store'
 import { BUILTIN_PRESETS } from '@renderer/lib/appearance/presets'
 import { appearanceGetSystem, setNativeTheme } from '@renderer/utils/ipc'
+import { platform } from '@renderer/utils/init'
+
+const OS = platform === 'darwin' ? 'macOS' : 'Windows'
 
 
 /** Windows: два переключателя — тема системы и акцентный цвет. Работает по событиям, без опроса. */
@@ -43,23 +46,23 @@ export const SystemCard: React.FC = () => {
   }
 
   return (
-    <SectionCard icon={MonitorCog} title="Windows">
+    <SectionCard icon={MonitorCog} title={OS}>
       <div className="space-y-1.5">
         <div className="flex items-center gap-2 text-xs">
           <span>Как в системе</span>
-          <InfoTip text="Светлая или тёмная тема Windows сама выбирает пресет." />
+          <InfoTip text={`Светлая или тёмная тема ${OS} сама выбирает тему программы. Какую именно — выберите ниже.`} />
           <Switch size="sm" className="ml-auto" checked={system.follow} onCheckedChange={toggleFollow} />
         </div>
         {system.follow && (
           <div className="grid grid-cols-2 gap-2">
-            <SelectField value={system.lightPreset} onChange={(e) => setSystem({ lightPreset: e.target.value })} title="Светлая тема Windows">
+            <SelectField value={system.lightPreset} onChange={(e) => setSystem({ lightPreset: e.target.value })} title={`Когда в ${OS} светлая тема`} aria-label={`Тема программы, когда в ${OS} светлая тема`}>
               {options('light').map((o) => (
                 <option key={o.id} value={o.id}>
                   {o.name}
                 </option>
               ))}
             </SelectField>
-            <SelectField value={system.darkPreset} onChange={(e) => setSystem({ darkPreset: e.target.value })} title="Тёмная тема Windows">
+            <SelectField value={system.darkPreset} onChange={(e) => setSystem({ darkPreset: e.target.value })} title={`Когда в ${OS} тёмная тема`} aria-label={`Тема программы, когда в ${OS} тёмная тема`}>
               {options('dark').map((o) => (
                 <option key={o.id} value={o.id}>
                   {o.name}
@@ -69,8 +72,8 @@ export const SystemCard: React.FC = () => {
           </div>
         )}
         <div className="flex items-center gap-2 text-xs">
-          <span>Акцент из Windows</span>
-          <InfoTip text={accentAvailable ? 'Цвет акцента берётся из персонализации Windows. Ваши правки цветов важнее.' : 'Система не отдаёт акцентный цвет.'} />
+          <span>Акцент из {OS}</span>
+          <InfoTip text={accentAvailable ? `Цвет акцента берётся из настроек ${OS}. Пока включено, он главнее вашего акцентного цвета на вкладке «Цвета».` : 'Система не отдаёт акцентный цвет.'} />
           <Switch size="sm" className="ml-auto" checked={system.accent} disabled={!accentAvailable} onCheckedChange={(v) => setSystem({ accent: v })} />
         </div>
       </div>

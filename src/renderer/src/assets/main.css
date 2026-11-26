@@ -276,17 +276,22 @@
   --toast-normal-border: var(--border);
   --toast-success-bg: hsl(143, 85%, 96%);
   --toast-success-border: hsl(145, 92%, 87%);
-  --toast-success-fg: hsl(140, 100%, 27%);
+  --toast-success-fg: hsl(140, 100%, 24%);
   --toast-info-bg: hsl(208, 100%, 97%);
   --toast-info-border: hsl(221, 91%, 93%);
-  --toast-info-fg: hsl(210, 92%, 45%);
+  --toast-info-fg: hsl(210, 92%, 39%);
   --toast-warning-bg: hsl(49, 100%, 97%);
   --toast-warning-border: hsl(49, 91%, 84%);
-  --toast-warning-fg: hsl(31, 92%, 45%);
+  --toast-warning-fg: hsl(28, 92%, 33%);
   --toast-error-bg:
     radial-gradient(at 30% 45%, color-mix(in oklab, var(--gradient-start-power-off) 60%, transparent), color-mix(in oklab, var(--gradient-end-power-off) 60%, transparent)), var(--popover);
   --toast-error-border: var(--stroke-power-off);
   --toast-error-fg: var(--foreground);
+}
+
+/* Голубой «Инфо» по умолчанию слишком светлый для белых панелей (2,7:1) — в светлых темах темнее (5:1). */
+:root:not(.dark) {
+  --info: #0a72c2;
 }
 
 .dark,
@@ -957,4 +962,139 @@ select option,
 select optgroup {
   background-color: var(--popover);
   color: var(--popover-foreground);
+}
+
+/* Режим стримера: размывает всё с data-sensitive. Классы ставит initStreamerMode() на <html>
+   (и демо-блок на странице «Стример»). filter и user-select не меняют display,
+   поэтому строчные элементы остаются строчными, а вёрстка не сдвигается. */
+.streamer-mode.sm-hide-ip [data-sensitive='ip'],
+.streamer-mode.sm-hide-node [data-sensitive='node'],
+.streamer-mode.sm-hide-link [data-sensitive='link'],
+.streamer-mode.sm-hide-qr [data-sensitive='qr'],
+.streamer-mode.sm-hide-id [data-sensitive='id'] {
+  filter: blur(7px);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Колокольчик с непрочитанным: короткое покачивание в начале цикла, дальше покой. */
+@keyframes bell-ring {
+  0%, 18%, 100% { transform: rotate(0deg); }
+  3% { transform: rotate(14deg); }
+  7% { transform: rotate(-12deg); }
+  11% { transform: rotate(8deg); }
+  15% { transform: rotate(-4deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-\[bell-ring_2\.4s_ease-in-out_infinite\] { animation: none !important; }
+}
+
+/* Подсказки не перехватывают мышь: обёртка Radix тоже (см. components/ui/tooltip.tsx). */
+[data-radix-popper-content-wrapper]:has(> [data-slot='tooltip-content']) {
+  pointer-events: none;
+}
+
+/* Всплывающие окна и затемнение под ними вырезают зону перетаскивания окна (шапка, app-drag).
+   Иначе на Windows верхняя часть окна, зашедшая на шапку программы, не нажимается: система
+   считает щелчок началом перетаскивания (окно темы в галерее, 21.11). */
+[role='dialog'],
+[role='alertdialog'],
+[aria-modal='true'],
+.fixed.inset-0,
+[data-slot='sheet-overlay'],
+[data-slot='sheet-content'],
+[data-radix-popper-content-wrapper] {
+  -webkit-app-region: no-drag;
+}
+
+.lz-page {
+  container: lz-page / inline-size;
+  --lz-gap: 12px;
+  --lz-pad: 16px;
+  --lz-page-x: 24px;
+}
+.lz-page-gap { gap: var(--lz-gap); }
+.lz-page-x { padding-inline: var(--lz-page-x); }
+.lz-panel-pad { padding: var(--lz-pad, 16px); }
+@container lz-page (width < 850px) {
+  .lz-page-x { --lz-page-x: 16px; }
+}
+
+html.light:is(.bg-glass, [data-ui-card='glass']) :is(.ui-card, .ui-glow) {
+  background-color: color-mix(in oklab, var(--card), var(--background) 35%);
+}
+
+.lz-nav-arc {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  color: color-mix(in oklab, var(--sidebar-foreground) 28%, transparent);
+}
+.lz-nav-arc[data-state='running'] {
+  color: var(--sidebar-primary);
+  filter: drop-shadow(0 0 3px currentColor);
+}
+.lz-nav-arc:is([data-state='starting'], [data-state='stopping']) {
+  color: var(--sidebar-primary);
+  border-style: dashed;
+  animation: lz-arc-rotate 1.3s linear infinite;
+}
+.lz-nav-arc[data-state='error'] { color: var(--st-bad, var(--destructive)); }
+@keyframes lz-arc-rotate { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .lz-nav-arc { animation: none !important; }
+}
+html.motion-off .lz-nav-arc { animation: none !important; }
+
+.lz-shell-header {
+  border-image: linear-gradient(90deg, transparent, var(--border), transparent) 1;
+}
+.lz-shell-header[data-signal='true'] {
+  border-image: linear-gradient(90deg, transparent, var(--primary), transparent) 1;
+}
+/* Interactive strips and labels need their own surface over any wallpaper. */
+.lz-control-surface,
+.lz-onwall {
+  background-color: var(--popover);
+  background-color: oklch(from var(--popover) l c h / 1);
+  color: var(--popover-foreground);
+}
+
+.lz-control-surface {
+  border-color: color-mix(in oklab, var(--popover-foreground) 24%, var(--popover));
+}
+
+.lz-control-option {
+  color: var(--popover-foreground);
+}
+
+.lz-control-option:hover {
+  background-color: color-mix(in oklab, var(--popover-foreground) 12%, oklch(from var(--popover) l c h / 1));
+}
+
+.lz-control-option:focus-visible,
+.lz-control-surface [role='tab']:focus-visible {
+  outline: 2px solid var(--popover-foreground);
+  outline-offset: -2px;
+}
+
+.lz-onwall {
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+
+.lz-tint-accent { --lz-surface-tint: var(--primary); }
+.lz-tint-ok { --lz-surface-tint: var(--st-ok); }
+.lz-tint-warn { --lz-surface-tint: var(--st-warn); }
+
+.lz-control-surface.lz-tinted-surface {
+  background-color: color-mix(
+    in oklab,
+    oklch(from var(--popover) l c h / 1),
+    oklch(from var(--lz-surface-tint) l c h / 1) 22%
+  );
+  border-color: color-mix(in oklab, var(--popover), var(--lz-surface-tint) 65%);
 }

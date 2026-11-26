@@ -14,6 +14,9 @@ import {
   writeMacDns,
   type MacDnsBackup
 } from './dns-mac'
+import { changeLinuxDns, linuxDnsEndpoint, readLinuxDnsState } from './dns-linux'
+import { allAddrs, removedIds, type CatalogPreset } from './dns-catalog-logic'
+import { loadCatalogCache, loadOverrides } from './dns-catalog-store'
 
 const execFileAsync = promisify(execFile)
 
@@ -40,6 +43,31 @@ export interface DohProvider {
   site?: string
   /** Страница с профилем конфигурации macOS для шифрованного DNS (DoH/DoT). */
   macProfile?: string
+  /** Встроенная запись (из кода или удалённого каталога). */
+  builtin?: boolean
+  /** Запись пришла только из каталога — в коде приложения её нет. */
+  fromCatalog?: boolean
+  /** Пользователь изменил адреса или DoH — его правка приоритетнее каталога. */
+  edited?: boolean
+  /** Дата смены адресов по каталогу (YYYY-MM-DD), если каталог её указал. */
+  catalogUpdated?: string
+  tags?: string[]
+  /**
+   * Автор убрал запись из программы (список removed каталога). В списке такие записи не
+   * отдаются, кроме той, что сейчас включена у пользователя: её системные настройки молча
+   * не меняем, а окно показывает плашку «убран автором».
+   */
+  removedByAuthor?: boolean
+}
+
+/**
+ * Адреса встроенных серверов из прежних версий приложения (до каталога): их
+ * мог выставить сама LAZEYKA, а запись о выставленных адресах тогда не велась.
+ * Нужны, чтобы узнать «устаревший» сервер и убрать его флаги DoH.
+ */
+export const LEGACY_ADDRS: Record<string, string[]> = {
+  magicdns: ['109.120.177.170', '45.88.163.92'],
+  'dns-ai': ['192.144.59.14', '186.246.49.127']
 }
 
 /** Репозиторий с подписанными профилями DoH/DoT для macOS и iOS (Cloudflare, Google, Quad9, AdGuard). */
@@ -67,9 +95,11 @@ export const DOH_PROVIDERS: DohProvider[] = [
     id: 'magicdns',
     name: 'MagicDNS (magicdns.ru)',
     // По инструкции magicdns.ru: «Только HTTPS», шаблон один для обоих адресов.
-    url: 'https://api.magicdns.ru/sync',
-    ip: '109.120.177.170',
-    secondaryIp: '45.88.163.92',
+    // Адреса с magicdns.ru на 12.11.2026 (прежние 109.120.177.170 / 45.88.163.92 и api.magicdns.ru/sync
+    // сервис сменил). Дальше адреса приходят из каталога dns-presets.json / Hub, если сменятся снова.
+    url: 'https://api.magicinfo.art/rpc',
+    ip: '217.144.190.216',
+    secondaryIp: '109.120.187.249',
     description: 'Открывает Gemini, ChatGPT, Claude, AI Studio и игровые сервисы; российские сайты идут напрямую, режет рекламу. Только шифрованный DoH',
     latencyMs: null,
     strict: true,
@@ -81,6 +111,7 @@ export const DOH_PROVIDERS: DohProvider[] = [
     url: 'https://cloudflare-dns.com/dns-query',
     ip: '1.1.1.1',
     secondaryIp: '1.0.0.1',
+    ipv6: ['2606:4700:4700::1111', '2606:4700:4700::1001'],
     description: 'Самый быстрый и конфиденциальный DNS',
     latencyMs: null,
     macProfile: MAC_PROFILES_URL
@@ -91,6 +122,7 @@ export const DOH_PROVIDERS: DohProvider[] = [
     url: 'https://dns.google/dns-query',
     ip: '8.8.8.8',
     secondaryIp: '8.8.4.4',
+    ipv6: ['2001:4860:4860::8888', '2001:4860:4860::8844'],
     description: 'Максимальная стабильность и глобальное покрытие',
     latencyMs: null,
     macProfile: MAC_PROFILES_URL
@@ -101,6 +133,7 @@ export const DOH_PROVIDERS: DohProvider[] = [
     url: 'https://dns.adguard-dns.com/dns-query',
     ip: '94.140.14.14',
     secondaryIp: '94.140.15.15',
+    ipv6: ['2a10:50c0::ad1:ff', '2a10:50c0::ad2:ff'],
     description: 'Блокировка рекламы, трекеров и фишинга на уровне DNS',
     latencyMs: null,
     macProfile: MAC_PROFILES_URL
@@ -111,6 +144,7 @@ export const DOH_PROVIDERS: DohProvider[] = [
     url: 'https://dns.quad9.net/dns-query',
     ip: '9.9.9.9',
     secondaryIp: '149.112.112.112',
+    ipv6: ['2620:fe::fe', '2620:fe::9'],
     description: 'Безопасность и защита от вредоносных доменов',
     latencyMs: null,
     macProfile: MAC_PROFILES_URL
@@ -392,12 +426,83 @@ export function updateCustomDnsProvider(id: string, input: CustomDnsInput): DohP
   return loadCustomProviders()
 }
 
+/** Запись каталога поверх встроенной (или новая запись, которой в коде нет). */
+function mergeCatalogPreset(base: DohProvider | undefined, c: CatalogPreset): DohProvider {
+  return {
+    ...(base ?? { id: c.id, latencyMs: null, fromCatalog: true }),
+    id: c.id,
+    name: c.name,
+    description: c.description || base?.description || '',
+    url: c.doh,
+    ip: c.ipv4[0],
+    secondaryIp: c.ipv4[1],
+    // Пустой IPv6 в каталоге (старые записи) не стирает встроенные IPv6-адреса.
+    ipv6: c.ipv6.length ? c.ipv6 : base?.ipv6,
+    strict: c.dohOnly,
+    site: c.site ?? base?.site,
+    tags: c.tags,
+    catalogUpdated: c.updated,
+    builtin: true,
+    latencyMs: null
+  }
+}
+
+/**
+ * Встроенные записи без правок пользователя: код → каталог → (для DNS-AI)
+ * актуальный список самого сервиса. Правки пользователя накладываются отдельно.
+ */
+export function builtinsWithoutOverrides(fresh: DnsAiEndpoints | null = dnsAiKnown()): DohProvider[] {
+  const cat = loadCatalogCache()?.catalog
+  const byId = new Map((cat?.presets ?? []).map((c) => [c.id, c]))
+  const list: DohProvider[] = DOH_PROVIDERS.map((b) => {
+    const c = byId.get(b.id)
+    let p: DohProvider = c ? mergeCatalogPreset(b, c) : { ...b, builtin: true }
+    if (b.id === 'dns-ai' && fresh) {
+      p = { ...p, ip: fresh.v4[0], secondaryIp: fresh.v4[1], ipv6: fresh.v6.length ? fresh.v6 : p.ipv6 }
+    }
+    return p
+  })
+  for (const c of cat?.presets ?? []) {
+    if (!DOH_PROVIDERS.some((b) => b.id === c.id)) list.push(mergeCatalogPreset(undefined, c))
+  }
+  // Убранные автором записи, которых уже нет ни в коде, ни в presets: последняя копия из кэша.
+  for (const c of loadCatalogCache()?.kept ?? []) {
+    if (!list.some((p) => p.id === c.id)) list.push(mergeCatalogPreset(undefined, c))
+  }
+  const gone = removedIds(cat)
+  return gone.size ? list.map((p) => (gone.has(p.id) ? { ...p, removedByAuthor: true } : p)) : list
+}
+
+/**
+ * Без убранных автором записей. Включённую сейчас (по записи LAZEYKA о том, что она
+ * выставила) оставляем: по ней шапка «Сейчас в системе» и плашка узнают сервер.
+ */
+function withoutRemoved(list: DohProvider[]): DohProvider[] {
+  if (!list.some((p) => p.removedByAuthor)) return list
+  const activeId = readDnsActive()?.providerId
+  return list.filter((p) => !p.removedByAuthor || p.id === activeId)
+}
+
+/** Пользовательская правка встроенной записи приоритетнее каталога, пока её не сбросили. */
+function applyOverrides(list: DohProvider[]): DohProvider[] {
+  const ov = loadOverrides()
+  return list.map((p) => {
+    const o = ov[p.id]
+    if (!o) return p
+    return {
+      ...p,
+      ip: o.ipv4[0],
+      secondaryIp: o.ipv4[1],
+      ipv6: o.ipv6.length ? o.ipv6 : undefined,
+      url: o.doh,
+      strict: o.dohOnly && Boolean(o.doh),
+      edited: true
+    }
+  })
+}
+
 function withDnsAi(fresh: DnsAiEndpoints | null): DohProvider[] {
-  return DOH_PROVIDERS.map((p) =>
-    p.id === 'dns-ai' && fresh
-      ? { ...p, ip: fresh.v4[0], secondaryIp: fresh.v4[1], ipv6: fresh.v6.length ? fresh.v6 : p.ipv6 }
-      : p
-  )
+  return withoutRemoved(applyOverrides(builtinsWithoutOverrides(fresh)))
 }
 
 /**
@@ -411,16 +516,11 @@ export function providersInstant(): DohProvider[] {
 
 export async function allProviders(): Promise<DohProvider[]> {
   const fresh = await refreshDnsAi().catch(() => null)
-  const builtins = DOH_PROVIDERS.map((p) =>
-    p.id === 'dns-ai' && fresh
-      ? { ...p, ip: fresh.v4[0], secondaryIp: fresh.v4[1], ipv6: fresh.v6.length ? fresh.v6 : p.ipv6 }
-      : p
-  )
-  return ordered([...builtins, ...loadCustomProviders()])
+  return ordered([...withDnsAi(fresh), ...loadCustomProviders()])
 }
 
 /** Обычный DNS-запрос по UDP — для своих серверов без DoH. */
-function pingUdpDns(ip: string): Promise<number | null> {
+export function pingUdpDns(ip: string): Promise<number | null> {
   return new Promise((resolve) => {
     const sock = dgram.createSocket(net.isIPv6(ip) ? 'udp6' : 'udp4')
     const q = Buffer.from(dnsWireQuery('youtube.com').replace(/-/g, '+').replace(/_/g, '/'), 'base64')
@@ -437,6 +537,11 @@ function pingUdpDns(ip: string): Promise<number | null> {
     t0 = Date.now()
     sock.send(q, 53, ip, (e) => e && done(null))
   })
+}
+
+/** Задержка одного сервера: DoH — по HTTP/2, обычный DNS — по UDP. null — нет ответа. */
+export function pingProvider(p: DohProvider): Promise<number | null> {
+  return p.url ? pingDohProvider(p) : pingUdpDns(p.ip)
 }
 
 export async function getDohProvidersWithPing(): Promise<DohProvider[]> {
@@ -480,9 +585,16 @@ function Get-StaticDns($a, $stack) {
   if ($ns) { return @($ns -split '[ ,]+' | Where-Object { $_ }) }
   return @()
 }
+# IPv6-DNS ставим, только если у адаптера есть настоящий IPv6-интернет: включённой галочки IPv6
+# мало — у многих она включена, а провайдер IPv6 не даёт, и IPv6-серверы DNS просто недоступны.
+# Настоящий — адрес не локальный: не fe80 (канальный), не fc/fd (внутренний), не служебный, рабочий.
 function Has-V6($a) {
   $b = Get-NetAdapterBinding -Name $a.Name -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
-  return [bool]($b -and $b.Enabled)
+  if (-not ($b -and $b.Enabled)) { return $false }
+  $g = @(Get-NetIPAddress -InterfaceIndex $a.InterfaceIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object {
+    $_.IPAddress -notlike 'fe80*' -and $_.IPAddress -notlike 'fc*' -and $_.IPAddress -notlike 'fd*' -and $_.PrefixOrigin -ne 'WellKnown' -and $_.AddressState -eq 'Preferred'
+  })
+  return $g.Count -gt 0
 }
 function Clear-OurFlags($a, $keep) {
   foreach ($fam in 'Doh', 'Doh6') {
@@ -622,6 +734,15 @@ interface DnsActiveState {
   profileAddrs?: string[]
   /** macOS: пользователь подтвердил, что профиль установлен и включён. */
   profileConfirmed?: boolean
+  /** Адреса (IPv4 + IPv6), которые LAZEYKA выставила в последний раз — чтобы заметить смену по каталогу. */
+  appliedAddrs?: string[]
+  /** Шаблон DoH, выставленный в последний раз. */
+  appliedDoh?: string
+}
+
+/** Что именно записать в состояние после успешной смены DNS. */
+function appliedOf(p: DohProvider): { appliedAddrs: string[]; appliedDoh: string } {
+  return { appliedAddrs: allAddrs({ ipv4: [p.ip, p.secondaryIp].filter((a): a is string => Boolean(a)), ipv6: p.ipv6 }), appliedDoh: p.url || '' }
 }
 
 function dnsActiveFile(): string {
@@ -632,7 +753,9 @@ export function readDnsActive(): DnsActiveState | null {
   try {
     if (!existsSync(dnsActiveFile())) return null
     const j = JSON.parse(readFileSync(dnsActiveFile(), 'utf-8')) as DnsActiveState
-    return j && typeof j.providerId === 'string' ? { ...j, added: Array.isArray(j.added) ? j.added : [] } : null
+    return j && typeof j.providerId === 'string'
+      ? { ...j, added: Array.isArray(j.added) ? j.added : [], appliedAddrs: Array.isArray(j.appliedAddrs) ? j.appliedAddrs.map(String) : undefined }
+      : null
   } catch {
     return null
   }
@@ -728,6 +851,10 @@ async function ourAddresses(): Promise<string[]> {
   const fresh = dnsAiCache
   const all = list.flatMap((p) => [p.ip, p.secondaryIp, ...(p.ipv6 ?? [])])
   if (fresh) all.push(...fresh.retired)
+  // Адреса, которые встроенные записи имели раньше (в коде, в каталоге до смены, до правки
+  // пользователя) и которые LAZEYKA сама ставила: их флаги DoH тоже убираем.
+  for (const p of [...DOH_PROVIDERS, ...builtinsWithoutOverrides()]) all.push(p.ip, p.secondaryIp, ...(p.ipv6 ?? []))
+  all.push(...(loadCatalogCache()?.retired ?? []), ...(readDnsActive()?.appliedAddrs ?? []), ...Object.values(LEGACY_ADDRS).flat())
   return [...new Set(all.filter((a): a is string => Boolean(a)))]
 }
 
@@ -763,6 +890,7 @@ export interface SystemDnsState {
 }
 
 async function readServers(): Promise<string[]> {
+  if (process.platform === 'linux') return (await readLinuxDnsState()).servers
   if (process.platform === 'darwin') return readMacDnsState().catch(() => [])
   if (process.platform !== 'win32') return []
   try {
@@ -775,6 +903,7 @@ async function readServers(): Promise<string[]> {
 
 /** Какие DNS-серверы сейчас стоят на рабочих адаптерах (для подсветки в настройках). */
 export async function getSystemDnsState(): Promise<SystemDnsState> {
+  if (process.platform === 'linux') return readLinuxDnsState()
   const servers = await readServers()
   const changedByApp = existsSync(dnsBackupFile())
   const active = readDnsActive()
@@ -790,13 +919,16 @@ export async function getSystemDnsState(): Promise<SystemDnsState> {
   if (active) {
     const p = all.find((x) => x.id === active.providerId)
     if (p) {
-      const addrs = [p.ip, p.secondaryIp, ...(p.ipv6 ?? [])].filter(Boolean) as string[]
+      // Адреса, выставленные в прошлый раз, тоже считаем «этим сервером»: после смены
+      // адресов в каталоге в системе ещё стоят старые, и сервер должен оставаться активным.
+      const cur = [p.ip, p.secondaryIp, ...(p.ipv6 ?? [])].filter(Boolean) as string[]
+      const addrs = [...cur, ...(active.appliedAddrs ?? []), ...(active.appliedAddrs ? [] : (LEGACY_ADDRS[p.id] ?? []))]
       // На Mac у «только DoH» адресов в системе нет — их держит профиль.
       if (servers.some((s) => addrs.includes(s)) || (process.platform === 'darwin' && p.url && active.profileConfirmed)) {
         providerId = p.id
       }
       if (process.platform === 'darwin' && active.profileAddrs?.length) {
-        macProfileStale = addrs.some((a) => !active.profileAddrs!.includes(a))
+        macProfileStale = cur.some((a) => !active.profileAddrs!.includes(a))
       }
     }
   }
@@ -829,6 +961,11 @@ function isTunnelOrLoopback(a: string): boolean {
  */
 export async function adapterDnsForTunnel(): Promise<string | null> {
   try {
+    if (process.platform === 'linux') {
+      const state = await readLinuxDnsState()
+      const provider = providersInstant().find((item) => item.id === state.providerId)
+      return provider?.url || state.servers[0] || null
+    }
     if (process.platform === 'darwin') {
       const active = readDnsActive()
       if (active?.profileConfirmed) {
@@ -841,7 +978,10 @@ export async function adapterDnsForTunnel(): Promise<string | null> {
     }
     if (process.platform !== 'win32') return null
     const r = await runDnsScript('read', {})
-    const servers = [...new Set(Object.values(r.now).flat())].filter((a) => net.isIPv4(a) && !isTunnelOrLoopback(a))
+    // Windows: локальный резолвер пользователя (AdGuard Home, DNSCrypt на 127.x) — тоже его DNS адаптера.
+    const servers = [...new Set(Object.values(r.now).flat())].filter(
+      (a) => net.isIPv4(a) && (a.startsWith('127.') || !isTunnelOrLoopback(a))
+    )
     if (servers[0]) return (lastAdapterDns = (r.tmpl[servers[0]] || '').replace(/\{\?dns\}$/, '') || servers[0])
   } catch {
     /* ниже — последнее известное значение */
@@ -852,7 +992,7 @@ export async function adapterDnsForTunnel(): Promise<string | null> {
 /** macOS: пользователь подтвердил, что поставил и включил профиль этого сервера. */
 export function confirmMacDohProfile(providerId: string): void {
   const prev = readDnsActive()
-  writeDnsActive({ providerId, added: prev?.added ?? [], profileAddrs: prev?.profileAddrs, profileConfirmed: true })
+  writeDnsActive({ ...prev, providerId, added: prev?.added ?? [], profileAddrs: prev?.profileAddrs, profileConfirmed: true })
 }
 
 /**
@@ -935,7 +1075,7 @@ async function applySystemDnsMac(target: string | 'dhcp'): Promise<ApplyDnsResul
       const { openMacDohProfile } = await import('./dns-mac-profile')
       const prof = await openMacDohProfile(provider)
       if (!prof.success) return prof
-      writeDnsActive({ providerId: provider.id, added: [], profileAddrs, profileConfirmed: false })
+      writeDnsActive({ providerId: provider.id, added: [], profileAddrs, profileConfirmed: false, ...appliedOf(provider) })
       if (provider.strict) return { ...prof, needsProfile: true }
     } else if (provider.strict) {
       return { success: true, message: `Шифрованный DNS ${provider.name} уже работает через профиль LAZEYKA` }
@@ -973,7 +1113,7 @@ async function applySystemDnsMac(target: string | 'dhcp'): Promise<ApplyDnsResul
     }
     return { success: true, message: `Шифрованный DNS ${provider.name} (${servers.join(', ')}) — через профиль LAZEYKA` }
   }
-  writeDnsActive({ providerId: provider.id, added: [] })
+  writeDnsActive({ providerId: provider.id, added: [], ...appliedOf(provider) })
   return { success: true, message: `Системный DNS: ${provider.name} (${servers.join(', ')}) — без шифрования` }
 }
 
@@ -990,6 +1130,21 @@ function cleanPsError(e: unknown): string {
 }
 
 export async function applySystemDns(target: string | 'dhcp'): Promise<ApplyDnsResult> {
+  if (process.platform === 'linux') {
+    try {
+      if (target === 'dhcp') {
+        await changeLinuxDns()
+        return { success: true, message: 'Восстановлены прежние настройки системного DNS.' }
+      }
+      const provider = (await allProviders()).find((item) => item.id === target || item.ip === target)
+      if (!provider) return { success: false, message: 'Неизвестный DNS-сервер.' }
+      const endpoint = await linuxDnsEndpoint(provider.ip, provider.url)
+      await changeLinuxDns({ id: provider.id, endpoint })
+      return { success: true, message: `Системный DNS: ${provider.name}${provider.url ? ' · DoH' : ' · обычный DNS'}` }
+    } catch (error) {
+      return { success: false, message: error instanceof Error ? error.message : String(error) }
+    }
+  }
   if (process.platform === 'darwin') {
     try {
       return await applySystemDnsMac(target)
@@ -1057,10 +1212,15 @@ export async function applySystemDns(target: string | 'dhcp'): Promise<ApplyDnsR
       writeDnsActive(prev ? { ...prev, added } : null)
       return { success: false, message: 'Windows не применила DNS. Проверьте, что LAZEYKA запущена от администратора.' }
     }
-    // Лишних адресов (например, IPv6 прошлого сервера) на адаптере быть не должно.
+    // Лишних адресов на адаптере быть не должно. IPv4 — строго. IPv6 — только если мы сами
+    // выставили IPv6 этого сервера: иначе на адаптере законно остаётся IPv6-DNS, который
+    // раздаёт роутер (обычно fe80::1, адрес самого роутера). Раньше это считалось ошибкой —
+    // у Cloudflare/Google/AdGuard/Quad9 не было IPv6-адресов, и они «не ставились».
     const expected = new Set([...v4, ...(r.v6 ? v6 : [])])
-    const stray = [...new Set(Object.values(r.now).flat())].filter((a) => !expected.has(a))
-    writeDnsActive({ providerId: provider.id, added })
+    const nowAll = [...new Set(Object.values(r.now).flat())]
+    const stray = nowAll.filter((a) => !expected.has(a) && (net.isIPv4(a) || r.v6))
+    const routerV6 = r.v6 ? [] : nowAll.filter((a) => net.isIPv6(a) && !expected.has(a))
+    writeDnsActive({ providerId: provider.id, added, ...appliedOf(provider) })
     if (provider.url && r.doh && !r.tmplOk) {
       return {
         success: false,
@@ -1085,7 +1245,14 @@ export async function applySystemDns(target: string | 'dhcp'): Promise<ApplyDnsR
           : 'DoH с запасным обычным DNS'
     return {
       success: true,
-      message: `Системный DNS: ${provider.name} (${desc}) — ${enc}${v6.length && !r.v6 ? '. IPv6 на адаптере выключен — заданы только IPv4' : ''}`
+      message:
+        `Системный DNS: ${provider.name} (${desc}) — ${enc}` +
+        (v6.length && !r.v6 ? '. IPv6-интернета на адаптере нет — заданы только IPv4-адреса' : '') +
+        (routerV6.length
+          ? v6.length
+            ? `. Для IPv6 Windows оставила DNS роутера (${routerV6.join(', ')})`
+            : `. У этого сервера нет IPv6-адресов, поэтому для IPv6 остался DNS роутера (${routerV6.join(', ')})`
+          : '')
     }
   } catch (e: any) {
     throw new Error(`Не удалось изменить DNS: ${cleanPsError(e)}`)

@@ -44,9 +44,9 @@ const SpeedTestCard: React.FC<Props> = ({ node, label }) => {
     const listener = (_e: unknown, p: IncySpeedTestProgress): void => {
       if (p.nodeId === nodeRef.current) setProgress(p)
     }
-    window.electron.ipcRenderer.on('incy:speedTestProgress', listener)
+    const offIpc = window.electron.ipcRenderer.on('incy:speedTestProgress', listener)
     return () => {
-      window.electron.ipcRenderer.removeListener('incy:speedTestProgress', listener)
+      offIpc()
     }
   }, [])
 

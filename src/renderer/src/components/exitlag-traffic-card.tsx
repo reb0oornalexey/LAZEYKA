@@ -1,18 +1,16 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { toast } from 'sonner'
-import { Activity, CheckCircle2, Loader2, Search, ShieldAlert, X } from 'lucide-react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { Activity, Cable, CheckCircle2, Loader2, ShieldAlert } from 'lucide-react'
+import { EmptyState, LzPanel, LzSectionHead, Segmented } from '@renderer/components/lz'
 import {
   incyGetAppTraffic,
-  incyGetConnections,
-  incyCloseConnection,
   exitLagCheck,
   type AppTraffic,
   type HostTraffic,
-  type LiveConnection,
   type ExitLagCheckResult
 } from '@renderer/utils/ipc'
 import { cn } from '@renderer/lib/utils'
 import { appLabel, listHasProc } from '@renderer/utils/per-app'
+import ConnectionsPanel from '@renderer/components/incy/connections-panel'
 
 interface Props {
   /** Приложения из списка ExitLag. */
@@ -35,13 +33,6 @@ function fmtRate(bps: number): string {
   if (bps < 1) return '0'
   return `${fmtBytes(bps)}/с`
 }
-function fmtDur(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000))
-  if (s < 60) return `${s} с`
-  if (s < 3600) return `${Math.floor(s / 60)} мин`
-  return `${Math.floor(s / 3600)} ч ${Math.floor((s % 3600) / 60)} мин`
-}
-
 /** Цвет маршрута: VPN — акцент, напрямую — нейтральный, прочее — янтарный. */
 function routeClass(route: string): string {
   if (route === 'VPN') return 'text-primary'
@@ -76,22 +67,13 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
   const [traffic, setTraffic] = useState<AppTraffic[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [hosts, setHosts] = useState<HostTraffic[]>([])
-  const [conns, setConns] = useState<LiveConnection[] | null>(null)
-  const [query, setQuery] = useState('')
-  const [onlyListed, setOnlyListed] = useState(false)
   const [busyName, setBusyName] = useState<string | null>(null)
   const [check, setCheck] = useState<ExitLagCheckResult | null>(null)
   const [checking, setChecking] = useState(false)
-  /** Прошлые счётчики соединений — для скорости. */
-  const prev = useRef<Map<string, { up: number; down: number; at: number }>>(new Map())
-  const [speeds, setSpeeds] = useState<Map<string, { d: number; u: number }>>(new Map())
-
   useEffect(() => {
     if (!active) {
       setTraffic(null)
-      setConns(null)
       setHosts([])
-      prev.current = new Map()
     }
   }, [active])
 
@@ -99,28 +81,6 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
     const r = await incyGetAppTraffic(selected ?? undefined)
     setTraffic(r.apps)
     setHosts(r.apps.find((a) => a.name.toLowerCase() === selected?.toLowerCase())?.hosts ?? [])
-  })
-
-  usePolling(active && tab === 'conns', 2000, async () => {
-    const list = await incyGetConnections()
-    if (!list) {
-      setConns([])
-      return
-    }
-    const now = Date.now()
-    const sp = new Map<string, { d: number; u: number }>()
-    const next = new Map<string, { up: number; down: number; at: number }>()
-    for (const c of list) {
-      const p = prev.current.get(c.id)
-      if (p && now > p.at) {
-        const dt = (now - p.at) / 1000
-        sp.set(c.id, { d: Math.max(0, (c.download - p.down) / dt), u: Math.max(0, (c.upload - p.up) / dt) })
-      }
-      next.set(c.id, { up: c.upload, down: c.download, at: now })
-    }
-    prev.current = next
-    setSpeeds(sp)
-    setConns(list)
   })
 
   // Утечки: приложения не из списка, которые прямо сейчас идут через VPN (только режим белого списка).
@@ -178,57 +138,36 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
     }
   }
 
-  const closeConn = useCallback(async (id: string) => {
-    const ok = await incyCloseConnection(id).catch(() => false)
-    if (ok) setConns((l) => l?.filter((c) => c.id !== id) ?? l)
-    else toast.error('Не удалось закрыть соединение')
-  }, [])
-
-  const filteredConns = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return (conns ?? [])
-      .filter((c) => !onlyListed || listHasProc(apps, c.process, c.appRule))
-      .filter((c) => !q || c.process.toLowerCase().includes(q) || c.host.toLowerCase().includes(q))
-      .sort((a, b) => b.start - a.start)
-  }, [conns, query, onlyListed, apps])
-
-  const totals = useMemo(
-    () => filteredConns.reduce((s, c) => ({ d: s.d + c.download, u: s.u + c.upload }), { d: 0, u: 0 }),
-    [filteredConns]
-  )
-
   const sel = rows.find((r) => r.name.toLowerCase() === selected?.toLowerCase()) ?? null
 
-  const tabBtn = (id: 'apps' | 'conns', label: string): React.JSX.Element => (
-    <button
-      type="button"
-      onClick={() => setTab(id)}
-      className={cn(
-        'rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors cursor-pointer',
-        tab === id ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'
-      )}
-    >
-      {label}
-    </button>
-  )
-
   return (
-    <div className="cyber-card space-y-2 rounded-xl border border-border/50 bg-background/40 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-xs font-semibold">
-          <Activity className="h-3.5 w-3.5 text-primary" />
-          Сеть приложений
-        </div>
-        <div className="flex items-center gap-1">
-          {tabBtn('apps', 'Приложения')}
-          {tabBtn('conns', 'Соединения')}
-        </div>
-      </div>
+    <LzPanel tone={active ? 'on' : 'off'} glow={7} className="space-y-3 p-4">
+      <LzSectionHead
+        title="Сеть приложений"
+        hint="Какие программы выходят в сеть, куда и каким путём: через VPN или напрямую. Данные берутся у ядра VPN раз в 2 секунды и только пока открыта эта вкладка."
+        sub={active ? 'Нажмите на программу, чтобы увидеть её адреса и сменить путь' : 'Появится, когда VPN работает в режиме ExitLag'}
+        right={
+          <Segmented
+            size="sm"
+            items={[
+              { id: 'apps', label: 'По приложениям', icon: Activity },
+              { id: 'conns', label: 'Живые соединения', icon: Cable }
+            ]}
+            value={tab}
+            onChange={setTab}
+            aria-label="Вид"
+            className="w-[340px]"
+          />
+        }
+      />
 
       {!active ? (
-        <p className="text-[11px] text-muted-foreground">
-          Появится, когда VPN работает в режиме ExitLag — тут будет видно, какие приложения выходят в сеть и куда.
-        </p>
+        <EmptyState
+          compact
+          icon={<Activity />}
+          title="Здесь будет видно, кто выходит в сеть"
+          text="Включите ExitLag и запустите VPN: появятся программы, их скорость и путь — через VPN или напрямую."
+        />
       ) : tab === 'apps' ? (
         traffic === null ? (
           <p className="text-[11px] text-muted-foreground">Получаю данные ядра…</p>
@@ -255,8 +194,8 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
                           !r.t ? 'bg-muted-foreground/40' : r.t.open > 0 ? 'bg-primary' : 'bg-muted-foreground/60'
                         )}
                       />
-                      <span className="truncate font-mono font-semibold">{r.name}</span>
-                      {r.inList && <span className="shrink-0 rounded bg-primary/10 px-1 text-[9px] text-primary">в списке</span>}
+                      <span className="truncate font-semibold">{r.name}</span>
+                      {r.inList && <span className="shrink-0 rounded-md bg-primary/10 px-1.5 py-px text-[10.5px] font-semibold text-primary">в списке</span>}
                     </span>
                     <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
                       {r.t ? (
@@ -350,78 +289,9 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
           </div>
         )
       ) : (
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative min-w-[10rem] flex-1">
-              <Search className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Поиск по процессу или хосту"
-                className="h-7 w-full rounded-lg border border-border/60 bg-background/60 pl-7 pr-2 text-[11px] outline-none focus:border-primary/60"
-              />
-            </div>
-            <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer">
-              <input type="checkbox" checked={onlyListed} onChange={(e) => setOnlyListed(e.target.checked)} />
-              только приложения из списка
-            </label>
-          </div>
-          <div className="text-[11px] text-muted-foreground">
-            Соединений: <b className="text-foreground">{filteredConns.length}</b> · ↓ {fmtBytes(totals.d)} · ↑ {fmtBytes(totals.u)}
-          </div>
-          {conns === null ? (
-            <p className="text-[11px] text-muted-foreground">Получаю данные ядра…</p>
-          ) : filteredConns.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">Подходящих соединений сейчас нет.</p>
-          ) : (
-            <div className="max-h-72 overflow-auto rounded-lg border border-border/40">
-              <table className="w-full text-[11px]">
-                <thead className="sticky top-0 bg-background/90 text-muted-foreground">
-                  <tr>
-                    <th className="px-2 py-1 text-left font-medium">Процесс</th>
-                    <th className="px-2 py-1 text-left font-medium">Адрес</th>
-                    <th className="px-2 py-1 text-left font-medium">Тип</th>
-                    <th className="px-2 py-1 text-left font-medium">Маршрут</th>
-                    <th className="px-2 py-1 text-right font-medium">Скорость</th>
-                    <th className="px-2 py-1 text-right font-medium">Трафик</th>
-                    <th className="px-2 py-1 text-right font-medium">Время</th>
-                    <th className="w-6" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredConns.slice(0, 300).map((c) => {
-                    const sp = speeds.get(c.id)
-                    return (
-                      <tr key={c.id} className="border-t border-border/30">
-                        <td className="max-w-[9rem] truncate px-2 py-0.5 font-mono font-semibold">{c.process || '—'}</td>
-                        <td className="max-w-[14rem] truncate px-2 py-0.5 font-mono" title={c.rule}>
-                          {c.host}:{c.port}
-                        </td>
-                        <td className="px-2 py-0.5 uppercase">{c.network}</td>
-                        <td className={cn('px-2 py-0.5 font-semibold', routeClass(c.route))}>{c.route}</td>
-                        <td className="px-2 py-0.5 text-right tabular-nums">{sp ? fmtRate(sp.d + sp.u) : '—'}</td>
-                        <td className="px-2 py-0.5 text-right tabular-nums">
-                          ↓{fmtBytes(c.download)} ↑{fmtBytes(c.upload)}
-                        </td>
-                        <td className="px-2 py-0.5 text-right tabular-nums">{c.start ? fmtDur(Date.now() - c.start) : '—'}</td>
-                        <td className="px-1 py-0.5">
-                          <button
-                            type="button"
-                            title="Закрыть соединение"
-                            onClick={() => void closeConn(c.id)}
-                            className="text-muted-foreground hover:text-destructive cursor-pointer"
-                          >
-                            <X className="size-3" />
-                          </button>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+        // Та же таблица, что в INCY → «Статистика» (одна реализация): правила для адреса, пауза,
+        // фильтр «только приложения из списка». Опрос идёт, только пока эта вкладка открыта.
+        <ConnectionsPanel appList={apps} />
       )}
 
       {active && leaks.length > 0 && (
@@ -430,15 +300,15 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
         </div>
       )}
 
-      <div className="flex items-center justify-between gap-2 border-t border-border/40 pt-2">
-        <span className="text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between gap-2 border-t border-foreground/[0.07] pt-3">
+        <span className="text-[12px] text-muted-foreground">
           Проверка: с какого IP выходят приложения из списка и все остальные.
         </span>
         <button
           type="button"
           onClick={() => void runCheck()}
           disabled={checking}
-          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border/60 px-2 py-1 text-[11px] font-semibold text-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-60 cursor-pointer"
+          className="inline-flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-foreground/[0.1] bg-foreground/[0.04] px-3 text-[12px] font-semibold text-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-60"
         >
           {checking && <Loader2 className="size-3 animate-spin" />}
           Проверить ExitLag
@@ -463,16 +333,16 @@ const ExitLagTrafficCard: React.FC<Props> = ({ apps, active, mode, onAddApp, onR
             <span>{check.message}</span>
           </div>
           <div className="font-mono text-muted-foreground">
-            не из списка: {check.outside.ip ?? '—'} {check.outside.country ? `· ${check.outside.country}` : ''}
+            не из списка: <span data-sensitive="ip">{check.outside.ip ?? '—'}</span> {check.outside.country ? `· ${check.outside.country}` : ''}
             {check.outside.isp ? ` · ${check.outside.isp}` : ''}
           </div>
           <div className="font-mono text-muted-foreground">
-            из списка: {check.listed.ip ?? '—'} {check.listed.country ? `· ${check.listed.country}` : ''}
+            из списка: <span data-sensitive="ip">{check.listed.ip ?? '—'}</span> {check.listed.country ? `· ${check.listed.country}` : ''}
             {check.listed.isp ? ` · ${check.listed.isp}` : ''}
           </div>
         </div>
       )}
-    </div>
+    </LzPanel>
   )
 }
 

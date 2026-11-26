@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { ArrowRight, ChevronDown, Download, ExternalLink, History, Loader2, RefreshCw, Sparkles, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import ZapretIcon from '@renderer/components/zapret-icon'
-import TelegramIcon from '@renderer/components/telegram-icon'
+import { TelegramBrandIcon as TelegramIcon } from '@renderer/components/service-icons'
 import { ReleaseBody } from '@renderer/components/update-window'
 import { cn } from '@renderer/lib/utils'
 import {

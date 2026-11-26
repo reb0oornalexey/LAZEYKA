@@ -19,6 +19,10 @@ function useBgActive(enabled: boolean, animate: boolean, pauseOnBlur: boolean): 
   const [focused, setFocused] = useState(() => document.hasFocus())
   useEffect(() => {
     if (!enabled) return
+    // Пока слушателей не было (фон был статичным), фокус и видимость могли смениться —
+    // берём текущие значения, иначе видео могло не запуститься до следующего переключения окна.
+    setVisible(document.visibilityState !== 'hidden')
+    setFocused(document.hasFocus())
     const onVis = (): void => setVisible(document.visibilityState !== 'hidden')
     const onFocus = (): void => setFocused(true)
     const onBlur = (): void => setFocused(false)

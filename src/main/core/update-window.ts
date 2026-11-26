@@ -10,7 +10,8 @@
  * Рендерер тот же (index.html), маршрут — `#/update-window`: main.tsx
  * рисует для него только окно обновления, без сайдбара и сторов.
  */
-import { BrowserWindow, nativeTheme, shell } from 'electron'
+import { BrowserWindow, nativeTheme } from 'electron'
+import { hardenAppWindow } from '../utils/safe-open'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import icon from '../../../resources/icon.png?asset'
@@ -62,7 +63,7 @@ export function openUpdateSplash(): void {
       webPreferences: {
         preload: join(__dirname, '../preload/index.js'),
         spellcheck: false,
-        sandbox: false
+        sandbox: true
       }
     })
     const w = win
@@ -70,10 +71,8 @@ export function openUpdateSplash(): void {
     w.on('closed', () => {
       if (win === w) win = null
     })
-    w.webContents.setWindowOpenHandler((details) => {
-      void shell.openExternal(details.url)
-      return { action: 'deny' }
-    })
+    // Ссылки из заметок к релизам и т. п. — только http/https; переход окна на чужой адрес запрещён.
+    hardenAppWindow(w)
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
       void w.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#${ROUTE}`)
     } else {

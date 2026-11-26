@@ -1,10 +1,8 @@
 import React, { useMemo, useState } from 'react'
-import { Shuffle, ChevronDown, ChevronUp } from 'lucide-react'
-import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
-import { Badge } from '@renderer/components/ui/badge'
+import { Shuffle, ChevronDown, ChevronUp, Sparkles } from 'lucide-react'
+import { Rows, SettingsGroup, SwitchRow } from '@renderer/components/settings/setting-row'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { Switch } from '@renderer/components/ui/switch'
 import { cn } from '@renderer/lib/utils'
 import type { IncyNode, IncySettings } from '@renderer/utils/ipc'
 
@@ -50,7 +48,6 @@ export default function AutoSelectCard({ settings, nodes, onPatch, className }: 
     () => nodes.filter((n) => !autoExcludeReason(n, settings)).length,
     [nodes, settings]
   )
-  const anyOn = Boolean(settings?.autoFailover || settings?.routeAutoConnectBest)
   const excluded = new Set(settings?.autoSelectExcludedKeys ?? [])
 
   const toggleNode = (n: IncyNode, allow: boolean): void => {
@@ -64,63 +61,45 @@ export default function AutoSelectCard({ settings, nodes, onPatch, className }: 
   const visible = nodes.filter((n) => !filter || n.name.toLowerCase().includes(filter.toLowerCase()))
 
   return (
-    <Card className={cn('cyber-card border-primary/30', className)}>
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-sm font-bold flex items-center gap-2">
-            <Shuffle className="h-4 w-4 text-primary" />
-            Автовыбор узла
-            <Badge
-              className={cn(
-                'text-[9px] px-1.5 py-0 font-mono',
-                anyOn
-                  ? 'bg-st-ok/20 text-st-ok-text border border-st-ok/30'
-                  : 'bg-muted text-muted-foreground'
-              )}
-            >
-              {anyOn ? 'ВКЛ' : 'ВЫКЛ'}
-            </Badge>
-          </CardTitle>
-          <span className="text-[10px] text-muted-foreground font-mono">
-            разрешено {allowedCount} из {nodes.length}
-          </span>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-2.5">
-        <label className="flex items-center justify-between gap-3 cursor-pointer">
-          <span className="text-[11px] leading-snug">
-            <span className="font-semibold text-foreground block">Автопереключение при сбое узла</span>
-            <span className="text-muted-foreground">
-              Если узел начал рвать соединения или DNS через него молчит — LAZEYKA сама найдёт рабочий узел и
-              переключится.
-            </span>
-          </span>
-          <Switch checked={Boolean(settings?.autoFailover)} onCheckedChange={(v) => void onPatch({ autoFailover: v })} />
-        </label>
-        <label className="flex items-center justify-between gap-3 cursor-pointer">
-          <span className="text-[11px] leading-snug">
-            <span className="font-semibold text-foreground block">Подключаться к лучшему после замера</span>
-            <span className="text-muted-foreground">После замера пинга в INCY или оптимизатора ExitLag — переход на заметно более быстрый узел.</span>
-          </span>
-          <Switch
-            checked={Boolean(settings?.routeAutoConnectBest)}
-            onCheckedChange={(v) => void onPatch({ routeAutoConnectBest: v })}
-          />
-        </label>
-
+    <SettingsGroup
+      title="Автовыбор узла"
+      hint="Какие узлы VPN программа может выбирать сама: при сбое узла и после замера пинга."
+      sub={`Разрешено ${allowedCount} из ${nodes.length}`}
+      className={className}
+    >
+      <Rows>
+        <SwitchRow
+          id="auto-failover"
+          icon={<Shuffle />}
+          title="Автопереключение при сбое узла"
+          desc="Если узел начал рвать соединения или DNS через него молчит, LAZEYKA сама найдёт рабочий узел и переключится."
+          checked={Boolean(settings?.autoFailover)}
+          onChange={(v) => void onPatch({ autoFailover: v })}
+        />
+        <SwitchRow
+          id="route-autoconnect-best"
+          data-tour="optimizer-autoconnect"
+          icon={<Sparkles />}
+          title="Подключаться к лучшему после замера"
+          desc="После замера пинга в INCY или в оптимизаторе — переход на заметно более быстрый узел из разрешённых. Выключено — только подсказка."
+          checked={Boolean(settings?.routeAutoConnectBest)}
+          onChange={(v) => void onPatch({ routeAutoConnectBest: v })}
+        />
+      </Rows>
+      <div className="px-3 pt-1 pb-2">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="w-full flex items-center justify-between text-[11px] font-semibold text-primary pt-1 border-t border-border/40 cursor-pointer"
+          className="flex w-full cursor-pointer items-center justify-between rounded-xl border border-foreground/[0.08] bg-foreground/[0.03] px-3 py-2 text-[12.5px] font-semibold text-foreground transition-colors hover:border-primary/40"
         >
           <span>Какие узлы можно выбирать автоматически</span>
           {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
         </button>
 
         {open && (
-          <div className="space-y-2">
+          <div className="mt-2 space-y-2">
             <div className="space-y-1">
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-[11.5px] text-muted-foreground">
                 Не выбирать узлы, в названии или описании которых есть (через запятую):
               </span>
               <div className="flex gap-2">
@@ -177,11 +156,11 @@ export default function AutoSelectCard({ settings, nodes, onPatch, className }: 
                   <label
                     key={n.id}
                     className={cn(
-                      'flex items-center justify-between gap-2 rounded-md border px-2 py-1 text-[11px]',
-                      reason ? 'border-border/40 opacity-60' : 'border-border/60'
+                      'flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-[12px]',
+                      reason ? 'border-foreground/[0.06] opacity-60' : 'border-foreground/[0.1]'
                     )}
                   >
-                    <span className="truncate">
+                    <span data-sensitive="node" className="truncate">
                       {n.name}
                       {reason && <span className="ml-1.5 text-[9px] text-st-warn-text">({reason})</span>}
                     </span>
@@ -202,7 +181,7 @@ export default function AutoSelectCard({ settings, nodes, onPatch, className }: 
             </div>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </SettingsGroup>
   )
 }

@@ -27,14 +27,17 @@ const handleIpcPayload = (log: ControllerLog): void => {
 }
 
 let ipcListener: ((event: unknown, payload: ControllerLog) => void) | null = null
+// Отписка — функцией, которую вернул on(): removeListener через мост не находит слушателя.
+let offIpc: (() => void) | null = null
 
 export const attachLogsStore = (): (() => void) => {
   window.electron.ipcRenderer.removeAllListeners('log')
   ipcListener = (_event, payload): void => handleIpcPayload(payload)
-  window.electron.ipcRenderer.on('log', ipcListener)
+  offIpc = window.electron.ipcRenderer.on('log', ipcListener)
   return (): void => {
     if (ipcListener) {
-      window.electron.ipcRenderer.removeListener('log', ipcListener)
+      offIpc?.()
+      offIpc = null
       ipcListener = null
     }
   }

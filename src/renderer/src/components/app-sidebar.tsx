@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useUnreadCount } from '@renderer/store/hub-store'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useTheme } from 'next-themes'
@@ -15,23 +16,31 @@ import {
   Target,
   Palette,
   ShieldCheck,
-  Sparkles
+  Sparkles,
+  Crosshair,
+  SlidersHorizontal,
+  EyeOff,
+  Network,
+  Stethoscope,
+  Send,
+  Crown
 } from 'lucide-react'
 import ZapretIcon from '@renderer/components/zapret-icon'
-import TelegramIcon from '@renderer/components/telegram-icon'
 import logoDark from '@renderer/assets/logo.png'
 import logoLight from '@renderer/assets/logo_white.png'
 import { useZapretStore } from '@renderer/store/zapret-store'
 import { useTgwsStore } from '@renderer/store/tgws-store'
 import { useIncyStore } from '@renderer/store/incy-store'
 import { useOnlineStore } from '@renderer/store/online-store'
+import { useLanEnabled } from '@renderer/components/lan/use-lan-enabled'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
-import { platform, version } from '@renderer/utils/init'
+import { linuxUnavailableRoutes, platform, version } from '@renderer/utils/init'
 import { NavItem, BrandText } from '@renderer/components/app-chrome'
 import { AppVersionButton } from '@renderer/components/changelog-dialog'
 import { cn, pluralRu } from '@renderer/lib/utils'
+import { useAuthorState } from '@renderer/components/hub/use-author'
 
-type Service = 'zapret' | 'tgws' | 'incy' | 'exitlag' | null
+type Service = 'zapret' | 'tgws' | 'incy' | 'exitlag' | 'lan' | null
 
 interface NavItem {
   key: string
@@ -41,14 +50,18 @@ interface NavItem {
   service: Service
 }
 
-/** Меню по группам — как в концепции «Графит». */
+/**
+ * Меню по группам — как в концепции «Графит».
+ * Все пункты меню — одноцветные значки lucide, чтобы меню выглядело единообразно
+ * (фирменные цветные значки — только внутри разделов).
+ */
 const groups: { title: string | null; items: NavItem[] }[] = [
   { title: null, items: [{ key: 'home', path: '/home', icon: HomeIcon, label: 'Главная', service: null }] },
   {
     title: 'Обход блокировок',
     items: [
       { key: 'zapret', path: '/zapret', icon: ZapretIcon, label: 'Zapret', service: 'zapret' },
-      { key: 'telegram', path: '/telegram', icon: TelegramIcon, label: 'Telegram', service: 'tgws' },
+      { key: 'telegram', path: '/telegram', icon: Send, label: 'Telegram', service: 'tgws' },
       { key: 'dns', path: '/dns', icon: ShieldCheck, label: 'DNS', service: null }
     ]
   },
@@ -56,8 +69,23 @@ const groups: { title: string | null; items: NavItem[] }[] = [
     title: 'VPN',
     items: [
       { key: 'incy', path: '/incy', icon: Globe, label: 'INCY Proxy', service: 'incy' },
-      { key: 'exitlag', path: '/exitlag', icon: Gamepad2, label: 'ExitLag', service: 'exitlag' },
-      { key: 'optimizer', path: '/optimizer', icon: Target, label: 'Оптимизатор', service: null }
+      { key: 'exitlag', path: '/exitlag', icon: Gamepad2, label: 'ExitLag', service: 'exitlag' }
+    ]
+  },
+  {
+    title: 'Игры',
+    items: [
+      { key: 'prematch', path: '/prematch', icon: Crosshair, label: 'Перед каткой', service: null },
+      { key: 'optimizer', path: '/optimizer', icon: Target, label: 'Оптимизатор', service: null },
+      { key: 'tweaks', path: '/tweaks', icon: SlidersHorizontal, label: 'Твики', service: null },
+      { key: 'streamer', path: '/streamer', icon: EyeOff, label: 'Стример', service: null }
+    ]
+  },
+  {
+    title: 'Сеть',
+    items: [
+      { key: 'diagnostics', path: '/diagnostics', icon: Stethoscope, label: 'Диагностика', service: null },
+      { key: 'lan', path: '/lan', icon: Network, label: 'Локальная сеть', service: 'lan' }
     ]
   },
   {
@@ -72,6 +100,9 @@ const groups: { title: string | null; items: NavItem[] }[] = [
     ]
   }
 ]
+
+/** «Админка»: сразу после «Главной», только при привязке режима автора. */
+const ADMIN_ITEM: NavItem = { key: 'admin', path: '/admin', icon: Crown, label: 'Админка', service: null }
 
 const STORAGE_KEY = 'lazeyka.sidebarCollapsed'
 
@@ -92,6 +123,15 @@ function readCollapsed(): boolean {
 const AppSidebar: React.FC = () => {
   const { t } = useTranslation()
   const location = useLocation()
+  const unread = useUnreadCount()
+  const authorPaired = Boolean(useAuthorState()?.paired)
+  const platformGroups = platform === 'linux'
+    ? groups.map((group) => ({ ...group, items: group.items.filter((item) => !linuxUnavailableRoutes.has(item.path)) }))
+      .filter((group) => group.items.length > 0)
+    : groups
+  const navGroups = authorPaired
+    ? platformGroups.map((group, index) => (index === 0 ? { ...group, items: [...group.items, ADMIN_ITEM] } : group))
+    : platformGroups
   const navigate = useNavigate()
   const { resolvedTheme } = useTheme()
   const logoSrc = resolvedTheme === 'light' ? logoLight : logoDark
@@ -105,26 +145,21 @@ const AppSidebar: React.FC = () => {
     }
   }, [collapsed])
 
-  const zapretRunning = useZapretStore((s) => s.status.state === 'running')
-  const tgwsRunning = useTgwsStore((s) => s.status.state === 'running')
-  const incyRunning = useIncyStore((s) => s.status.state === 'running')
-  // ExitLag «работает», только когда ядро подтвердило сессию с белым списком.
-  const exitLagRunning = useIncyStore((s) => s.status.state === 'running' && Boolean(s.status.exitLagActive))
+  const zapret = useZapretStore((s) => s.status.state)
+  const tgws = useTgwsStore((s) => s.status.state)
+  const incy = useIncyStore((s) => s.status.state)
+  const exitLag = useIncyStore((s) => s.status.state === 'running' && Boolean(s.status.exitLagActive))
+  const lan = useLanEnabled()
+  const serviceStates: Record<Exclude<Service, null>, CoreStatusState> = {
+    zapret, tgws, incy: incy === 'connecting' ? 'starting' : incy, exitlag: exitLag ? 'running' : 'stopped', lan: lan ? 'running' : 'stopped'
+  }
+  const stateLabels: Record<CoreStatusState, string> = {
+    stopped: 'выключена', starting: 'запускается', running: 'работает', stopping: 'останавливается', error: 'ошибка'
+  }
 
   const { appConfig } = useAppConfig()
   const online = useOnlineStore((st) => st.stats?.online ?? null)
   const showOnline = appConfig?.onlineStats !== false && online != null && online > 0
-
-  const isRunning = (service: Service): boolean =>
-    service === 'zapret'
-      ? zapretRunning
-      : service === 'tgws'
-        ? tgwsRunning
-        : service === 'incy'
-          ? incyRunning
-          : service === 'exitlag'
-            ? exitLagRunning
-            : false
 
   return (
     <aside
@@ -173,13 +208,13 @@ const AppSidebar: React.FC = () => {
       )}
 
       <nav className={cn('flex-1 overflow-y-auto overflow-x-hidden pb-2 no-scrollbar', collapsed ? 'px-2' : 'px-2.5')}>
-        {groups.map((g, gi) => (
-          <div key={gi} className={gi === 0 ? 'pt-1' : 'pt-3'}>
+        {navGroups.map((g, gi) => (
+          <div key={gi} className={gi === 0 ? 'pt-1' : 'pt-1.5'}>
             {g.title &&
               (collapsed ? (
                 <div className="mx-2 mb-2 h-px bg-sidebar-border" />
               ) : (
-                <div className="mb-1 px-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+                <div className="mb-1 px-2.5 text-[10px] font-semibold text-muted-foreground/70">
                   {g.title}
                 </div>
               ))}
@@ -187,7 +222,8 @@ const AppSidebar: React.FC = () => {
               {g.items.map((item) => {
                 const Icon = item.icon
                 const active = location.pathname.startsWith(item.path)
-                const running = isRunning(item.service)
+                const serviceState = item.service ? serviceStates[item.service] : undefined
+                const count = item.key === 'support' ? unread : 0
                 const label = t(`sider.${item.key}`, { defaultValue: item.label })
                 return (
                   <NavItem
@@ -196,8 +232,10 @@ const AppSidebar: React.FC = () => {
                     label={label}
                     active={active}
                     collapsed={collapsed}
-                    running={running}
-                    title={collapsed ? label : undefined}
+                    serviceState={serviceState}
+                    count={count}
+                    title={count ? `${label}: новых уведомлений ${count}` : serviceState ? `${label}: ${stateLabels[serviceState]}` : collapsed ? label : undefined}
+                    tour={`nav-${item.key}`}
                     onClick={() => navigate(item.path)}
                   />
                 )

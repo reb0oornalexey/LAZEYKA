@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Check, Loader2, RotateCcw } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
@@ -129,9 +129,9 @@ const GamePortsEditor: React.FC<Props> = ({ disabled = false, mode, onModeChange
   const off = disabled || !!busy
 
   return (
-    <div className="mt-3 space-y-2.5 rounded-xl border border-border/60 bg-background/30 p-3">
+    <div className="mt-2 space-y-2.5 rounded-xl border border-foreground/[0.08] bg-foreground/[0.03] p-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">Только для своих игр</span>
+        <span className="text-[12.5px] font-semibold text-foreground">Только для своих игр</span>
         <span className="text-[11px] text-muted-foreground">
           {custom ? 'Сейчас: свои порты' : 'Сейчас: все порты 1024-65535'}
         </span>
@@ -151,8 +151,8 @@ const GamePortsEditor: React.FC<Props> = ({ disabled = false, mode, onModeChange
               onClick={() => togglePreset(p.id)}
               title={`${p.hint ?? ''}${p.tcp ? `\nTCP: ${p.tcp}` : ''}${p.udp ? `\nUDP: ${p.udp}` : ''}`}
               className={cn(
-                'inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition',
-                active ? 'border-primary bg-primary/10 text-foreground' : 'border-border text-muted-foreground hover:bg-accent/30',
+                'inline-flex h-7 cursor-pointer items-center gap-1 rounded-lg border px-2.5 text-[11.5px] font-semibold transition-colors',
+                active ? 'border-primary/50 bg-primary/12 text-primary' : 'border-foreground/[0.1] text-muted-foreground hover:border-primary/40 hover:text-foreground',
                 off && 'pointer-events-none opacity-50'
               )}
             >
@@ -201,7 +201,7 @@ const GamePortsEditor: React.FC<Props> = ({ disabled = false, mode, onModeChange
       <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
-          className="h-8 rounded-xl text-xs gap-1.5"
+          className="h-8 rounded-lg text-xs gap-1.5"
           disabled={off || !dirty || !tcpValid || !udpValid}
           onClick={() => { void apply(false) }}
         >
@@ -211,7 +211,7 @@ const GamePortsEditor: React.FC<Props> = ({ disabled = false, mode, onModeChange
         <Button
           size="sm"
           variant="outline"
-          className="h-8 rounded-xl text-xs gap-1.5"
+          className="h-8 rounded-lg text-xs gap-1.5"
           disabled={off || (!custom && !dirty)}
           onClick={() => { void apply(true) }}
         >

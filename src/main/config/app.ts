@@ -1,14 +1,21 @@
 import { readFile, writeFile, rename, copyFile, unlink } from 'fs/promises'
-import { appConfigPath } from '../utils/dirs'
+import { appConfigPath, zapretBundleDir } from '../utils/dirs'
 import { parseYaml, stringifyYaml } from '../utils/yaml'
 import { deepMerge } from '../utils/merge'
 import { defaultConfig, CONFIG_VERSION } from '../utils/template'
 import { readFileSync, existsSync } from 'fs'
 import { enableAutoRun, disableAutoRun } from '../sys/autoRun'
 import { sanitizeAppearance } from '../resolve/appearance'
+import { isAcceptableStrategyValue, listStrategyFiles, validateStrategyName } from '../core/zapret-strategy'
+import { isLinuxZapretStrategy, resolveLinuxStrategy } from '../core/zapret-linux'
 
 let appConfig: AppConfig | undefined
 let writePromise: Promise<void> = Promise.resolve()
+
+/** Отдельная копия умолчаний: сам `defaultConfig` нельзя отдавать наружу. */
+function freshDefaults(): AppConfig {
+  return structuredClone(defaultConfig) as AppConfig
+}
 
 function isValidConfig(c: unknown): c is AppConfig {
   return !!c && typeof c === 'object' && 'appTheme' in (c as object)
@@ -61,13 +68,13 @@ export async function getAppConfig(force = false): Promise<AppConfig> {
       // Основной файл не читается — пробуем копию, и только потом умолчания.
       try {
         const backup = parseYaml<AppConfig>(await readFile(`${appConfigPath()}.backup`, 'utf-8'))
-        appConfig = backup && isValidConfig(backup) ? backup : defaultConfig
+        appConfig = backup && isValidConfig(backup) ? backup : freshDefaults()
       } catch {
-        appConfig = defaultConfig
+        appConfig = freshDefaults()
       }
     }
   }
-  if (!appConfig || typeof appConfig !== 'object') appConfig = defaultConfig
+  if (!appConfig || typeof appConfig !== 'object') appConfig = freshDefaults()
 
   const persistedVersion: number = typeof appConfig.configVersion === 'number'
     ? appConfig.configVersion
@@ -79,7 +86,12 @@ export async function getAppConfig(force = false): Promise<AppConfig> {
 
   // Backfill any missing fields (e.g. tgws/zapret sections from older configs)
   // by merging persisted values *over* the default template.
-  appConfig = deepMerge(defaultConfig, appConfig) as AppConfig
+  // deepMerge чистый, а основа — свежая копия умолчаний: сам defaultConfig
+  // никогда не получает значений пользователя (иначе ломался сброс настроек).
+  appConfig = deepMerge(freshDefaults(), appConfig) as AppConfig
+  if (process.platform === 'linux' && appConfig.zapret) {
+    appConfig.zapret.activeStrategy = resolveLinuxStrategy(appConfig.zapret.activeStrategy)
+  }
 
   if ((appConfig.appTheme as string) !== 'light' && (appConfig.appTheme as string) !== 'dark') {
     appConfig = { ...appConfig, appTheme: 'dark' }
@@ -136,6 +148,27 @@ function notifyConfigChanged(): void {
   }
 }
 
+/**
+ * Стратегия Zapret запускается от администратора, поэтому в настройки
+ * попадает только имя файла из папки стратегий (Windows) или безопасный
+ * идентификатор (macOS). Прежнее значение не перепроверяется — его проверит
+ * сам запуск Zapret, а запись соседних полей не должна из-за него падать.
+ */
+function checkStrategyPatch(patch: Partial<AppConfig>, base: AppConfig): void {
+  const z = (patch as { zapret?: unknown }).zapret
+  if (!z || typeof z !== 'object' || !('activeStrategy' in z)) return
+  const next = (z as { activeStrategy?: unknown }).activeStrategy
+  if (next === undefined || next === null || next === '') return
+  if (next === base.zapret?.activeStrategy) return
+  if (process.platform === 'win32') {
+    validateStrategyName(next, listStrategyFiles(zapretBundleDir()))
+  } else if (!(process.platform === 'linux'
+    ? isLinuxZapretStrategy(next)
+    : isAcceptableStrategyValue(next, process.platform))) {
+    throw new Error('Недопустимое имя стратегии Zapret — выберите стратегию из списка')
+  }
+}
+
 export async function patchAppConfig(patch: Partial<AppConfig>): Promise<void> {
   const previous = writePromise
   const prevAutoLaunch = appConfig?.autoLaunch
@@ -145,7 +178,11 @@ export async function patchAppConfig(patch: Partial<AppConfig>): Promise<void> {
     // Ошибка прошлой записи не должна ломать все следующие: раньше одна
     // неудача (файл занят антивирусом) отравляла цепочку до перезапуска.
     await previous.catch(() => void 0)
-    const next = deepMerge(appConfig ?? defaultConfig, patch)
+    const base = appConfig ?? (await getAppConfig())
+    checkStrategyPatch(patch, base)
+    // deepMerge не меняет аргументы: `base` (текущая память) остаётся прежней,
+    // пока файл не записан. Запись атомарная (временный файл + rename).
+    const next = deepMerge(base, patch)
     await safeWriteConfig(stringifyYaml(next))
     // Память меняем только после успешной записи — иначе они расходились.
     appConfig = next
@@ -183,6 +220,31 @@ export async function patchAppConfig(patch: Partial<AppConfig>): Promise<void> {
       applySkipTaskbar()
     } catch { /* noop */ }
   }
+  await applyE6SideEffects(patch)
+}
+
+/**
+ * Е6: применить сразу то, что зависит от новых настроек: окно (поверх всех,
+ * масштаб), срок хранения логов, подсказку значка в трее. patch не задан —
+ * всё (после сброса настроек).
+ */
+async function applyE6SideEffects(patch?: Partial<AppConfig>): Promise<void> {
+  const has = (k: keyof AppConfig): boolean => !patch || patch[k] !== undefined
+  if (has('windowAlwaysOnTop') || has('windowZoom')) {
+    try {
+      ;(await import('../core/window-prefs')).applyMainWindowPrefs()
+    } catch { /* noop */ }
+  }
+  if (patch && patch.maxLogDays !== undefined) {
+    try {
+      await (await import('../utils/file-logger')).pruneOldLogs(Number(patch.maxLogDays))
+    } catch { /* noop */ }
+  }
+  if (has('trayStatusTooltip')) {
+    try {
+      await (await import('../resolve/tray')).refreshTray()
+    } catch { /* noop */ }
+  }
 }
 
 /**
@@ -199,7 +261,7 @@ export async function resetAppSettings(): Promise<void> {
   const prevAutoLaunch = current.autoLaunch
   const prevDisableTray = current.disableTray
   const prevHideTaskbarIcon = current.hideTaskbarIcon
-  const fresh = structuredClone(defaultConfig) as AppConfig
+  const fresh = freshDefaults()
   fresh.appTheme = current.appTheme
   if (current.appearance) fresh.appearance = current.appearance
   if (current.customTheme) fresh.customTheme = current.customTheme
@@ -236,6 +298,7 @@ export async function resetAppSettings(): Promise<void> {
       applySkipTaskbar()
     } catch { /* noop */ }
   }
+  await applyE6SideEffects()
 }
 
 /**
@@ -259,11 +322,11 @@ export function getAppConfigSync(): AppConfig {
     const data = parseYaml<AppConfig>(raw)
     const value =
       data && typeof data === 'object'
-        ? (deepMerge(defaultConfig, data) as AppConfig)
-        : defaultConfig
+        ? (deepMerge(freshDefaults(), data) as AppConfig)
+        : freshDefaults()
     syncCache = { at: now, value }
     return value
   } catch {
-    return defaultConfig
+    return freshDefaults()
   }
 }

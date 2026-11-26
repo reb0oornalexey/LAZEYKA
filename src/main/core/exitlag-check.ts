@@ -135,7 +135,7 @@ export async function checkExitLag(): Promise<ExitLagCheckResult> {
   const list = normalizePerAppList(settings.perAppProcesses).map((p) => p.toLowerCase())
   const selfName = path.basename(app.getPath('exe')).toLowerCase()
   const selfListed =
-    process.platform === 'darwin'
+    process.platform === 'darwin' || process.platform === 'linux'
       ? list.some((e) => macEntryMatches(e, app.getPath('exe')))
       : list.includes(selfName)
   const nodeId = st.activeNodeId ?? st.selectedNodeId ?? null

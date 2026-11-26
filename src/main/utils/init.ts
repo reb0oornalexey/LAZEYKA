@@ -42,7 +42,7 @@ async function initRuntimeBundles(): Promise<void> {
     // 1. Zapret bundle in %APPDATA%/lazeyka/runtime/zapret
     const zapretDest = zapretRuntimeDir()
     const zapretSrc = path.join(resourcesDir(), 'zapret')
-    if (existsSync(zapretSrc)) {
+    if (process.platform === 'win32' && existsSync(zapretSrc)) {
       const hasGeneral = existsSync(path.join(zapretDest, 'general.bat'))
       const hasLists = existsSync(path.join(zapretDest, 'lists'))
       if (!hasGeneral || !hasLists) {
@@ -70,7 +70,7 @@ async function initRuntimeBundles(): Promise<void> {
     // 2. TGWS headless proxy in %APPDATA%/lazeyka/runtime/tgws
     const tgwsDest = tgwsRuntimeDir()
     const tgwsSrc = path.join(resourcesDir(), 'tgws')
-    if (existsSync(tgwsSrc)) {
+    if (process.platform === 'win32' && existsSync(tgwsSrc)) {
       const tgwsExe = path.join(tgwsDest, 'TgWsProxy_windows.exe')
       if (!existsSync(tgwsExe)) {
         try {
@@ -96,7 +96,7 @@ async function initRuntimeBundles(): Promise<void> {
     const incyDest = incyRuntimeDir()
     const incySrc = path.join(resourcesDir(), 'incy')
     // На macOS ядра запускаются прямо из .app, копия в runtime не нужна.
-    if (existsSync(incySrc) && process.platform !== 'darwin') {
+    if (process.platform === 'win32' && existsSync(incySrc)) {
       for (const file of ['sing-box.exe', 'xray.exe', 'wintun.dll']) {
         const from = path.join(incySrc, file)
         const to = path.join(incyDest, file)
@@ -124,13 +124,11 @@ function initDeeplink(): void {
       app.setAsDefaultProtocolClient('lazeyka', process.execPath, [
         path.resolve(process.argv[1])
       ])
-      app.setAsDefaultProtocolClient('tg-ws', process.execPath, [
-        path.resolve(process.argv[1])
-      ])
     }
   } else {
     app.setAsDefaultProtocolClient('lazeyka')
-    app.setAsDefaultProtocolClient('tg-ws')
+    // Схема tg-ws:// нигде не обрабатывалась — снимаем её регистрацию, оставшуюся от прошлых версий.
+    if (app.isDefaultProtocolClient('tg-ws')) app.removeAsDefaultProtocolClient('tg-ws')
   }
 }
 
@@ -139,4 +137,4 @@ export async function init(): Promise<void> {
   await initRuntimeBundles()
   await initConfig()
   initDeeplink()
-}
+}

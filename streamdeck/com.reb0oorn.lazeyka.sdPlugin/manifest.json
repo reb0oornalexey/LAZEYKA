@@ -1,0 +1,69 @@
+{
+  "SDKVersion": 2,
+  "Name": "LAZEYKA",
+  "Version": "1.1.0.0",
+  "Author": "reb0oorn",
+  "Description": "Управление LAZEYKA с кнопок Stream Deck: VPN, Zapret, Telegram-прокси, ExitLag и сценарии. Кнопки открывают ссылки lazeyka://, программа должна быть установлена.",
+  "Category": "LAZEYKA",
+  "CategoryIcon": "imgs/plugin/category",
+  "Icon": "imgs/plugin/icon",
+  "CodePath": "plugin/index.html",
+  "URL": "https://github.com/reb0oorn",
+  "OS": [
+    { "Platform": "windows", "MinimumVersion": "10" },
+    { "Platform": "mac", "MinimumVersion": "12" }
+  ],
+  "Software": { "MinimumVersion": "6.4" },
+  "Actions": [
+    {
+      "UUID": "com.reb0oorn.lazeyka.vpn",
+      "Name": "VPN (INCY)",
+      "Tooltip": "Подключить, отключить или переключить VPN.",
+      "Icon": "imgs/actions/vpn/icon",
+      "PropertyInspectorPath": "propertyinspector/mode.html",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "States": [{ "Image": "imgs/actions/vpn/key", "ShowTitle": false }]
+    },
+    {
+      "UUID": "com.reb0oorn.lazeyka.zapret",
+      "Name": "Zapret",
+      "Tooltip": "Включить, выключить или переключить Zapret.",
+      "Icon": "imgs/actions/zapret/icon",
+      "PropertyInspectorPath": "propertyinspector/mode.html",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "States": [{ "Image": "imgs/actions/zapret/key", "ShowTitle": false }]
+    },
+    {
+      "UUID": "com.reb0oorn.lazeyka.telegram",
+      "Name": "Telegram-прокси",
+      "Tooltip": "Включить, выключить или переключить Telegram-прокси.",
+      "Icon": "imgs/actions/telegram/icon",
+      "PropertyInspectorPath": "propertyinspector/mode.html",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "States": [{ "Image": "imgs/actions/telegram/key", "ShowTitle": false }]
+    },
+    {
+      "UUID": "com.reb0oorn.lazeyka.exitlag",
+      "Name": "ExitLag",
+      "Tooltip": "Включить, выключить или переключить режим ExitLag (VPN только для игр из списка).",
+      "Icon": "imgs/actions/exitlag/icon",
+      "PropertyInspectorPath": "propertyinspector/mode.html",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "States": [{ "Image": "imgs/actions/exitlag/key", "ShowTitle": false }]
+    },
+    {
+      "UUID": "com.reb0oorn.lazeyka.scenario",
+      "Name": "Сценарий",
+      "Tooltip": "Применить сценарий LAZEYKA по его идентификатору.",
+      "Icon": "imgs/actions/scenario/icon",
+      "PropertyInspectorPath": "propertyinspector/scenario.html",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "States": [{ "Image": "imgs/actions/scenario/key", "ShowTitle": false }]
+    }
+  ]
+}

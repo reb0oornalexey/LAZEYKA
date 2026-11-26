@@ -54,6 +54,7 @@ const WindowControls: React.FC = () => {
   const closeBtn = (
     <button
       key="close"
+      type="button" aria-label="Закрыть" title="Закрыть"
       className={`wc-btn wc-close${suppressHover === 'close' ? ' wc-suppress-hover' : ''}`}
       onClick={handleClose}
       onPointerLeave={clearSuppressed}
@@ -73,6 +74,7 @@ const WindowControls: React.FC = () => {
   const minimizeBtn = (
     <button
       key="minimize"
+      type="button" aria-label="Свернуть" title="Свернуть"
       className={`wc-btn wc-minimize${suppressHover === 'minimize' ? ' wc-suppress-hover' : ''}`}
       onClick={handleMinimize}
       onPointerLeave={clearSuppressed}
@@ -85,7 +87,7 @@ const WindowControls: React.FC = () => {
   )
 
   const maximizeBtn = (
-    <button key="maximize" className="wc-btn wc-maximize" onClick={handleMaximize}>
+    <button type="button" aria-label={isMaximized ? "Восстановить" : "Развернуть"} title={isMaximized ? "Восстановить" : "Развернуть"} key="maximize" className="wc-btn wc-maximize" onClick={handleMaximize}>
       {isMaximized ? (
         <svg viewBox="0 0 10 10" fill="none">
           <path

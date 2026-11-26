@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useRoutes } from 'react-router-dom'
+import { useNavigate, useRoutes } from 'react-router-dom'
 import { toast } from 'sonner'
 import './i18n'
 import routes from '@renderer/routes'
@@ -7,16 +7,20 @@ import { useAppConfig } from '@renderer/hooks/use-app-config'
 import { readThemeCss } from '@renderer/utils/ipc'
 import { setCustomThemeCss } from '@renderer/lib/appearance/apply'
 import { useAppearanceSync } from '@renderer/hooks/use-appearance-sync'
+import { useStartRoute } from '@renderer/hooks/use-start-route'
 import { AppBackground } from '@renderer/components/appearance/background-layer'
 import AppSidebar from '@renderer/components/app-sidebar'
 import MacServiceDialog from '@renderer/components/mac-service-dialog'
 import ZapretMacDialog from '@renderer/components/zapret-mac-dialog'
+import FeatureTour from '@renderer/components/feature-tour'
 import { attachLogsStore } from '@renderer/store/logs-store'
 import { attachTgwsStore } from '@renderer/store/tgws-store'
 import { attachZapretStore } from '@renderer/store/zapret-store'
 import { attachZapretTestStore } from '@renderer/store/zapret-test-store'
 import { attachIncyStore } from '@renderer/store/incy-store'
 import { attachOnlineStore } from '@renderer/store/online-store'
+import { initPrematchListeners } from '@renderer/store/prematch-store'
+import { initStreamerMode } from '@renderer/store/streamer-store'
 import { copyText, insertIntoField, isEditableField, readClipboardText } from '@renderer/utils/clipboard-field'
 
 const App: React.FC = () => {
@@ -24,6 +28,20 @@ const App: React.FC = () => {
   const { customTheme } = appConfig || {}
   useAppearanceSync()
   const page = useRoutes(routes)
+  const navigate = useNavigate()
+  // Е6: при запуске открыть последний раздел, если так выбрано в «Настройках».
+  useStartRoute(appConfig?.startPage, Boolean(appConfig))
+
+  // Main просит открыть страницу (горячая клавиша, мини-окно).
+  useEffect(() => {
+    const onNavigate = (_e: unknown, path: string): void => {
+      if (typeof path === 'string' && path.startsWith('/')) navigate(path)
+    }
+    window.electron.ipcRenderer.on('app:navigate', onNavigate)
+    return () => {
+      window.electron.ipcRenderer.removeAllListeners('app:navigate')
+    }
+  }, [navigate])
 
   useEffect(() => {
     const d1 = attachLogsStore()
@@ -32,6 +50,9 @@ const App: React.FC = () => {
     const d4 = attachZapretTestStore()
     const d5 = attachIncyStore()
     const d6 = attachOnlineStore()
+    // Сигнал о лагах должен звучать на любой вкладке, а не только на «Перед каткой».
+    initPrematchListeners()
+    initStreamerMode()
     return () => {
       d1()
       d2()
@@ -129,9 +150,10 @@ const App: React.FC = () => {
       {/* macOS: кнопки окна — родные «светофоры» системы (titleBarStyle: 'hidden'),
           свои поверх них не рисуем — иначе две пары наезжают на логотип. */}
       <AppSidebar />
-      <div className="relative z-10 main min-w-0 grow h-full overflow-y-auto">{page}</div>
+      <div className="relative z-10 main min-w-0 grow h-full overflow-clip">{page}</div>
       <MacServiceDialog />
       <ZapretMacDialog />
+      <FeatureTour />
     </div>
   )
 }

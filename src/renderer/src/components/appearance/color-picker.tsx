@@ -26,13 +26,24 @@ const toHsva = (value: string, prev?: HSVA): HSVA => {
   return h
 }
 
+const CHECKER = 'linear-gradient(45deg, #c8c8c8 25%, transparent 25%, transparent 75%, #c8c8c8 75%)'
+
+/**
+ * Образец цвета. Цвет и шахматка (она нужна только для прозрачных цветов) рисуются ОДНИМ
+ * элементом, слоями фона: цвет — верхний слой. Раньше шахматка была фоном внешнего элемента,
+ * а цвет — вложенным; по сглаженному краю скругления просвечивала светлая клетка, и у тёмных
+ * цветов появлялась белая рамка (у светлых её не видно).
+ */
 const Swatch: React.FC<{ color: string; className?: string }> = ({ color, className }) => (
-  // Шахматка (для прозрачных цветов) просвечивала по сглаженному краю
-  // скругления — у тёмных цветов вокруг образца появлялась светлая рамка.
-  // Цветной слой чуть шире и рисуется поверх с тем же скруглением.
-  <span className={cn('cp-checker relative block overflow-hidden rounded-md [isolation:isolate]', className)}>
-    <span className="absolute -inset-px" style={{ background: color }} />
-  </span>
+  <span
+    className={cn('block rounded-md', className)}
+    style={{
+      backgroundColor: '#ffffff',
+      backgroundImage: `linear-gradient(${color}, ${color}), ${CHECKER}, ${CHECKER}`,
+      backgroundSize: '100% 100%, 8px 8px, 8px 8px',
+      backgroundPosition: '0 0, 0 0, 4px 4px'
+    }}
+  />
 )
 
 interface PickerProps {

@@ -26,6 +26,8 @@ export const useZapretTestStore = create<ZapretTestStore>((set) => ({
 }))
 
 let listener: ((event: unknown, payload: StrategyTestProgress) => void) | null = null
+// Отписка — функцией, которую вернул on(): removeListener через мост не находит слушателя.
+let offIpc: (() => void) | null = null
 let lastToastedRanAt: number | null = null
 
 export const attachZapretTestStore = (): (() => void) => {
@@ -73,7 +75,7 @@ export const attachZapretTestStore = (): (() => void) => {
       })
     }
   }
-  window.electron.ipcRenderer.on('zapret:testProgress', listener)
+  offIpc = window.electron.ipcRenderer.on('zapret:testProgress', listener)
 
   // Hydrate initial state. If a sweep is currently running we mark
   // isRunning=true so the strategies card is locked out immediately
@@ -91,7 +93,8 @@ export const attachZapretTestStore = (): (() => void) => {
 
   return () => {
     if (listener) {
-      window.electron.ipcRenderer.removeListener('zapret:testProgress', listener)
+      offIpc?.()
+      offIpc = null
       listener = null
     }
   }

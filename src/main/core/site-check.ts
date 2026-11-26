@@ -20,8 +20,9 @@ import path from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { physicalSourceIp, socksConnect, startTempCore, withCoreSlot, type TempCore } from './core-probe'
-import { getIncyStatus, loadIncyNodes, appendLog } from './incy-engine'
-import { zapretBundleDir } from '../utils/dirs'
+import { getIncyStatus, loadIncyNodes, loadIncySettings, appendLog } from './incy-engine'
+import { chainEligibility, getChainSession, planTopology } from './incy-topology'
+import { isXrayAvailable, zapretBundleDir } from '../utils/dirs'
 import { getZapretStatus } from './zapret'
 import { describeSystemDns } from './dns-doh'
 
@@ -69,20 +70,25 @@ export interface PageHost {
   /** Запросы, которые так и не завершились за время проверки. */
   hanging: number
   maxMs: number
-  /** Блокировал ли домен отрисовку (запросы до готовности документа). */
+  /** Запрос к домену начался до готовности документа. */
   early: boolean
+  standardHttps: boolean
 }
 
 export interface SiteCheckResult {
   url: string
   host: string
   pageLoadMs: number | null
+  documentMs: number | null
+  pageStatusCode: number | null
   pageTimedOut: boolean
   pageError?: string
   pageHosts: PageHost[]
   probes: HostProbe[]
   zapretRunning: boolean
   vpnNode?: string
+  vpnRoute?: 'chain' | 'single'
+  probeNote?: string
   viaTunnel: boolean
   verdict: string[]
 }
@@ -433,7 +439,7 @@ async function probeDirect(host: string, src: string | undefined, sysDns: SysDns
 
   // DNS: системный ответ и контрольный (DoH) — параллельно.
   const hostsIp = hostsEntries().get(host.toLowerCase())
-  let t0 = performance.now()
+  const t0 = performance.now()
   const [sys, pubList] = await Promise.all([
     withTimeout(dns.promises.lookup(host, { family: 4, all: true }), STEP_TIMEOUT_MS, 'DNS').then(
       (r) => ({ ips: r.map((x) => x.address), err: null as null | { code?: string; message: string } }),
@@ -568,23 +574,28 @@ async function probeDirect(host: string, src: string | undefined, sysDns: SysDns
 /** Время до TLS-рукопожатия через узел VPN (одно временное ядро на все домены). */
 async function probeViaVpn(tc: TempCore, host: string): Promise<{ ms: number | null; error?: string }> {
   const t0 = performance.now()
+  let socket: net.Socket | undefined
+  let stage = 'SOCKS'
   try {
     const raw = await socksConnect(tc.port, host, 443, STEP_TIMEOUT_MS)
+    socket = raw
+    stage = 'TLS'
     await withTimeout(
       new Promise<void>((resolve, reject) => {
-        const t = tls.connect({ socket: raw, servername: host, ALPNProtocols: ['http/1.1'], rejectUnauthorized: false })
-        t.once('secureConnect', () => {
-          t.destroy()
-          resolve()
-        })
-        t.once('error', reject)
+        const tlsSocket = tls.connect({ socket: raw, servername: host, ALPNProtocols: ['http/1.1'], rejectUnauthorized: false })
+        socket = tlsSocket
+        tlsSocket.once('secureConnect', resolve)
+        tlsSocket.once('error', reject)
+        tlsSocket.once('close', () => reject(new Error('соединение закрыто')))
       }),
       STEP_TIMEOUT_MS,
-      'TLS через VPN'
+      'рукопожатие'
     )
     return { ms: Math.round(performance.now() - t0) }
-  } catch (e) {
-    return { ms: null, error: e instanceof Error ? e.message : String(e) }
+  } catch (error) {
+    return { ms: null, error: `${stage}: ${error instanceof Error ? error.message : String(error)}` }
+  } finally {
+    socket?.destroy()
   }
 }
 
@@ -592,6 +603,8 @@ async function probeViaVpn(tc: TempCore, host: string): Promise<{ ms: number | n
 
 async function loadPage(url: string): Promise<{
   loadMs: number | null
+  documentMs: number | null
+  pageStatusCode: number | null
   timedOut: boolean
   error?: string
   hosts: PageHost[]
@@ -600,19 +613,23 @@ async function loadPage(url: string): Promise<{
   const ses = electronSession.fromPartition(partition, { cache: false })
   // UA без «Electron/LAZEYKA» — иначе Cloudflare часто показывает проверку.
   ses.setUserAgent(app.userAgentFallback.replace(/\s?(Electron|lazeyka|LAZEYKA)\/\S+/gi, ''))
-  const reqs = new Map<number, { host: string; start: number; end?: number; failed?: boolean }>()
+  const reqs = new Map<number, { host: string; standardHttps: boolean; start: number; end?: number; failed?: boolean }>()
   const t0 = Date.now()
   let docReadyAt: number | null = null
+  let pageStatusCode: number | null = null
   ses.webRequest.onBeforeRequest((d, cb) => {
     try {
-      const h = new URL(d.url).host
-      if (h) reqs.set(d.id, { host: h, start: Date.now() })
+      const url = new URL(d.url)
+      if (url.protocol === 'http:' || url.protocol === 'https:') {
+        reqs.set(d.id, { host: url.hostname, standardHttps: url.protocol === 'https:' && !url.port, start: Date.now() })
+      }
     } catch {
       /* data:, blob: */
     }
     cb({})
   })
   ses.webRequest.onCompleted((d) => {
+    if (d.resourceType === 'mainFrame') pageStatusCode = d.statusCode
     const r = reqs.get(d.id)
     if (r) r.end = Date.now()
   })
@@ -635,53 +652,70 @@ async function loadPage(url: string): Promise<{
   let loadMs: number | null = null
   let error: string | undefined
   let timedOut = false
-  try {
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        timedOut = true
-        resolve()
-      }, PAGE_TIMEOUT_MS)
-      win.webContents.once('dom-ready', () => {
-        docReadyAt = Date.now()
-      })
-      win.webContents.once('did-finish-load', () => {
-        loadMs = Date.now() - t0
-        clearTimeout(timer)
-        // Ещё пара секунд — на запросы после загрузки.
-        setTimeout(resolve, 2500)
-      })
-      win.webContents.once('did-fail-load', (_e, code, desc, _u, isMain) => {
-        if (!isMain) return
-        error = `${desc} (${code})`
-        clearTimeout(timer)
-        resolve()
-      })
-      win.loadURL(url).catch(() => void 0)
+  await new Promise<void>((resolve) => {
+    let settled = false
+    let grace: ReturnType<typeof setTimeout> | undefined
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      clearTimeout(grace)
+      resolve()
+    }
+    const timer = setTimeout(() => {
+      timedOut = true
+      finish()
+    }, PAGE_TIMEOUT_MS)
+    win.webContents.once('dom-ready', () => {
+      docReadyAt = Date.now()
     })
-  } finally {
-    const now = Date.now()
-    const by = new Map<string, PageHost>()
-    for (const r of reqs.values()) {
-      const p = by.get(r.host) ?? { host: r.host, requests: 0, failed: 0, hanging: 0, maxMs: 0, early: false }
-      p.requests++
-      if (r.failed) p.failed++
-      if (!r.end) p.hanging++
-      p.maxMs = Math.max(p.maxMs, (r.end ?? now) - r.start)
-      if (docReadyAt == null || r.start <= docReadyAt) p.early = true
-      by.set(r.host, p)
+    win.webContents.once('did-finish-load', () => {
+      if (settled) return
+      loadMs = Date.now() - t0
+      clearTimeout(timer)
+      grace = setTimeout(finish, 2500)
+    })
+    const fail = (message: string): void => {
+      error = message
+      finish()
     }
-    try {
-      win.destroy()
-    } catch {
-      /* noop */
-    }
-    void ses.clearStorageData().catch(() => void 0)
-    return {
-      loadMs,
-      timedOut,
-      error,
-      hosts: [...by.values()].sort((a, b) => b.hanging - a.hanging || b.maxMs - a.maxMs)
-    }
+    win.webContents.on('did-fail-load', (_e, code, desc, _url, isMain) => {
+      if (!isMain || settled || code === -3) return
+      fail(`${desc} (${code})`)
+    })
+    void win.loadURL(url).catch((reason: unknown) => {
+      if (settled || loadMs !== null) return
+      fail(reason instanceof Error ? reason.message : String(reason))
+    })
+  })
+  const now = Date.now()
+  const by = new Map<string, PageHost>()
+  for (const r of reqs.values()) {
+    const p = by.get(r.host) ?? { host: r.host, requests: 0, failed: 0, hanging: 0, maxMs: 0, early: false, standardHttps: false }
+    p.requests++
+    p.standardHttps ||= r.standardHttps
+    if (r.failed) p.failed++
+    if (!r.end) p.hanging++
+    p.maxMs = Math.max(p.maxMs, (r.end ?? now) - r.start)
+    if (docReadyAt == null || r.start <= docReadyAt) p.early = true
+    by.set(r.host, p)
+  }
+  try {
+    win.destroy()
+  } catch {
+    /* noop */
+  }
+  ses.webRequest.onBeforeRequest(null)
+  ses.webRequest.onCompleted(null)
+  ses.webRequest.onErrorOccurred(null)
+  void ses.clearStorageData().catch(() => void 0)
+  return {
+    loadMs,
+    documentMs: docReadyAt === null ? null : docReadyAt - t0,
+    pageStatusCode,
+    timedOut,
+    error: typeof pageStatusCode === 'number' && pageStatusCode >= 400 ? undefined : error,
+    hosts: [...by.values()].sort((a, b) => b.hanging - a.hanging || b.maxMs - a.maxMs)
   }
 }
 
@@ -698,40 +732,54 @@ function normalizeUrl(input: string): string {
 
 export async function checkSite(input: string): Promise<SiteCheckResult> {
   const url = normalizeUrl(input)
-  const host = new URL(url).host
+  const target = new URL(url)
+  const host = target.hostname
   const incy = getIncyStatus()
-  const viaTunnel = incy.state === 'running' && incy.connectionMode === 'tun' && !incy.exitLagActive
+  const viaTunnel = incy.state === 'running' && incy.connectionMode === 'tun' && !incy.exitLagActive && incy.routingMode !== 'direct'
   const src = (await physicalSourceIp()) ?? undefined
-  const sysDns: SysDnsInfo = await describeSystemDns().catch(() => ({ servers: [] }))
+  const canProbe = !(viaTunnel && !src) && target.protocol === 'https:' && !target.port
+  const sysDns: SysDnsInfo = canProbe ? await describeSystemDns().catch(() => ({ servers: [] })) : { servers: [] }
+  const probeNote = canProbe ? undefined : viaTunnel && !src
+    ? 'Не удалось определить физический адаптер для прямого сравнения. Показан результат загрузки страницы.'
+    : 'Пошаговое сравнение DNS, TCP и TLS доступно для HTTPS на порту 443. Загрузка проверена по введённому адресу.'
 
   const page = await loadPage(url)
-
-  // Какие домены разбирать подробно: основной + зависшие/упавшие/медленные.
   const problemHosts = page.hosts
-    .filter((h) => h.host !== host && (h.hanging > 0 || h.failed > 0 || h.maxMs > SLOW_MS))
+    .filter((h) => h.standardHttps && h.host !== host && (h.hanging > 0 || h.failed > 0 || h.maxMs > SLOW_MS))
     .slice(0, 6)
     .map((h) => h.host)
-  const toProbe = [host, ...problemHosts]
-  const probes = await Promise.all(toProbe.map((h) => probeDirect(h, src, sysDns)))
+  const probes = canProbe ? await Promise.all([host, ...problemHosts].map((h) => probeDirect(h, src, sysDns))) : []
 
-  // Через VPN — только то, что напрямую не в порядке (и основной домен).
   let vpnNode: string | undefined
+  let vpnRoute: SiteCheckResult['vpnRoute']
+  const nodes = loadIncyNodes()
   const nodeId = incy.activeNodeId ?? incy.selectedNodeId
-  const node = nodeId ? loadIncyNodes().find((n) => n.id === nodeId) : undefined
+  const node = nodeId ? nodes.find((n) => n.id === nodeId) : undefined
   const needVpn = probes.filter((p, i) => i === 0 || p.verdict !== 'ok')
   if (node && needVpn.length > 0) {
-    vpnNode = node.name
+    const settings = loadIncySettings()
+    const session = getChainSession()
+    const entry = incy.state === 'running' && incy.routingMode !== 'direct' && session?.applied && session.exitNodeId === node.id
+      ? nodes.find((n) => n.id === session.entryNodeId)
+      : undefined
+    const chain = entry ? chainEligibility(node, entry, planTopology(node, settings, isXrayAvailable()), settings) : null
+    const route = entry && chain?.ok && chain.core ? { entry, core: chain.core } : undefined
+    vpnNode = route ? `${route.entry.name} → ${node.name}` : node.name
+    vpnRoute = route ? 'chain' : 'single'
     await withCoreSlot(async () => {
       let tc: TempCore | null = null
       try {
-        tc = await startTempCore(node)
-        for (const p of needVpn) {
-          const r = await probeViaVpn(tc, p.host)
-          p.vpnMs = r.ms
-          p.vpnError = r.error
+        tc = await startTempCore(node, undefined, route)
+        for (let offset = 0; offset < needVpn.length; offset += 3) {
+          const active = tc
+          await Promise.all(needVpn.slice(offset, offset + 3).map(async (probe) => {
+            const result = await probeViaVpn(active, probe.host)
+            probe.vpnMs = result.ms
+            probe.vpnError = result.error
+          }))
         }
-      } catch (e) {
-        for (const p of needVpn) p.vpnError = e instanceof Error ? e.message : String(e)
+      } catch (error) {
+        for (const probe of needVpn) probe.vpnError = error instanceof Error ? error.message : String(error)
       } finally {
         tc?.stop()
       }
@@ -764,7 +812,7 @@ export async function checkSite(input: string): Promise<SiteCheckResult> {
       case 'tcp-blocked':
         return `${p.host}: не устанавливается даже соединение с ${p.ip} — заблокирован IP-адрес или сервер недоступен. Zapret тут обычно не помогает, нужен VPN.${vpn}`
       case 'dpi-blocked':
-        return `${p.host}: ${p.error} — провайдер режет сайт по имени (DPI).${z}${vpn}`
+        return `${p.host}: ${p.error} — результат указывает на возможную фильтрацию по имени (DPI).${z}${vpn}`
       case 'tls-failed':
         return `${p.host}: ${p.error}.${vpn}`
       case 'tcp16-blocked':
@@ -788,9 +836,11 @@ export async function checkSite(input: string): Promise<SiteCheckResult> {
     verdict.unshift(
       `Страница загружалась ${page.timedOut ? 'дольше 35 с' : `${Math.round((page.loadMs ?? 0) / 1000)} с`}.` +
         (blockers.length
-          ? ` Она ждёт ответа от: ${blockers.map((b) => b.host).join(', ')} — пока они не ответят, страница не дорисуется.`
+          ? ` Она ждёт ответа от: ${blockers.map((b) => b.host).join(', ')} — эти запросы ещё не ответили.`
           : '')
     )
+  } else if (page.pageStatusCode !== null && page.pageStatusCode >= 400) {
+    verdict.unshift(`Сайт ответил HTTP ${page.pageStatusCode} на запрос страницы.`)
   } else if (page.loadMs != null) {
     const onlyDnsFilter = probes.every((p) => p.verdict === 'ok' || (p.verdict === 'dns-blocked' && p.dnsSource !== 'isp'))
     verdict.unshift(
@@ -799,7 +849,7 @@ export async function checkSite(input: string): Promise<SiteCheckResult> {
     )
   }
   if (page.error) verdict.unshift(`Страница не открылась: ${page.error}.`)
-  if (viaTunnel) verdict.push('Сейчас включён полный VPN (TUN): страница открывалась через него. Для чистой проверки провайдера отключите VPN.')
+  if (viaTunnel) verdict.push('При открытии страницы был включён TUN. Сайты могли идти через VPN или напрямую по правилам маршрутизации.')
 
   appendLog(
     `[проверка сайта] ${host}: загрузка ${page.timedOut ? '>35 с' : page.loadMs != null ? `${page.loadMs} мс` : page.error ?? '—'}; ` +
@@ -811,12 +861,16 @@ export async function checkSite(input: string): Promise<SiteCheckResult> {
     url,
     host,
     pageLoadMs: page.loadMs,
+    documentMs: page.documentMs,
+    pageStatusCode: page.pageStatusCode,
     pageTimedOut: page.timedOut,
     pageError: page.error,
     pageHosts: page.hosts.slice(0, 25),
     probes,
     zapretRunning,
     vpnNode,
+    vpnRoute,
+    probeNote,
     viaTunnel,
     verdict
   }

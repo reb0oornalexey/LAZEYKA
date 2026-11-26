@@ -54,6 +54,13 @@ export function resourcesDir(): string {
   return path.join(app.getAppPath(), 'resources')
 }
 
+export function bundledNetworkDir(): string {
+  if (is.dev && process.platform !== 'win32') {
+    return path.join(resourcesDir(), '..', process.platform === 'darwin' ? 'resources-mac' : 'resources-linux')
+  }
+  return resourcesDir()
+}
+
 export function resourcesFilesDir(): string {
   return path.join(resourcesDir(), 'files')
 }
@@ -112,13 +119,15 @@ export function tgwsBinaryPath(): string {
  * над встроенным.
  */
 export function tgwsCliPaths(): { python: string; bootstrap: string; appDir: string; version: string } | null {
-  const pyDir = path.join(resourcesDir(), 'tgws', 'python')
+  const pyDir = path.join(bundledNetworkDir(), 'tgws', 'python')
   // macOS: python-build-standalone (scripts/fetch-mac-binaries.mjs), раскладка python/bin/python3.
-  const python = process.platform === 'darwin' ? path.join(pyDir, 'bin', 'python3') : path.join(pyDir, 'python.exe')
+  const python = process.platform === 'linux'
+    ? '/usr/bin/python3'
+    : process.platform === 'darwin' ? path.join(pyDir, 'bin', 'python3') : path.join(pyDir, 'python.exe')
   const bootstrap = path.join(pyDir, 'lazeyka_tgws.py')
   if (!existsSync(python) || !existsSync(bootstrap)) return null
   const runtimeApp = path.join(tgwsRuntimeDir(), 'app')
-  const bundledApp = path.join(resourcesDir(), 'tgws', 'app')
+  const bundledApp = path.join(bundledNetworkDir(), 'tgws', 'app')
   const readVersion = (dir: string): string => {
     try {
       return readFileSync(path.join(dir, 'VERSION'), 'utf-8').trim()
@@ -233,7 +242,7 @@ function newerCore(runtimePath: string, bundledPath: string): string {
 }
 
 export function incyBinaryPath(): string {
-  return newerCore(path.join(incyRuntimeDir(), binName('sing-box')), path.join(resourcesDir(), 'incy', binName('sing-box')))
+  return newerCore(path.join(incyRuntimeDir(), binName('sing-box')), path.join(bundledNetworkDir(), 'incy', binName('sing-box')))
 }
 
 /**
@@ -247,7 +256,7 @@ export function incyBinaryPath(): string {
  * %APPDATA%\lazeyka\runtime\incy wins over the one shipped in the installer.
  */
 export function xrayBinaryPath(): string {
-  return newerCore(path.join(incyRuntimeDir(), binName('xray')), path.join(resourcesDir(), 'incy', binName('xray')))
+  return newerCore(path.join(incyRuntimeDir(), binName('xray')), path.join(bundledNetworkDir(), 'incy', binName('xray')))
 }
 
 /** True when an xray.exe is available in either location. */

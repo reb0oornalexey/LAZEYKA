@@ -1,3 +1,5 @@
+import { updateFetch } from '../core/update-route'
+
 export interface GhAsset {
   name: string
   browser_download_url: string
@@ -30,7 +32,7 @@ const REQUEST_HEADERS = {
 export async function fetchLatestGithubRelease(repo: string): Promise<GhRelease> {
   // 1. Try GitHub REST API
   try {
-    const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+    const res = await updateFetch(`https://api.github.com/repos/${repo}/releases/latest`, {
       headers: REQUEST_HEADERS
     })
     if (res.ok) {
@@ -45,7 +47,7 @@ export async function fetchLatestGithubRelease(repo: string): Promise<GhRelease>
 
   // 2. Fallback: Parse GitHub Atom XML Feed (un-rate-limited, public)
   try {
-    const atomRes = await fetch(`https://github.com/${repo}/releases.atom`, {
+    const atomRes = await updateFetch(`https://github.com/${repo}/releases.atom`, {
       headers: { 'User-Agent': 'LAZEYKA-Updater', Accept: 'application/atom+xml' }
     })
     if (atomRes.ok) {
@@ -94,7 +96,7 @@ export async function fetchLatestGithubRelease(repo: string): Promise<GhRelease>
 
   // 3. Fallback: /releases/latest HTTP 302 Redirect
   try {
-    const redRes = await fetch(`https://github.com/${repo}/releases/latest`, {
+    const redRes = await updateFetch(`https://github.com/${repo}/releases/latest`, {
       redirect: 'manual',
       headers: { 'User-Agent': 'LAZEYKA-Updater' }
     })
@@ -154,7 +156,7 @@ function atomHtmlToMarkdown(html: string): string {
  */
 export async function fetchGithubReleases(repo: string, page = 1, perPage = 4): Promise<GhRelease[]> {
   try {
-    const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=${perPage}&page=${page}`, {
+    const res = await updateFetch(`https://api.github.com/repos/${repo}/releases?per_page=${perPage}&page=${page}`, {
       headers: REQUEST_HEADERS
     })
     if (res.ok) {
@@ -165,7 +167,7 @@ export async function fetchGithubReleases(repo: string, page = 1, perPage = 4): 
     /* ниже — запасной путь */
   }
 
-  const atomRes = await fetch(`https://github.com/${repo}/releases.atom`, {
+  const atomRes = await updateFetch(`https://github.com/${repo}/releases.atom`, {
     headers: { 'User-Agent': 'LAZEYKA-Updater', Accept: 'application/atom+xml' }
   })
   if (!atomRes.ok) throw new Error(`GitHub вернул ${atomRes.status}`)

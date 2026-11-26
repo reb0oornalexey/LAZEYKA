@@ -2,13 +2,23 @@ import { ipcMain, app, shell, clipboard, BrowserWindow, dialog, desktopCapturer,
 import { generateWarpAndPick, pickWarpEndpoint, checkWarpNode } from '../core/incy-warp'
 import { optimizeRoute } from '../core/route-optimizer'
 import { runIncySpeedTest } from '../core/incy-speedtest'
+import { checkExcludedRoutes } from '../core/incy-routes'
 import { scanInstalledGames } from '../core/game-scan'
+import {
+  getLinuxZapretCustomProfiles, getLinuxZapretGameFilter, getLinuxZapretUserLists,
+  setLinuxZapretCustom, setLinuxZapretGameFilter, setLinuxZapretUserLists
+} from '../core/zapret-linux'
 import { measureValveRegions, valveRelaySubnets } from '../core/valve-regions'
 import { fetchAppActivity } from '../core/incy-stats'
 import { getAppTraffic, getConnections, closeConnection } from '../core/incy-traffic'
 import { extractServerIp, extractServerHost } from './server-ip'
 import { listRunningProcesses } from './process-helper'
 import { describePickedPath } from './mac-apps'
+import { safeOpenExternal } from './safe-open'
+import { checkTelegramUrl } from './url-policy'
+import { PickedPathGrant, resolveFileInside } from './path-guard'
+import { themesDir, zapretBundleDir as zapretBundleDirForCheck } from './dirs'
+import { listStrategyFiles, validateStrategyName } from '../core/zapret-strategy'
 import { getAppConfig, patchAppConfig, resetAppSettings } from '../config'
 import { applyTheme, readThemeCss, setNativeTheme } from '../resolve/theme'
 import {
@@ -38,8 +48,24 @@ import { checkExitLag } from '../core/exitlag-check'
 import { getOnlineCount, getSavedInstallNum, refreshOnlineCounter, isOnlineCounterConfigured } from '../core/online-counter'
 import { traceRoute } from '../core/route-trace'
 import { runBufferbloatTest } from '../core/bufferbloat'
+import { registerTweaksIpc } from '../core/net-tweaks'
+import { registerPrematchIpc } from '../core/prematch'
+import { registerDnsCatalogIpc } from '../core/dns-catalog'
+import { registerDnsProbeIpc } from '../core/dns-probe'
+import { registerMiniIpc } from '../core/mini-window'
+import { registerStreamerIpc } from '../core/streamer'
+import { registerLanIpc } from '../core/lan-hub'
+import { registerHubIpc } from '../core/hub-client'
+import { registerDiagIpc } from '../core/diagnostics'
+import { registerIncyExtraIpc } from '../core/incy-connections'
+import { registerIncyOpsIpc } from '../core/incy-ops-ipc'
+import { registerSubIconIpc } from '../core/incy-sub-icon'
+import { registerInstallStateIpc } from '../core/install-state'
+import { registerZapretLabIpc } from '../core/zapret-lab'
+import { noteIsp, noteSiteCheck } from '../core/support-report'
 import { checkSite, addSitesToZapret } from '../core/site-check'
 import { showSystemNotification } from './notifications'
+import { registerSettingsExtraIpc } from '../core/settings-extra'
 import {
   getAutopilotStatus,
   setAutopilotEnabled,
@@ -80,6 +106,7 @@ import {
   getIncyStatus,
   connectIncyNode,
   disconnectIncy,
+  resetIncyKillSwitch,
   setIncyRoutingMode,
   pingIncyNode,
   getIncyLogs,
@@ -182,6 +209,7 @@ import {
 import { closeUpdateSplash } from '../core/update-window'
 import { checkAppUpdateFromUi } from '../core/app-update-watcher'
 import { getHwidHeaders } from '../core/incy-hwid'
+import { registerCustomSoundsIpc } from '../core/custom-sounds'
 import { execFile } from 'node:child_process'
 import { writeFileSync, unlinkSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
@@ -276,7 +304,10 @@ function openTgLinkViaScheduler(url: string, fellBack: { v: boolean }): boolean 
 const TG_INFLIGHT_LOCK_MS = 600
 let tgInflightUntil = 0
 
-function openTelegramLink(url: string): Promise<void> {
+function openTelegramLink(raw: string): Promise<void> {
+  // Ссылка уходит в ShellExecute (через VBS) — только tg://… и https://t.me/….
+  const url = checkTelegramUrl(raw)
+  if (!url) return Promise.reject(new Error('Это не ссылка Telegram'))
   const now = Date.now()
   if (now < tgInflightUntil) return Promise.resolve()
   tgInflightUntil = now + TG_INFLIGHT_LOCK_MS
@@ -289,6 +320,9 @@ function openTelegramLink(url: string): Promise<void> {
   tryFallbackOpen(url)
   return Promise.resolve()
 }
+
+/** Файл резервной копии INCY, выбранный в диалоге (incy:pickBackup → incy:applyBackup). */
+const incyBackupGrant = new PickedPathGrant()
 
 /**
  * Thin wrapper so any unhandled error in an IPC handler is serialised
@@ -306,6 +340,24 @@ function h<T>(fn: (...args: unknown[]) => Promise<T> | T) {
 }
 
 export function registerIpcMainHandlers(): void {
+  // Страницы «Твики» и «Перед каткой» регистрируют свои каналы сами.
+  registerTweaksIpc()
+  registerPrematchIpc()
+  registerDnsCatalogIpc()
+  registerDnsProbeIpc()
+  registerMiniIpc()
+  registerStreamerIpc()
+  registerLanIpc()
+  registerHubIpc()
+  registerCustomSoundsIpc()
+  registerDiagIpc()
+  registerIncyExtraIpc()
+  registerIncyOpsIpc()
+  registerSubIconIpc((id) => loadIncySubscriptions().find((s) => s.id === id))
+  registerInstallStateIpc()
+  registerZapretLabIpc()
+  // Е6: новые строки «Настроек» (окно, кэш, копии профиля, путь обновлений).
+  registerSettingsExtraIpc()
   // ---- App config ---------------------------------------------------------
   ipcMain.handle('app:getConfig', h(() => getAppConfig()))
   ipcMain.handle('app:patchConfig', h((patch) => patchAppConfig(patch as Partial<AppConfig>)))
@@ -313,7 +365,11 @@ export function registerIpcMainHandlers(): void {
 
   // ---- Theme --------------------------------------------------------------
   ipcMain.handle('theme:setNative', h((theme) => setNativeTheme(theme as AppTheme | 'system')))
-  ipcMain.handle('theme:apply', h((file) => applyTheme(file as string)))
+  ipcMain.handle('theme:apply', h((file) => {
+    // Только имя файла из папки тем (раньше путь не обрезался до имени).
+    if (!resolveFileInside(themesDir(), file)) throw new Error('Файл темы не найден в папке тем')
+    return applyTheme(String(file))
+  }))
   ipcMain.handle('theme:read', h((file) => readThemeCss(String(file))))
   ipcMain.handle('appearance:save', h((value) => saveAppearance(value)))
   ipcMain.handle('appearance:pickBackground', h(() => pickBackground()))
@@ -325,7 +381,7 @@ export function registerIpcMainHandlers(): void {
 
   // ---- Utility ------------------------------------------------------------
   ipcMain.handle('shell:openTelegramLink', h((url) => openTelegramLink(url as string)))
-  ipcMain.handle('shell:openExternal', h((url) => shell.openExternal(url as string)))
+  ipcMain.handle('shell:openExternal', h((url) => safeOpenExternal(url)))
   ipcMain.handle('clipboard:writeText', h((text) => { clipboard.writeText(text as string) }))
   ipcMain.handle('clipboard:readText', h(() => clipboard.readText()))
 
@@ -360,6 +416,13 @@ export function registerIpcMainHandlers(): void {
   // ---- Zapret -------------------------------------------------------------
   ipcMain.handle('zapret:status', h(() => getZapretStatus()))
   ipcMain.handle('zapret:listStrategies', h(() => listStrategies()))
+  ipcMain.handle('zapret:linuxUserLists', h(() => getLinuxZapretUserLists()))
+  ipcMain.handle('zapret:saveLinuxUserLists', h((input) =>
+    setLinuxZapretUserLists((input ?? {}) as Parameters<typeof setLinuxZapretUserLists>[0])))
+  ipcMain.handle('zapret:linuxGameFilter', h(() => getLinuxZapretGameFilter()))
+  ipcMain.handle('zapret:saveLinuxGameFilter', h((input) => setLinuxZapretGameFilter(input)))
+  ipcMain.handle('zapret:linuxCustomProfiles', h(() => getLinuxZapretCustomProfiles()))
+  ipcMain.handle('zapret:saveLinuxCustom', h((input) => setLinuxZapretCustom(input)))
   ipcMain.handle('zapret:start', h(() => startZapret()))
   ipcMain.handle('zapret:stop', h(() => stopZapret()))
   ipcMain.handle('zapret:restart', h(() => restartZapret()))
@@ -374,7 +437,7 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('zapret:dismissUpdate', h((tag) => dismissZapretUpdate(tag as string)))
 
   // ---- Zapret strategy tester --------------------------------------------
-  ipcMain.handle('zapret:runStrategyTest', h((opts) => runStrategyTests((opts ?? {}) as { resume?: boolean })))
+  ipcMain.handle('zapret:runStrategyTest', h((opts) => runStrategyTests((opts ?? {}) as Parameters<typeof runStrategyTests>[0])))
   ipcMain.handle('zapret:stopStrategyTest', h(() => stopStrategyTests()))
   ipcMain.handle('zapret:clearStrategyTestResults', h(() => clearStrategyTestResults()))
   ipcMain.handle('zapret:getStrategyTestResults', h(() => getStrategyTestResults()))
@@ -426,9 +489,12 @@ export function registerIpcMainHandlers(): void {
 
   // ---- Zapret Windows Service Manager -----------------------------------
   ipcMain.handle('zapret:getWindowsServiceStatus', h(() => getZapretWindowsServiceStatus()))
-  ipcMain.handle('zapret:installWindowsService', h((strategy) =>
-    installZapretWindowsService(strategy as string | undefined)
-  ))
+  ipcMain.handle('zapret:installWindowsService', h(async (strategy) => {
+    // Служба запускает winws с правами системы: только стратегия из папки Zapret.
+    const name =
+      (typeof strategy === 'string' && strategy) || (await getAppConfig()).zapret?.activeStrategy || 'general (ALT).bat'
+    return installZapretWindowsService(validateStrategyName(name, listStrategyFiles(zapretBundleDirForCheck())))
+  }))
   ipcMain.handle('zapret:removeWindowsService', h(() => removeZapretWindowsService()))
 
   // ---- Zapret Hosts File & Tests ----------------------------------------
@@ -451,8 +517,9 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('profile:import', h(() => importLazeykaProfile()))
 
   // ---- System Notifications & Network Speed -----------------------------
-  ipcMain.handle('app:showNotification', h((title, body) => {
-    showSystemNotification(String(title), String(body))
+  ipcMain.handle('app:showNotification', h((title, body, kind) => {
+    const k = kind === 'actions' || kind === 'updates' || kind === 'errors' || kind === 'author' ? kind : 'always'
+    showSystemNotification(String(title), String(body), undefined, k)
   }))
   ipcMain.handle('system:getNetworkSpeed', h(() => getRealNetworkSpeed()))
 
@@ -593,6 +660,10 @@ export function registerIpcMainHandlers(): void {
     return uninstallZapretMacService()
   }))
   ipcMain.handle('incy:disconnect', h(() => disconnectIncy()))
+  // Снять блокировку Kill Switch, если интернет остался закрытым после сбоя.
+  ipcMain.handle('incy:resetKillSwitch', h(() => resetIncyKillSwitch()))
+  // Проверка списка исключённых маршрутов (CIDR) для окна настроек.
+  ipcMain.handle('incy:checkExcludedRoutes', h((list) => checkExcludedRoutes(list as string[] | string)))
   ipcMain.handle('incy:selectNode', h((id) => selectIncyNode(String(id))))
   ipcMain.handle('incy:setConnectionMode', h((mode) => setIncyConnectionMode(mode as any)))
   ipcMain.handle('incy:setRoutingMode', h((mode) => setIncyRoutingMode(mode as any)))
@@ -628,10 +699,19 @@ export function registerIpcMainHandlers(): void {
 
   // ---- INCY backup / restore ---------------------------------------------
   ipcMain.handle('incy:exportBackup', h(() => exportIncyBackup()))
-  ipcMain.handle('incy:pickBackup', h(() => pickIncyBackup()))
+  // Применить можно только тот файл, что пользователь только что выбрал в диалоге.
+  ipcMain.handle('incy:pickBackup', h(async () => {
+    const res = await pickIncyBackup()
+    if (res.ok && res.filePath) incyBackupGrant.grant(res.filePath)
+    return res
+  }))
   ipcMain.handle(
     'incy:applyBackup',
-    h((filePath, parts) => applyIncyBackup(String(filePath), parts as any))
+    h((filePath, parts) => {
+      const picked = incyBackupGrant.check(filePath)
+      if (!picked) throw new Error('Выберите файл копии заново')
+      return applyIncyBackup(picked, parts as any)
+    })
   )
   ipcMain.handle('incy:backupLink', h(() => buildIncyBackupLink()))
 
@@ -650,6 +730,7 @@ export function registerIpcMainHandlers(): void {
   // Тест скорости через выбранный сервер (временное ядро, VPN не рвётся).
   ipcMain.handle('incy:speedTest', h((nodeId) => runIncySpeedTest(String(nodeId))))
   // Тест скорости интернета с главной: через INCY, если подключён, иначе напрямую.
+  ipcMain.handle('speed:stop', h(async () => (await import('../core/speed-test')).stopNetSpeedTest()))
   ipcMain.handle('speed:run', h(async (service, economy) => {
     const { runNetSpeedTest } = await import('../core/speed-test')
     const s = String(service)
@@ -698,7 +779,14 @@ export function registerIpcMainHandlers(): void {
   // ExitLag: игры из библиотек Steam и Epic; кто из приложений сейчас в сети.
   ipcMain.handle('system:scanInstalledGames', h(() => scanInstalledGames()))
   ipcMain.handle('incy:appActivity', h(() => fetchAppActivity()))
-  ipcMain.handle('exitlag:check', h(() => checkExitLag()))
+  ipcMain.handle(
+    'exitlag:check',
+    h(async () => {
+      const r = await checkExitLag()
+      noteIsp(r.outside?.isp)
+      return r
+    })
+  )
   // «Сейчас онлайн» на главной.
   ipcMain.handle('app:getOnlineCount', h(() => getOnlineCount()))
   ipcMain.handle('app:getOnlineNum', h(() => getSavedInstallNum()))
@@ -710,7 +798,15 @@ export function registerIpcMainHandlers(): void {
   }))
   // Оптимизатор: трассировка до сервера (мимо TUN) и пинг под нагрузкой.
   ipcMain.handle('optimizer:trace', h((target) => traceRoute(String(target ?? ''))))
-  ipcMain.handle('optimizer:checkSite', h((url) => checkSite(String(url ?? ''))))
+  ipcMain.handle(
+    'optimizer:checkSite',
+    h(async (url) => {
+      const r = await checkSite(String(url ?? ''))
+      // Итог попадёт в отчёт для поддержки, если человек его соберёт.
+      noteSiteCheck(r)
+      return r
+    })
+  )
   ipcMain.handle('optimizer:addSitesToZapret', h((domains) => addSitesToZapret(Array.isArray(domains) ? domains.map(String) : [])))
   ipcMain.handle('optimizer:bufferbloat', h((ip) => runBufferbloatTest(ip ? String(ip) : undefined)))
   // Оптимизатор: пинг до регионов Valve (CS2, Dota 2).
@@ -746,6 +842,17 @@ export function registerIpcMainHandlers(): void {
     }
   }))
   ipcMain.handle('dialog:pickExecutable', h(async () => {
+    if (process.platform === 'linux') {
+      const result = await dialog.showOpenDialog({
+        title: 'Выберите исполняемый файл приложения',
+        properties: ['openFile']
+      })
+      if (result.canceled || !result.filePaths[0]) return null
+      const files = await import('node:fs/promises')
+      const executable = await files.realpath(result.filePaths[0])
+      await files.access(executable, files.constants.X_OK)
+      return executable
+    }
     if (process.platform === 'darwin') {
       // macOS: приложение-бандл (.app) → правило по его пути, оно ловит и
       // вспомогательные процессы внутри; можно выбрать и одиночный файл.

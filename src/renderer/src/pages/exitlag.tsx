@@ -2,12 +2,14 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import BasePage from '@renderer/components/base/base-page'
-import { Card, CardHeader, CardTitle, CardContent } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import { Badge } from '@renderer/components/ui/badge'
 import { Input } from '@renderer/components/ui/input'
-import { Switch } from '@renderer/components/ui/switch'
+import { EmptyState, LzHero, LzPanel, LzSectionHead, Segmented, StatChip, type LzTone, type SegmentedItem } from '@renderer/components/lz'
+import { ConnectDial } from '@renderer/components/incy/connect-dial'
+import SplitLanes from '@renderer/components/exitlag/split-lanes'
 import {
+  Activity,
   Gamepad2,
   Monitor,
   FolderOpen,
@@ -18,16 +20,16 @@ import {
   Square,
   ArrowRight,
   RefreshCw,
-  SlidersHorizontal,
   ShieldCheck,
   MessageCircle,
   Globe
 } from 'lucide-react'
-import { cn } from '@renderer/lib/utils'
+import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
 import { useIncyStore } from '@renderer/store/incy-store'
 import InstalledGamesModal from '@renderer/components/installed-games-modal'
 import ExitLagTrafficCard from '@renderer/components/exitlag-traffic-card'
-import { appLabel, entryMatchesProc, isMacPlatform } from '@renderer/utils/per-app'
+import { FaceitBrandIcon } from '@renderer/components/service-icons'
+import { appLabel, entryMatchesProc, isLinuxPlatform, isMacPlatform, usesExecutablePaths } from '@renderer/utils/per-app'
 import {
   incyGetSettings,
   incyPatchSettings,
@@ -41,12 +43,6 @@ import {
   type IncyNode,
   type RunningProcessInfo
 } from '@renderer/utils/ipc'
-
-const POWER_ON_BANNER_STYLE = {
-  background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.1) 100%)',
-  border: '1px solid rgba(16, 185, 129, 0.5)',
-  color: '#34d399'
-}
 
 /** Быстрые наборы для macOS: только приложения, которые есть на Mac. Пути — бандлы `.app` (ловят и помощников внутри). */
 const MAC_PRESETS = {
@@ -80,7 +76,7 @@ const MAC_PRESETS = {
   ]
 }
 
-const OS_NAME = isMacPlatform ? 'macOS' : 'Windows'
+const OS_NAME = isLinuxPlatform ? 'Linux' : isMacPlatform ? 'macOS' : 'Windows'
 
 function cleanServerName(name: string): string {
   return name.replace(/^\[.*?\]\s*/, '').trim() || name
@@ -103,6 +99,7 @@ export default function ExitLagPage(): React.ReactElement {
   const [runningProcesses, setRunningProcesses] = useState<RunningProcessInfo[]>([])
   const [loadingProcesses, setLoadingProcesses] = useState(false)
   const [processFilterText, setProcessFilterText] = useState('')
+  const [tab, setTab] = useState<'apps' | 'traffic'>('apps')
 
 
   const loadData = async (): Promise<void> => {
@@ -181,13 +178,13 @@ export default function ExitLagPage(): React.ReactElement {
     // нижнему регистру, и такие приложения в туннель не попадали.
     const raw = processName.trim()
     // macOS: путь (бандл .app, каталог) остаётся путём, остальное — имя без .exe.
-    const base = isMacPlatform
+    const base = usesExecutablePaths
       ? raw.startsWith('/') || raw.startsWith('~/')
         ? raw.replace(/\/+$/, '')
         : (raw.split('/').pop()?.trim() ?? '')
       : (raw.split(/[\\/]/).pop()?.trim() ?? '')
     if (!base || !settings) return
-    const cleaned = isMacPlatform || /\.exe$/i.test(base) ? base : `${base}.exe`
+    const cleaned = usesExecutablePaths || /\.exe$/i.test(base) ? base : `${base}.exe`
     const current = settings.perAppProcesses ?? []
     if (current.some((p) => p.toLowerCase() === cleaned.toLowerCase())) {
       toast.info('Это приложение уже в списке')
@@ -202,9 +199,11 @@ export default function ExitLagPage(): React.ReactElement {
     if (!settings) return
     const current = settings.perAppProcesses ?? []
     await handleUpdateSettings({
-      perAppProcesses: isMacPlatform
+      perAppProcesses: usesExecutablePaths
         ? current.filter((p) => !entryMatchesProc(p, appLabel(proc), proc))
-        : current.filter((p) => p.toLowerCase() !== proc.toLowerCase())
+        : // Запись могла быть сохранена путём или без .exe (сценарии, ссылки) —
+          // «Убрать» из таблицы по имени процесса снимает и такую запись.
+          current.filter((p) => p.toLowerCase() !== proc.toLowerCase() && !entryMatchesProc(p, proc))
     })
   }
 
@@ -279,378 +278,343 @@ export default function ExitLagPage(): React.ReactElement {
   const exitLagRunning = isConnected && Boolean(status.exitLagActive)
   const appWord = appCount === 1 ? 'программа' : appCount >= 2 && appCount <= 4 ? 'программы' : 'программ'
 
+  const mode = settings?.perAppMode ?? 'proxy_only'
+  const connecting = status.state === 'connecting'
+  const applying = isPerAppEnabled && (isConnected || connecting) && !exitLagRunning
+  const nodeName = activeNode && isConnected ? cleanServerName(activeNode.name) : null
+  const heroTone: LzTone = togglingCore || connecting || applying
+    ? 'busy'
+    : status.state === 'error'
+      ? 'error'
+      : exitLagRunning
+        ? appCount === 0 && mode === 'proxy_only'
+          ? 'warn'
+          : 'on'
+        : 'off'
+  const heroTitle = exitLagRunning
+    ? appCount === 0 && mode === 'proxy_only'
+      ? 'Список пуст'
+      : 'ExitLag работает'
+    : applying
+      ? 'Применяю ExitLag…'
+      : isPerAppEnabled
+        ? 'ExitLag ждёт VPN'
+        : isConnected
+          ? 'VPN работает для всего компьютера'
+          : 'ExitLag выключен'
+  const heroText = exitLagRunning
+    ? appCount === 0 && mode === 'proxy_only'
+      ? 'В режиме «только выбранные» через VPN сейчас не идёт ничего. Добавьте игры в список ниже.'
+      : mode === 'bypass_only'
+        ? `Весь компьютер идёт через VPN, кроме ${appCount} ${appWord} из списка.`
+        : `Через VPN идут только ${status.exitLagApps?.length ?? appCount} ${appWord} из списка. Остальной трафик идёт напрямую.`
+    : applying
+      ? 'Туннель переподключается с новыми правилами. Голосовые чаты на пару секунд переподключатся.'
+      : isPerAppEnabled
+        ? 'Режим включён. Запустите VPN, и правила начнут работать.'
+        : isConnected
+          ? 'Включите ExitLag кнопкой слева, чтобы через VPN шли только игры, а остальное — напрямую.'
+          : `Через VPN пойдут только выбранные игры и программы, всё остальное в ${OS_NAME} — напрямую, без лишнего пути.`
+  const modeItems: SegmentedItem<'proxy_only' | 'bypass_only'>[] = [
+    { id: 'proxy_only', label: 'Только выбранные', icon: Target, title: 'Через VPN идут только программы из списка' },
+    { id: 'bypass_only', label: 'Все, кроме выбранных', icon: ShieldCheck, title: 'Через VPN идёт всё, кроме программ из списка' }
+  ]
+  const presets: { key: string; icon: React.ReactNode; label: string; apps: string[] }[] = [
+    {
+      key: 'games',
+      icon: <Gamepad2 />,
+      label: isLinuxPlatform ? 'Игры: CS2, Dota 2, Steam' : isMacPlatform ? 'Игры: Dota 2, Steam, Riot, Epic, Battle.net' : 'Игры: CS2, Dota 2, Steam, Riot, Epic',
+      apps: isLinuxPlatform ? ['cs2', 'dota2', 'steam', 'steamwebhelper'] : isMacPlatform
+        ? MAC_PRESETS.games
+        : ['cs2.exe', 'dota2.exe', 'steam.exe', 'steamwebhelper.exe', 'epicgameslauncher.exe', 'riotclientservices.exe', 'valorant-win64-shipping.exe']
+    },
+    { key: 'chat', icon: <MessageCircle />, label: 'Связь: Discord, Telegram', apps: isLinuxPlatform ? ['Discord', 'Telegram', 'telegram-desktop'] : isMacPlatform ? MAC_PRESETS.chat : ['discord.exe', 'telegram.exe'] },
+    {
+      key: 'browsers',
+      icon: <Globe />,
+      label: isLinuxPlatform ? 'Браузеры: Chrome, Chromium, Firefox, Edge' : isMacPlatform ? 'Браузеры: Safari, Chrome, Firefox, Yandex, Edge, Arc' : 'Браузеры: Chrome, Edge, Firefox, Yandex',
+      apps: isLinuxPlatform ? ['chrome', 'chromium', 'firefox', 'firefox-bin', 'msedge'] : isMacPlatform ? MAC_PRESETS.browsers : ['chrome.exe', 'msedge.exe', 'firefox.exe', 'browser.exe']
+    }
+  ]
+  const apps = settings?.perAppProcesses ?? []
+
   return (
     <BasePage title="ExitLag">
-      <div className="px-4 pb-8 space-y-4">
-        {/* HERO BANNER / CONTROL CARD */}
-        <Card className="cyber-card relative overflow-hidden border-primary/40 bg-gradient-to-br from-card/95 via-card/80 to-primary/10 shadow-lg">
-          <div className="absolute right-0 top-0 translate-x-8 -translate-y-8 size-48 rounded-full bg-primary/10 blur-3xl pointer-events-none" />
-
-          <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3">
-            <div className="flex items-start gap-3.5">
-              <div className="h-10 w-10 rounded-2xl bg-gradient-to-br from-primary/30 to-primary/10 border border-primary/50 flex items-center justify-center shrink-0 ">
-                <Gamepad2 className="h-5 w-5 text-primary" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <CardTitle className="text-base font-black tracking-tight flex items-center gap-2">
-                    ExitLag — Игровой режим
-                  </CardTitle>
-                  <Badge variant="outline" className="text-[10px] px-2 py-0 border-primary/50 text-primary font-mono font-bold uppercase bg-primary/10">
-                    КИЛЛЕР-ФИЧА
-                  </Badge>
-                  {exitLagRunning && appCount === 0 ? (
-                    <Badge className="text-[10px] px-2 py-0 bg-st-warn/15 text-st-warn-text border border-st-warn/30 font-semibold">
-                      РАБОТАЕТ · СПИСОК ПУСТ — VPN НИГДЕ
-                    </Badge>
-                  ) : exitLagRunning ? (
-                    <Badge className="text-[10px] px-2 py-0 bg-st-ok/20 text-st-ok-text border border-st-ok/30 font-semibold">
-                      РАБОТАЕТ ({status.exitLagApps?.length ?? appCount} {appWord})
-                    </Badge>
-                  ) : isPerAppEnabled && appCount === 0 ? (
-                    <Badge className="text-[10px] px-2 py-0 bg-st-warn/15 text-st-warn-text border border-st-warn/30 font-semibold">
-                      ДОБАВЬТЕ ПРИЛОЖЕНИЯ
-                    </Badge>
-                  ) : isPerAppEnabled && settings?.perAppMode === 'bypass_only' ? (
-                    <Badge className="text-[10px] px-2 py-0 bg-st-info/15 text-st-info-text border border-st-info/30 font-semibold">
-                      РЕЖИМ ИСКЛЮЧЕНИЙ
-                    </Badge>
-                  ) : isPerAppEnabled && (isConnected || status.state === 'connecting') ? (
-                    // Туннель поднят со старыми настройками (или ещё
-                    // подключается) — main переподключит его сам; кнопка на
-                    // случай, если этого не произошло.
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void incyReapplyTunnel().then((ok) => {
-                          if (ok) toast.info('Туннель переподключается в режиме ExitLag')
-                        })
-                      }}
-                      className="cursor-pointer"
-                      title="Переподключить туннель в режиме ExitLag"
-                    >
-                      <Badge className="text-[10px] px-2 py-0 bg-st-warn/15 text-st-warn-text border border-st-warn/30 font-semibold">
-                        ВКЛЮЧЁН · ПРИМЕНЯЕТСЯ… (нажмите, если завис)
-                      </Badge>
-                    </button>
-                  ) : isPerAppEnabled ? (
-                    <Badge className="text-[10px] px-2 py-0 bg-st-warn/15 text-st-warn-text border border-st-warn/30 font-semibold">
-                      ВКЛЮЧЁН · ТУННЕЛЬ ОСТАНОВЛЕН
-                    </Badge>
-                  ) : (
-                    <Badge variant="secondary" className="text-[10px] px-2 py-0 text-muted-foreground">
-                      ВЫКЛЮЧЕН
-                    </Badge>
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground mt-1 leading-relaxed max-w-2xl">
-                  Изолируйте игровой трафик от фонового: туннелируйте исключительно указанные игры и приложения, направляя весь остальной трафик {OS_NAME} напрямую без малейшей потери пинга.
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3 self-end sm:self-center shrink-0">
-              <span className="text-xs font-semibold text-muted-foreground">
-                {isPerAppEnabled ? 'Включено' : 'Выключено'}
-              </span>
-              <Switch
-                checked={isPerAppEnabled}
-                onCheckedChange={handleTogglePerAppProxy}
-                className="scale-110"
-              />
-            </div>
-          </CardHeader>
-
-          {/* Quick Tunnel Controller */}
-          <CardContent className="pt-2 border-t border-border/40">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-background/50 p-3 rounded-xl border border-border/40">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className={cn(
-                  'size-2.5 rounded-full shrink-0',
-                  isConnected ? 'bg-primary' : 'bg-muted-foreground/40'
-                )} />
-                <div className="min-w-0">
-                  <div className="text-xs font-semibold text-foreground flex items-center gap-1.5 truncate">
-                    <span>Туннель INCY:</span>
-                    <span className={isConnected ? 'text-st-ok-text font-bold' : 'text-muted-foreground'}>
-                      {exitLagRunning ? 'Подключен и фильтрует' : isConnected ? 'Подключен (обычный VPN)' : 'Остановлен'}
-                    </span>
-                    {activeNode && isConnected && (
-                      <span className="text-muted-foreground font-normal truncate">
-                        • {cleanServerName(activeNode.name)}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-muted-foreground">
-                    {isConnected
-                      ? isPerAppEnabled
-                        ? settings?.perAppMode === 'bypass_only'
-                          ? 'Весь трафик ПК в VPN, кроме списка исключений'
-                          : 'В туннель попадают только приложения из списка ниже'
-                        : 'Весь трафик системы проходит через VPN'
-                      : 'Запустите туннель для активации правил фильтрации'}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <Button
-                  size="sm"
-                  variant={isConnected ? 'destructive' : 'default'}
-                  onClick={() => { void handleToggleTunnel() }}
-                  disabled={togglingCore}
-                  className="text-xs h-8 gap-1.5 font-semibold"
-                >
-                  {togglingCore ? (
-                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                  ) : isConnected ? (
-                    <>
-                      <Square className="h-3 w-3 fill-current" />
-                      Остановить VPN
-                    </>
-                  ) : (
-                    <>
-                      <Play className="h-3 w-3 fill-current" />
-                      Запустить VPN
-                    </>
-                  )}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => navigate('/incy')}
-                  className="text-xs h-8 gap-1 text-muted-foreground hover:text-foreground"
-                >
-                  В INCY <ArrowRight className="h-3 w-3" />
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* SETTINGS CARD */}
-        {settings && (
-          <Card className="cyber-card border-border/60 bg-card/60">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <SlidersHorizontal className="h-4 w-4 text-primary" />
-                  <CardTitle className="text-sm font-bold">Режим работы туннелирования</CardTitle>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Mode Selector */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="mx-auto flex w-full max-w-[1080px] flex-col lz-page-gap lz-page-x pb-5">
+        <LzHero
+          data-tour="exitlag-console"
+          tone={heroTone}
+          className={cn(status.state === 'error' && 'border-st-err/45')}
+          visual={
+            <ConnectDial
+              tone={heroTone === 'warn' ? 'on' : heroTone}
+              pingMs={exitLagRunning ? (activeNode?.latencyMs ?? null) : null}
+              size={128}
+              label={isPerAppEnabled ? 'Выключить ExitLag' : 'Включить ExitLag'}
+              onPress={() => void handleTogglePerAppProxy(!isPerAppEnabled)}
+              disabled={!settings}
+            />
+          }
+          title={
+            <span className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+              {heroTitle}
+              {exitLagRunning && appCount > 0 && (
+                <span className="text-[13px] font-semibold tracking-normal text-primary">
+                  {mode === 'bypass_only' ? 'режим исключений' : `${appCount} ${appWord}`}
+                </span>
+              )}
+            </span>
+          }
+          text={heroText}
+          extra={
+            <div className="mt-1 flex w-full flex-col gap-2">
+              <SplitLanes on={exitLagRunning} busy={heroTone === 'busy'} mode={mode} appCount={appCount} node={nodeName} />
+              {applying && (
                 <button
                   type="button"
-                  onClick={() => void handleSetPerAppMode('proxy_only')}
-                  className={cn(
-                    'p-3.5 rounded-xl border text-left transition-all cursor-pointer relative overflow-hidden',
-                    settings.perAppMode !== 'bypass_only'
-                      ? 'border-primary bg-primary/15 ring-1 ring-primary/40'
-                      : 'border-border/60 bg-card/40 hover:bg-card/80 opacity-70 hover:opacity-100'
-                  )}
+                  onClick={() => {
+                    void incyReapplyTunnel().then((ok) => {
+                      if (ok) toast.info('Туннель переподключается в режиме ExitLag')
+                    })
+                  }}
+                  className="w-fit cursor-pointer text-[12px] font-semibold text-st-warn-text underline-offset-2 hover:underline"
+                  title="Переподключить туннель в режиме ExitLag"
                 >
-                  <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                    <Target className="h-3.5 w-3.5 text-primary shrink-0" />
-                    Только выбранные (режим ExitLag)
-                  </div>
-                  <div className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
-                    Через VPN-туннель направляются <b>исключительно</b> указанные игры и программы. Браузеры, {OS_NAME}, торренты и рабочий софт идут напрямую с нулевым влиянием на сетевой стек.
-                  </div>
+                  Завис? Переподключить туннель
                 </button>
-
-                <button
-                  type="button"
-                  onClick={() => void handleSetPerAppMode('bypass_only')}
-                  className={cn(
-                    'p-3.5 rounded-xl border text-left transition-all cursor-pointer relative overflow-hidden',
-                    settings.perAppMode === 'bypass_only'
-                      ? 'border-primary bg-primary/15 ring-1 ring-primary/40'
-                      : 'border-border/60 bg-card/40 hover:bg-card/80 opacity-70 hover:opacity-100'
-                  )}
-                >
-                  <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                    <ShieldCheck className="h-3.5 w-3.5 text-st-info-text shrink-0" />
-                    Все, кроме выбранных (исключения)
-                  </div>
-                  <div className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
-                    Весь компьютер защищён туннелем VPN, а указанные приложения соединяются напрямую через локального провайдера в обход шифрования.
-                  </div>
-                </button>
-              </div>
-
-              {/* Quick Presets */}
-              <div className="space-y-2 pt-2 border-t border-border/40">
-                <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-                  Быстрые наборы:
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    type="button"
-                    onClick={() => void handleApplyPreset(isMacPlatform ? MAC_PRESETS.games : [
-                      'cs2.exe',
-                      'dota2.exe',
-                      'steam.exe',
-                      'steamwebhelper.exe',
-                      'epicgameslauncher.exe',
-                      'riotclientservices.exe',
-                      'valorant-win64-shipping.exe'
-                    ])}
-                    className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/15 hover:border-primary"
-                  >
-                    <Gamepad2 className="h-3.5 w-3.5 shrink-0" />
-                    {isMacPlatform ? 'Игры (Dota 2, Steam, Riot, Epic, Battle.net)' : 'Игры (CS2, Dota 2, Steam, Riot, Epic)'}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    type="button"
-                    onClick={() => void handleApplyPreset(isMacPlatform ? MAC_PRESETS.chat : ['discord.exe', 'telegram.exe'])}
-                    className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/15 hover:border-primary"
-                  >
-                    <MessageCircle className="h-3.5 w-3.5 shrink-0" />
-                    Связь (Discord, Telegram)
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    type="button"
-                    onClick={() => void handleApplyPreset(isMacPlatform ? MAC_PRESETS.browsers : ['chrome.exe', 'msedge.exe', 'firefox.exe', 'browser.exe'])}
-                    className="text-xs h-7 gap-1.5 border-primary/30 hover:bg-primary/15 hover:border-primary"
-                  >
-                    <Globe className="h-3.5 w-3.5 shrink-0" />
-                    {isMacPlatform ? 'Браузеры (Safari, Chrome, Firefox, Yandex, Edge, Arc)' : 'Браузеры (Chrome, Edge, Firefox, Yandex)'}
-                  </Button>
-                </div>
-              </div>
-
-              {/* Add App & Selection Controls */}
-              <div className="space-y-3 pt-2 border-t border-border/40">
-                <div className="flex items-center justify-between">
-                  <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-                    Список приложений ({settings.perAppProcesses?.length ?? 0}):
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      type="button"
-                      onClick={() => setShowGamesModal(true)}
-                      className="text-xs h-7 gap-1.5 border-primary/40 hover:bg-primary/15 text-primary"
-                    >
-                      <Gamepad2 className="h-3.5 w-3.5" /> Найти игры
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      type="button"
-                      onClick={() => { void handleOpenProcessPicker() }}
-                      className="text-xs h-7 gap-1.5 border-primary/40 hover:bg-primary/15 text-primary"
-                    >
-                      <Monitor className="h-3.5 w-3.5" /> Из запущенных...
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      type="button"
-                      onClick={() => { void handlePickExeFile() }}
-                      className="text-xs h-7 gap-1.5 border-primary/40 hover:bg-primary/15"
-                    >
-                      <FolderOpen className="h-3.5 w-3.5" /> {isMacPlatform ? 'Обзор…' : 'Обзор .exe'}
-                    </Button>
-                    {(settings.perAppProcesses?.length ?? 0) > 0 && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        type="button"
-                        onClick={() => { void handleClearPerAppProcesses() }}
-                        className="text-xs h-7 text-destructive hover:text-destructive hover:bg-destructive/10"
-                      >
-                        Очистить всё
-                      </Button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Manual Input */}
-                <div className="flex gap-2">
-                  <Input paste
-                    value={newAppInput}
-                    onChange={(e) => setNewAppInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') void handleAddPerAppProcess(newAppInput) }}
-                    placeholder={isMacPlatform ? 'Приложение или процесс, например: /Applications/Discord.app или steam_osx' : 'Название процесса, например: cs2.exe или discord.exe'}
-                    className="text-xs font-mono"
-                  />
-                  <Button
-                    size="sm"
-                    type="button"
-                    onClick={() => void handleAddPerAppProcess(newAppInput)}
-                    disabled={!newAppInput.trim()}
-                    className="text-xs h-9 shrink-0 gap-1 font-semibold"
-                  >
-                    <Plus className="h-3.5 w-3.5" /> Добавить
-                  </Button>
-                </div>
-
-                {/* Active Apps Badges */}
-                {(settings.perAppProcesses?.length ?? 0) > 0 ? (
-                  <div className="flex flex-wrap gap-2 p-3 rounded-xl border border-border/50 bg-background/50 max-h-56 overflow-y-auto">
-                    {settings.perAppProcesses!.map((proc) => (
-                      <div
-                        key={proc}
-                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-card/90 border border-primary/30 text-xs font-mono text-foreground shadow-sm hover:border-primary/60 transition-colors"
-                      >
-                        <span className="font-semibold" title={isMacPlatform ? proc : undefined}>{appLabel(proc)}</span>
-                        <button
-                          type="button"
-                          onClick={() => void handleRemovePerAppProcess(proc)}
-                          className="text-muted-foreground hover:text-destructive transition-colors ml-0.5 cursor-pointer"
-                          title="Удалить"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+              )}
+            </div>
+          }
+          actions={
+            <>
+              <Button
+                size="lg"
+                variant={isConnected ? 'outline' : 'default'}
+                onClick={() => void handleToggleTunnel()}
+                disabled={togglingCore}
+                className="h-11 rounded-xl px-5 text-[14px]"
+              >
+                {togglingCore ? (
+                  <RefreshCw className="size-4 animate-spin" />
+                ) : isConnected ? (
+                  <Square className="size-3.5 fill-current" />
                 ) : (
-                  <div className="p-6 rounded-xl border border-dashed border-border/60 text-center text-xs text-muted-foreground">
-                    Приложения пока не выбраны. Нажмите «Найти игры», выберите из запущенных процессов или добавьте вручную.
-                  </div>
+                  <Play className="size-3.5 fill-current" />
                 )}
+                {isConnected ? 'Остановить VPN' : 'Запустить VPN'}
+              </Button>
+              <Button variant="outline" size="lg" onClick={() => navigate('/incy')} className="h-10 rounded-xl px-5 text-[13px]">
+                Открыть INCY
+                <ArrowRight className="size-4" />
+              </Button>
+            </>
+          }
+          footer={
+            <div className="flex flex-wrap items-stretch gap-2">
+              <StatChip
+                icon={mode === 'bypass_only' ? <ShieldCheck /> : <Target />}
+                tone={isPerAppEnabled ? 'on' : 'off'}
+                label="Режим"
+                value={!isPerAppEnabled ? 'выключен' : mode === 'bypass_only' ? 'все, кроме выбранных' : 'только выбранные'}
+                title="Сменить режим"
+                onClick={() => setTab('apps')}
+              />
+              <StatChip
+                icon={<Gamepad2 />}
+                tone={appCount > 0 ? 'on' : isPerAppEnabled ? 'warn' : 'off'}
+                label="В списке"
+                value={appCount > 0 ? `${appCount} ${appWord}` : 'пусто'}
+                title="Открыть список программ"
+                onClick={() => setTab('apps')}
+              />
+              <StatChip
+                icon={<ShieldCheck />}
+                tone={isConnected ? 'on' : connecting ? 'busy' : status.state === 'error' ? 'error' : 'off'}
+                label="Туннель INCY"
+                value={exitLagRunning ? 'фильтрует' : isConnected ? 'весь трафик' : connecting ? 'подключается…' : 'остановлен'}
+                aside={
+                  nodeName ? (
+                    <span data-sensitive="node" className="max-w-[140px] shrink truncate rounded-md bg-primary/12 px-1.5 py-0.5 text-[11px] font-semibold text-primary">
+                      {nodeName}
+                    </span>
+                  ) : undefined
+                }
+                title="Открыть INCY"
+                onClick={() => navigate('/incy')}
+                className="min-w-[200px] flex-1"
+              />
+              {!isLinuxPlatform && <StatChip
+                icon={<FaceitBrandIcon />}
+                label="Оптимизатор маршрута"
+                value="пинг до сервера"
+                title="Вставьте адрес сервера — покажем пинг, джиттер и потери через каждый узел"
+                onClick={() => navigate('/optimizer')}
+              />}
+            </div>
+          }
+        />
 
-                <ExitLagTrafficCard
-                  apps={settings.perAppProcesses ?? []}
-                  active={exitLagRunning}
-                  mode={settings.perAppMode ?? 'proxy_only'}
-                  onAddApp={handleAddPerAppProcess}
-                  onRemoveApp={handleRemovePerAppProcess}
+        <div className="flex shrink-0 flex-wrap items-center gap-3">
+          <Segmented
+            items={[
+              { id: 'apps', label: appCount ? `Программы ${appCount}` : 'Программы', icon: Gamepad2, title: 'Какие программы идут через VPN' },
+              { id: 'traffic', label: 'Сеть приложений', icon: Activity, title: 'Кто выходит в сеть и каким путём' }
+            ]}
+            value={tab}
+            onChange={setTab}
+            aria-label="Разделы ExitLag"
+            data-tour="exitlag-tabs"
+            className="w-[340px]"
+          />
+          <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground">
+            {tab === 'apps' ? 'Список применяется сразу, переподключать VPN не нужно.' : 'Живые данные ядра VPN и проверка, с какого IP выходят программы.'}
+          </span>
+        </div>
+
+        {tab === 'apps' && settings && (
+          <LzPanel data-tour="exitlag-apps" className="space-y-4 p-4">
+            <LzSectionHead
+              title="Что идёт через VPN"
+              hint="«Только выбранные» — через VPN идут программы из списка, остальное напрямую (так работает ExitLag). «Все, кроме выбранных» — наоборот: VPN для всего компьютера, а программы из списка идут напрямую."
+              sub={
+                mode === 'bypass_only'
+                  ? 'Весь компьютер идёт через VPN, программы из списка — напрямую'
+                  : 'Через VPN идут только программы из списка. Остальной трафик идёт напрямую.'
+              }
+              right={
+                <Segmented
+                  items={modeItems}
+                  value={mode}
+                  onChange={(m) => void handleSetPerAppMode(m)}
+                  aria-label="Режим ExitLag"
+                  data-tour="exitlag-mode"
+                  className="w-[380px]"
+                />
+              }
+            />
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="min-w-[260px] flex-1">
+                <Input
+                  paste
+                  value={newAppInput}
+                  onChange={(e) => setNewAppInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void handleAddPerAppProcess(newAppInput)
+                  }}
+                  placeholder={isLinuxPlatform ? 'Имя или путь, например /usr/bin/curl' : isMacPlatform ? 'Приложение или процесс: /Applications/Discord.app или steam_osx' : 'Имя процесса: cs2.exe или discord.exe'}
+                  className="h-9 rounded-xl border-foreground/[0.1] bg-foreground/[0.035] text-[13px]"
                 />
               </div>
-            </CardContent>
-          </Card>
-        )}
+              <Button
+                size="sm"
+                type="button"
+                onClick={() => void handleAddPerAppProcess(newAppInput)}
+                disabled={!newAppInput.trim()}
+                className="h-9 shrink-0 gap-1 rounded-xl text-xs font-semibold"
+              >
+                <Plus className="size-3.5" /> Добавить
+              </Button>
+              <span aria-hidden className="mx-1 h-6 w-px bg-foreground/[0.08]" />
+              <Button size="sm" variant="outline" type="button" onClick={() => setShowGamesModal(true)} className="h-9 gap-1.5 rounded-xl text-xs">
+                <Gamepad2 className="size-3.5" /> Найти игры
+              </Button>
+              <Button size="sm" variant="outline" type="button" onClick={() => void handleOpenProcessPicker()} className="h-9 gap-1.5 rounded-xl text-xs">
+                <Monitor className="size-3.5" /> Из запущенных
+              </Button>
+              <Button size="sm" variant="outline" type="button" onClick={() => void handlePickExeFile()} className="h-9 gap-1.5 rounded-xl text-xs">
+                <FolderOpen className="size-3.5" /> {usesExecutablePaths ? 'Обзор…' : 'Обзор .exe'}
+              </Button>
+            </div>
 
-        {/* Оптимизатор маршрута вынесен на отдельную вкладку. */}
-        <button
-          type="button"
-          onClick={() => navigate('/optimizer')}
-          className="w-full flex items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-left hover:bg-primary/10 transition-colors cursor-pointer"
-        >
-          <span className="flex items-center gap-2.5">
-            <Target className="h-4 w-4 text-primary" />
-            <span>
-              <span className="block text-sm font-bold text-foreground">Оптимизатор маршрута Faceit / CS2</span>
-              <span className="block text-[11px] text-muted-foreground">
-                Вставьте адрес сервера — покажем пинг, джиттер и потери через каждый узел
-              </span>
-            </span>
-          </span>
-          <ArrowRight className="h-4 w-4 text-primary shrink-0" />
-        </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[12px] text-muted-foreground">Добавить набором:</span>
+              {presets.map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => void handleApplyPreset(p.apps)}
+                  title={p.apps.map(appLabel).join(', ')}
+                  className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-xl border border-foreground/[0.08] bg-foreground/[0.035] px-3 text-[12px] font-semibold text-foreground transition-colors hover:border-primary/40 hover:bg-foreground/[0.06] [&_svg]:size-3.5 [&_svg]:text-muted-foreground"
+                >
+                  {p.icon}
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="border-t border-foreground/[0.07] pt-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-[13px] font-semibold text-foreground">
+                  В списке <span className="tabular-nums text-muted-foreground">{appCount}</span>
+                </span>
+                {appCount > 0 && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    type="button"
+                    onClick={() => void handleClearPerAppProcesses()}
+                    className="h-7 rounded-lg text-xs text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    Очистить всё
+                  </Button>
+                )}
+              </div>
+              {appCount > 0 ? (
+                <div className="flex max-h-56 flex-wrap gap-2 overflow-y-auto">
+                  {apps.map((proc) => (
+                    <span
+                      key={proc}
+                      className={cn(
+                        'group inline-flex items-center gap-2 rounded-xl border py-1.5 pr-1.5 pl-3 text-[12.5px] font-semibold transition-colors',
+                        exitLagRunning ? 'border-primary/30 bg-primary/[0.07] text-foreground' : 'border-foreground/[0.08] bg-foreground/[0.035] text-foreground'
+                      )}
+                    >
+                      <span
+                        aria-hidden
+                        className={cn('size-1.5 shrink-0 rounded-full', exitLagRunning ? 'bg-primary' : 'bg-muted-foreground/45')}
+                      />
+                      <span title={usesExecutablePaths ? proc : undefined}>{appLabel(proc)}</span>
+                      <button
+                        type="button"
+                        onClick={() => void handleRemovePerAppProcess(proc)}
+                        className="flex size-6 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                        title="Убрать из списка"
+                        aria-label={`Убрать ${appLabel(proc)}`}
+                      >
+                        <X className="size-3.5" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState
+                  compact
+                  icon={<Gamepad2 />}
+                  title="Список пока пуст"
+                  text="Найдём установленные игры сами, или выберите программу из запущенных."
+                  action={
+                    <Button size="sm" className="h-9 gap-1.5 rounded-xl px-4 text-xs" onClick={() => setShowGamesModal(true)}>
+                      <Gamepad2 className="size-3.5" />
+                      Найти игры
+                    </Button>
+                  }
+                />
+              )}
+            </div>
+          </LzPanel>
+        )}
+        {tab === 'apps' && !settings && <div className="h-64 animate-pulse rounded-2xl bg-foreground/[0.04]" />}
+
+        {tab === 'traffic' && (
+          <ExitLagTrafficCard
+            apps={apps}
+            active={exitLagRunning}
+            mode={mode}
+            onAddApp={handleAddPerAppProcess}
+            onRemoveApp={handleRemovePerAppProcess}
+          />
+        )}
 
         <InstalledGamesModal
           open={showGamesModal}
@@ -669,18 +633,18 @@ export default function ExitLagPage(): React.ReactElement {
         {/* MODAL: PROCESS PICKER */}
         {showProcessPickerModal && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 animate-in fade-in duration-200"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in duration-200"
             onClick={() => setShowProcessPickerModal(false)}
           >
             <div
-              className="w-full max-w-lg border border-primary/40 bg-card/95 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col max-h-[85vh] "
+              className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-border/70 bg-background shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between p-4 border-b border-border/40 bg-card/80">
                 <div className="flex items-center gap-2">
                   <Monitor className="h-4 w-4 text-primary" />
                   <div className="text-sm font-bold text-foreground">
-                    {isMacPlatform ? 'Выбор из запущенных приложений macOS' : 'Выбор из запущенных процессов Windows'}
+                    Выбор из запущенных процессов {OS_NAME}
                   </div>
                 </div>
                 <Button
@@ -721,7 +685,7 @@ export default function ExitLagPage(): React.ReactElement {
                     })
                     .map((p) => {
                       const isAlreadyAdded = settings?.perAppProcesses?.some((proc) =>
-                        isMacPlatform ? entryMatchesProc(proc, p.name, p.rule) : proc.toLowerCase() === p.name.toLowerCase()
+                        usesExecutablePaths ? entryMatchesProc(proc, p.name, p.rule) : proc.toLowerCase() === p.name.toLowerCase()
                       )
                       return (
                         <div

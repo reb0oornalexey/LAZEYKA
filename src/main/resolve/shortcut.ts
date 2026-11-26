@@ -1,8 +1,9 @@
 ﻿import { app, globalShortcut, shell } from 'electron'
 import { getAppConfig } from '../config'
-import { triggerMainWindow, mainWindow } from '..'
+import { triggerMainWindow, showMainWindow, mainWindow } from '..'
 import { startTgws, stopTgws, getTgwsStatus } from '../core/tgws'
 import { startZapret, stopZapret, getZapretStatus } from '../core/zapret'
+import { toggleMiniWindow } from '../core/mini-window'
 
 /**
  * Зарегистрировать горячие клавиши из настроек. Возвращает те, которые
@@ -37,7 +38,7 @@ export async function initShortcut(): Promise<string[]> {
     }
   }
   const notify = (title: string, body: string): void => {
-    void import('../utils/notifications').then(({ showSystemNotification }) => showSystemNotification(title, body)).catch(() => void 0)
+    void import('../utils/notifications').then(({ showSystemNotification }) => showSystemNotification(title, body, undefined, 'actions')).catch(() => void 0)
   }
   reg(cfg.exitlagToggleShortcut, () => {
     void import('../core/incy-engine').then(({ loadIncySettings, patchIncySettings }) => {
@@ -99,12 +100,42 @@ export async function initShortcut(): Promise<string[]> {
   })
 
   reg(cfg.showWindowShortcut, () => triggerMainWindow())
+  // Мини-окно с переключателями: показать / скрыть.
+  reg(cfg.miniWindowShortcut, () => toggleMiniWindow())
+  // «Перед каткой»: начать сессию с последней целью или завершить идущую.
+  // Нужная функция в prematch.ts пока не экспортируется (см. отчёт: toggleSessionFromHotkey).
+  // Пока её нет, клавиша просто открывает страницу «Перед каткой».
+  reg(cfg.prematchToggleShortcut, () => {
+    void import('../core/prematch')
+      .then(async (mod) => {
+        const toggle = (mod as unknown as Record<string, unknown>)['toggleSessionFromHotkey']
+        if (typeof toggle === 'function') {
+          const res = await (toggle as () => Promise<'started' | 'stopped'>)()
+          notify('LAZEYKA — Перед каткой', res === 'started' ? 'Сессия начата' : 'Сессия завершена, отчёт сохранён')
+          return
+        }
+        await showMainWindow()
+        const w = mainWindow
+        if (w && !w.isDestroyed() && !w.webContents.isDestroyed()) w.webContents.send('app:navigate', '/prematch')
+      })
+      .catch((e) => notify('LAZEYKA — Перед каткой', e instanceof Error ? e.message : String(e)))
+  })
   // `restartAppShortcut` was declared in AppConfig but never registered, so
   // setting it did nothing. Registered here for parity with the others.
   reg(cfg.restartAppShortcut, () => {
     app.relaunch()
     app.exit(0)
   })
+  // Е6: «Без звука» — звуки живут в окне (lib/sound.ts), окно переключает их
+  // и само показывает короткое уведомление. Свой звук подтверждения не играем.
+  reg(
+    cfg.muteSoundsShortcut,
+    () => {
+      const w = mainWindow
+      if (w && !w.isDestroyed() && !w.webContents.isDestroyed()) w.webContents.send('app:toggleMute')
+    },
+    true
+  )
   reg(cfg.tgwsToggleShortcut, () => {
     const s = getTgwsStatus().state
     if (s === 'running') stopTgws().catch(() => void 0)

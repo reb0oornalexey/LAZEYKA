@@ -1,9 +1,15 @@
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
-import { app, BrowserWindow, dialog, Menu, shell } from 'electron'
+import { app, BrowserWindow, dialog, Menu, screen } from 'electron'
 import windowStateKeeper from 'electron-window-state'
 import { join } from 'path'
 import icon from '../../resources/icon.png?asset'
 import { registerIpcMainHandlers } from './utils/ipc'
+import { stopPrematchOnQuit } from './core/prematch'
+import { closeMiniWindowOnQuit } from './core/mini-window'
+import { stopStreamerOnQuit } from './core/streamer'
+import { startLanIfAutostart, stopLanOnQuit } from './core/lan-hub'
+import { startHubPolling, stopHubOnQuit } from './core/hub-client'
+import { applyRouteMemoryOnStart } from './core/incy-connections'
 import { startOnlineCounter } from './core/online-counter'
 import { init } from './utils/init'
 import { getAppConfig, getAppConfigSync } from './config'
@@ -11,7 +17,7 @@ import { createTray, isTrayActive, refreshTray } from './resolve/tray'
 import { createApplicationMenu } from './resolve/menu'
 import { initShortcut } from './resolve/shortcut'
 import { startTgws, stopTgws } from './core/tgws'
-import { startZapret, stopZapret, adoptRunningZapret } from './core/zapret'
+import { stopZapret, adoptRunningZapret, autoStartZapret } from './core/zapret'
 import { stopZapretMacSync } from './core/zapret-mac'
 import { disconnectIncy, loadIncySettings, connectIncyNode } from './core/incy-engine'
 import { restoreAutopilotFromConfig } from './core/zapret-autopilot'
@@ -24,13 +30,18 @@ import { enableAutoRun, disableAutoRun } from './sys/autoRun'
 import { isRunningAsAdmin, relaunchElevated, ELEVATED_FLAG } from './utils/elevation'
 import { pruneOldLogs, flushLogsNow, currentLogFilePath } from './utils/file-logger'
 import { flushStats } from './core/incy-stats'
-import { registerDeepLinkScheme, findDeepLinkInArgv, handleDeepLink } from './core/deeplink'
+import { registerDeepLinkScheme, findDeepLinkInArgv, handleDeepLink, setDeepLinkFocusHandler } from './core/deeplink'
+import { hardenAppWindow } from './utils/safe-open'
 import { installIncyWatchers } from './core/incy-watchers'
 import { installAppUpdateWatcher } from './core/app-update-watcher'
 import { registerBackgroundScheme, registerBackgroundProtocol, initSystemAppearanceEvents } from './resolve/appearance'
+import { captureInstallState } from './core/install-state'
+import { attachMainWindowPrefs, mainZoomSeed } from './core/window-prefs'
 
 // Lock the userData / cache / log folder names.
 app.setName(is.dev ? 'lazeyka-dev' : 'lazeyka')
+// Новая установка или обновление — до init(), который создаёт config.yaml.
+captureInstallState()
 // Звук подтверждения горячих клавиш играет скрытое окно (трей, игра) — без жеста пользователя.
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
@@ -71,9 +82,11 @@ const startupReady = new Promise<void>((resolve) => {
 
 app.on('second-instance', (_e, argv) => {
   void startupReady.then(() => {
-    void showMainWindow()
     const link = findDeepLinkInArgv(argv)
+    // Подписанная команда с пульта выполняется без главного окна; окно
+    // показывает сам handleDeepLink, когда нужно подтверждение.
     if (link) void handleDeepLink(link)
+    else void showMainWindow()
   })
 })
 
@@ -82,10 +95,11 @@ app.on('second-instance', (_e, argv) => {
 app.on('open-url', (event, url) => {
   event.preventDefault()
   void startupReady.then(() => {
-    void showMainWindow()
-    void handleDeepLink(url)
+    if (url.toLowerCase().startsWith('lazeyka://')) void handleDeepLink(url)
+    else void showMainWindow()
   })
 })
+setDeepLinkFocusHandler(() => showMainWindow())
 
 const syncConfig = getAppConfigSync()
 if (syncConfig.disableGPU) app.disableHardwareAcceleration()
@@ -153,6 +167,14 @@ app.whenReady().then(async () => {
   registerIpcMainHandlers()
   const appConfig = await getAppConfig()
   startOnlineCounter()
+  // Объявления и ответы автора: один лёгкий запрос через минуту и далее раз в полчаса.
+  startHubPolling()
+  // Запомненные решения для сайтов возвращаются в правила до подключения VPN.
+  try {
+    applyRouteMemoryOnStart()
+  } catch (e) {
+    appLog('warn', `route memory: ${e}`)
+  }
 
   // Log files are new — `maxLogDays` finally has files to rotate. Pruning runs
   // once per launch, which is precise enough for day-granular filenames.
@@ -166,16 +188,18 @@ app.whenReady().then(async () => {
       showError('TG WS start failed', `${e}`)
     })
   }
-  if (appConfig.zapret?.autoStart) {
+  if (process.platform !== 'linux' && appConfig.zapret?.autoStart) {
     appLog('info', 'Автозапуск Zapret — старт')
-    startZapret().catch((e) => {
+    // Windows: ждёт готовности BFE и сети, затем запускает с самопроверкой и повторами (5/15/30 с).
+    // macOS: внутри обычный startZapret().
+    autoStartZapret().catch((e) => {
       appLog('error', `Автозапуск Zapret упал: ${e}`)
       // macOS без службы: окно «Нужна служба Zapret» уже показано, второй ошибки не нужно.
       if (e instanceof Error && e.name === 'ZapretMacServiceRequiredError') return
       showError('Zapret start failed', `${e}`)
     })
-  } else if (process.platform === 'darwin') {
-    // macOS: служба Zapret переживает падение приложения — подхватываем её, а не делаем вид, что её нет.
+  } else if (process.platform !== 'win32') {
+    // Системная служба Zapret может работать до запуска приложения.
     adoptRunningZapret().catch(() => void 0)
   }
 
@@ -279,6 +303,8 @@ app.whenReady().then(async () => {
 
   await createWindow(appConfig)
   markStartupReady()
+  // «Локальная сеть» поднимается сама, только если пользователь поставил «включать при запуске».
+  void startLanIfAutostart()
 
   const uiTasks: Promise<unknown>[] = [initShortcut()]
   if (!appConfig.disableTray) uiTasks.push(createTray())
@@ -337,6 +363,13 @@ let isQuitting = false
  * errors (services that aren't loaded, processes that no longer exist, etc.).
  */
 function syncKillChildren(): void {
+  if (process.platform === 'linux') {
+    try {
+      clearSystemProxySync()
+      killRegisteredChildrenSync()
+    } catch { /* noop */ }
+    return
+  }
   if (process.platform === 'darwin') {
     // macOS: свои дочерние процессы по PID из реестра + возврат системного прокси.
     try {
@@ -382,7 +415,7 @@ async function cleanupServices(): Promise<void> {
   if (cleanupRan) return
   cleanupRan = true
   await Promise.race([
-    Promise.all([stopTgws(), stopZapret(), disconnectIncy()]).catch(() => void 0),
+    Promise.all([stopTgws(), disconnectIncy(), ...(process.platform === 'linux' ? [] : [stopZapret()])]).catch(() => void 0),
     new Promise<void>((r) => setTimeout(r, 3000))
   ])
   // Write out whatever is still queued — the last lines before a shutdown are
@@ -397,34 +430,76 @@ async function cleanupServices(): Promise<void> {
 }
 
 app.on('before-quit', async (e) => {
-  // Tell `mainWindow.on('close')` that this is a real quit — it must NOT
-  // intercept the close to hide-to-tray.
-  isQuitting = true
-  if (cleanupRan) return
-  appLog('info', 'Выход из приложения, остановка всех сервисов…')
-  // Hold the quit until child processes are actually dead, so Telegram
-  // immediately loses its proxy.
   e.preventDefault()
-  await cleanupServices()
+  if (isQuitting) return
+  isQuitting = true
+  saveWindowState()
+  appLog('info', 'Выход из приложения, остановка всех сервисов…')
+  // Игровая сессия «Перед каткой»: сохранить отчёт до остановки служб.
+  try {
+    stopPrematchOnQuit()
+  } catch {
+    /* отчёт не критичен для выхода */
+  }
+  // Новые службы 1.3.0: каждая останавливается отдельно, сбой одной не мешает выходу.
+  for (const stop of [closeMiniWindowOnQuit, stopStreamerOnQuit, stopHubOnQuit]) {
+    try {
+      stop()
+    } catch {
+      /* noop */
+    }
+  }
+  // Drain the local network checks before Chromium shuts down.
+  await Promise.allSettled([
+    cleanupServices(),
+    Promise.race([
+      stopLanOnQuit(),
+      new Promise<void>((resolve) => setTimeout(resolve, 1500))
+    ])
+  ])
   app.exit(0)
 })
 
-// Last-resort synchronous kill: if Electron is force-killed (cmd window
-// closed, Task Manager, system shutdown), `before-quit` may not run. Issue
-// a blocking `taskkill /F /IM ... /T` so the proxy never outlives LAZEYKA.
+// Explicit exit and console signals delivered to Electron share the same cleanup.
 process.on('exit', () => syncKillChildren())
-process.on('SIGINT', () => { syncKillChildren(); process.exit(0) })
-process.on('SIGTERM', () => { syncKillChildren(); process.exit(0) })
+process.on('SIGINT', () => app.quit())
+process.on('SIGTERM', () => app.quit())
+
+/** Размер окна по умолчанию (2.0): на 1280×860 Главная видна целиком. */
+export const DEFAULT_WIN_W = 1280
+export const DEFAULT_WIN_H = 860
+let windowState: ReturnType<typeof windowStateKeeper> | null = null
+
+/** Записать размер, место и монитор окна (перед выходом: app.exit не даёт окну закрыться обычным путём). */
+function saveWindowState(): void {
+  try {
+    if (windowState && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized()) windowState.saveState(mainWindow)
+  } catch {
+    /* не важно: при следующем изменении запишется снова */
+  }
+}
 
 export async function createWindow(appConfig?: AppConfig): Promise<void> {
   const config = appConfig ?? (await getAppConfig())
   const { silentStart = false } = config
 
+  // Размер по умолчанию 2.0: вся Главная видна без прокрутки. На маленьких экранах — сколько помещается.
+  const work = screen.getPrimaryDisplay().workAreaSize
+  const defW = Math.max(860, Math.min(DEFAULT_WIN_W, work.width - 40))
+  const defH = Math.max(600, Math.min(DEFAULT_WIN_H, work.height - 40))
   const mainWindowState = windowStateKeeper({
-    defaultWidth: 1000,
-    defaultHeight: 720,
+    defaultWidth: defW,
+    defaultHeight: defH,
     file: 'window-state.json'
   })
+  windowState = mainWindowState
+  // До 2.0 размер по умолчанию был 1000×720. Кто его не менял (ровно этот размер и окно не развёрнуто),
+  // получает новый размер по центру экрана; кто подогнал окно сам — открывается как настроил.
+  const legacyDefault = mainWindowState.width === 1000 && mainWindowState.height === 720 && !mainWindowState.isMaximized
+  const startW = legacyDefault ? defW : mainWindowState.width
+  const startH = legacyDefault ? defH : mainWindowState.height
+  const startX = legacyDefault ? undefined : mainWindowState.x
+  const startY = legacyDefault ? undefined : mainWindowState.y
 
   if (process.platform === 'darwin') {
     await createApplicationMenu()
@@ -440,10 +515,11 @@ export async function createWindow(appConfig?: AppConfig): Promise<void> {
   mainWindow = new BrowserWindow({
     minWidth: 860,
     minHeight: 600,
-    width: mainWindowState.width,
-    height: mainWindowState.height,
-    x: mainWindowState.x,
-    y: mainWindowState.y,
+    width: startW,
+    height: startH,
+    x: startX,
+    y: startY,
+    center: startX === undefined || startY === undefined,
     show: false,
     // LAZEYKA ships with a custom in-app titlebar (see WindowControls), so
     // the native OS frame is always disabled — there is no user-facing
@@ -460,10 +536,26 @@ export async function createWindow(appConfig?: AppConfig): Promise<void> {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       spellcheck: false,
-      sandbox: false
+      sandbox: true,
+      // Е6: масштаб из настроек и только у этого окна (см. core/window-prefs.ts).
+      zoomFactor: mainZoomSeed(config)
     }
   })
   mainWindowState.manage(mainWindow)
+  // Е6: «поверх всех окон» и масштаб окна из настроек.
+  attachMainWindowPrefs(mainWindow, config)
+  // Библиотека пишет файл только при настоящем закрытии окна, а LAZEYKA при закрытии уходит в трей
+  // и выходит через app.exit — тогда размер и место не сохранялись. Пишем сами: после изменения
+  // размера/положения (с задержкой) и перед выходом (см. before-quit).
+  let saveTimer: NodeJS.Timeout | null = null
+  const saveSoon = (): void => {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => {
+      saveTimer = null
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized()) mainWindowState.saveState(mainWindow)
+    }, 800)
+  }
+  for (const ev of ['resize', 'move', 'maximize', 'unmaximize'] as const) mainWindow.on(ev as 'resize', saveSoon)
 
   mainWindow.on('ready-to-show', () => {
     // Only honour silentStart when the tray icon is enabled — otherwise the
@@ -526,10 +618,8 @@ export async function createWindow(appConfig?: AppConfig): Promise<void> {
   mainWindow.on('focus', () => onWindowVisibilityChange('focus'))
   mainWindow.on('blur', () => onWindowVisibilityChange('blur'))
 
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
-  })
+  // Внешние ссылки — только http/https через фильтр; переход окна на чужой адрес запрещён.
+  hardenAppWindow(mainWindow)
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -556,10 +646,23 @@ export function closeMainWindow(): void {
 }
 
 export async function triggerMainWindow(): Promise<void> {
-  // Свёрнутое окно тоже «видимо» для Electron — его надо развернуть, а не спрятать.
-  if (mainWindow && mainWindow.isVisible() && !mainWindow.isMinimized()) {
-    mainWindow.hide()
-  } else {
-    await showMainWindow()
+  await setMainWindowVisible('toggle')
+}
+
+/**
+ * Показать / спрятать главное окно (горячая клавиша окна, сценарии, пульт).
+ * 'toggle': окно на переднем плане — прячем в трей; свёрнуто, спрятано или закрыто другими окнами —
+ * показываем поверх. Раньше окно, закрытое другими окнами, по клавише пряталось, а не поднималось.
+ * Возвращает true, если окно теперь видно.
+ */
+export async function setMainWindowVisible(mode: 'show' | 'hide' | 'toggle'): Promise<boolean> {
+  const w = mainWindow
+  const inFront = Boolean(w && !w.isDestroyed() && w.isVisible() && !w.isMinimized() && w.isFocused())
+  const hide = mode === 'hide' || (mode === 'toggle' && inFront)
+  if (hide) {
+    if (w && !w.isDestroyed() && w.isVisible()) w.hide()
+    return false
   }
-}
+  await showMainWindow()
+  return true
+}

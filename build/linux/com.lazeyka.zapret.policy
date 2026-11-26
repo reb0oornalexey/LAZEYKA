@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <action id="com.lazeyka.zapret.control">
+    <description>Manage the LAZEYKA Zapret service</description>
+    <description xml:lang="ru">Управление службой Zapret</description>
+    <message>Administrator authentication is required to manage Zapret.</message>
+    <message xml:lang="ru">Подтвердите управление службой Zapret.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/lazeyka/zapret-control</annotate>
+  </action>
+</policyconfig>

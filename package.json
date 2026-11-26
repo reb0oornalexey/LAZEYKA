@@ -1,6 +1,6 @@
 {
   "name": "lazeyka",
-  "version": "1.2.6",
+  "version": "2.0.0",
   "description": "LAZEYKA - Next-Gen Network Routing & DPI Bypass",
   "main": "./out/main/index.js",
   "author": "reb0oorn",
@@ -17,13 +17,14 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "checksum": "node scripts/checksum.mjs",
     "fetch:mac": "node scripts/fetch-mac-binaries.mjs",
+    "fetch:linux": "node scripts/fetch-linux-binaries.mjs",
     "icons:rebuild": "node scripts/build-icons.mjs",
     "dev": "electron-vite dev",
     "postinstall": "electron-builder install-app-deps",
     "build:asar": "electron-vite build && node scripts/pack-asar.mjs",
     "build:win": "electron-vite build && electron-builder --publish never --win",
     "build:mac": "electron-vite build && electron-builder --publish never --mac",
-    "build:linux": "electron-vite build && electron-builder --publish never --linux"
+    "build:linux": "pnpm fetch:linux && electron-vite build && electron-builder --publish never --linux deb --x64"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",

@@ -25,7 +25,18 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()]
   },
   renderer: {
+    // Dev server строго на IPv4-loopback: при включённом VPN/kill switch
+    // IPv6-loopback (::1) бывает заблокирован, и окно остаётся пустым.
+    server: {
+      host: '127.0.0.1'
+    },
     build: {
+      // Сборка для пользователей: минифицированный код без source map (раньше
+      // renderer шёл без минификации — 4,3 МБ). Main и preload не сжимаем:
+      // выигрыш там мал, а читаемые стеки ошибок в логах важнее.
+      minify: 'esbuild',
+      sourcemap: false,
+      target: 'chrome138',
       rollupOptions: {
         input: {
           index: resolve('src/renderer/index.html')

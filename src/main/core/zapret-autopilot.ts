@@ -2,6 +2,7 @@ import https from 'node:https'
 import { getAppConfig, getAppConfigSync, patchAppConfig } from '../config'
 import { getZapretStatus, restartZapret, listStrategies } from './zapret'
 import { showSystemNotification } from '../utils/notifications'
+import { zapretBusy } from './zapret-busy'
 
 export interface AutopilotStatus {
   enabled: boolean
@@ -57,6 +58,8 @@ export async function checkNetworkHealth(): Promise<{ healthy: boolean; youtubeO
 
 export async function runAutopilotCycle(force = false): Promise<AutopilotStatus> {
   if (isChecking) return getAutopilotStatus()
+  // Идёт тест стратегий или автоподбор — они сами переключают winws, автопилот ждёт.
+  if (zapretBusy()) return getAutopilotStatus()
   isChecking = true
   lastCheckTime = Date.now()
 
@@ -138,7 +141,7 @@ export async function runAutopilotCycle(force = false): Promise<AutopilotStatus>
         lastStatus = 'healthy'
         lastSwitched = bestStrategy
         appendLog(`Успешное автопереключение на стратегию: ${bestStrategy}`)
-        showSystemNotification('Автопилот Zapret', `Переключено на более стабильную стратегию: ${bestStrategy}`)
+        showSystemNotification('Автопилот Zapret', `Переключено на более стабильную стратегию: ${bestStrategy}`, undefined, 'errors')
       } else {
         // Revert to original
         appendLog('Альтернативные стратегии не помогли, возврат к исходной.')

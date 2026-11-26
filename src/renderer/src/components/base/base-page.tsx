@@ -6,6 +6,13 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
 import { PageHeader } from '@renderer/components/app-chrome'
+import { HubBell } from '@renderer/components/hub/hub-bell'
+import { DonateShortcut } from '@renderer/components/hub/donate-shortcut'
+import { useZapretStore } from '@renderer/store/zapret-store'
+import { useTgwsStore } from '@renderer/store/tgws-store'
+import { useIncyStore } from '@renderer/store/incy-store'
+import { useLanEnabled } from '@renderer/components/lan/use-lan-enabled'
+import { WarnBanner } from '@renderer/components/hub/warn-banner'
 
 // Вкладки бокового меню — у них нет стрелки «назад». Раньше здесь был список
 // из старой программы (/profiles, /proxies…), и стрелка появлялась у одних
@@ -19,11 +26,17 @@ const sidebarPaths = new Set([
   '/incy',
   '/exitlag',
   '/optimizer',
+  '/prematch',
+  '/tweaks',
+  '/streamer',
+  '/lan',
+  '/diagnostics',
   '/logs',
   '/settings',
   '/appearance',
   '/about',
-  '/support'
+  '/support',
+  '/admin'
 ])
 const isMac = platform === 'darwin'
 
@@ -38,6 +51,10 @@ interface Props {
 const BasePage = forwardRef<HTMLDivElement, Props>((props, ref) => {
   const location = useLocation()
   const navigate = useNavigate()
+  const zapret = useZapretStore((s) => s.status.state === 'running')
+  const telegram = useTgwsStore((s) => s.status.state === 'running')
+  const incy = useIncyStore((s) => s.status.state === 'running')
+  const lan = useLanEnabled()
   const isSubPage = !sidebarPaths.has(location.pathname)
 
   const contentRef = useRef<HTMLDivElement>(null)
@@ -46,9 +63,9 @@ const BasePage = forwardRef<HTMLDivElement, Props>((props, ref) => {
   })
 
   return (
-    <div ref={contentRef} className="w-full h-full">
+    <div ref={contentRef} className="flex h-full w-full flex-col">
       <PageHeader
-        className="sticky top-0"
+        className="shrink-0"
         back={
           (isSubPage || props.showBackButton) && (
             <Button
@@ -62,9 +79,12 @@ const BasePage = forwardRef<HTMLDivElement, Props>((props, ref) => {
           )
         }
         title={props.title}
+        signal={zapret || telegram || incy || lan}
         right={
           <>
             {props.header}
+            <DonateShortcut />
+            <HubBell />
             {!isMac && <WindowControls />}
           </>
         }
@@ -73,10 +93,12 @@ const BasePage = forwardRef<HTMLDivElement, Props>((props, ref) => {
           переходе между вкладками (tw-animate-css). */}
       <div
         className={cn(
-          'content h-[calc(100vh-(var(--spacing)*14.25))] overflow-y-auto custom-scrollbar pt-3 animate-in fade-in slide-in-from-bottom-1 duration-300',
+          'content lz-page min-h-0 flex-1 overflow-y-auto custom-scrollbar pt-3 animate-in fade-in slide-in-from-bottom-1 duration-300',
           props.contentClassName
         )}
       >
+        {/* Непрочитанное предупреждение автора — поверх любого раздела, пока не нажато «Понятно». */}
+        <WarnBanner />
         {props.children}
       </div>
     </div>

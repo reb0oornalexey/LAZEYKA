@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useEffect, useState } from 'react'
-import { ChevronDown, ImageOff, ImagePlus, Sparkles, X } from 'lucide-react'
+import { Check, ChevronDown, ImageOff, ImagePlus, Sparkles, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { useShallow } from 'zustand/react/shallow'
 import { Switch } from '@renderer/components/ui/switch'
@@ -55,7 +55,12 @@ const Tile = memo(function Tile({
   return (
     <div className="group relative">
       <button type="button" onClick={() => onSelect(name)} className={cn(tileBase, selected ? tileOn : 'border-border hover:border-primary/60')}>
-        {src && <img src={src} alt="" draggable={false} loading="lazy" decoding="async" className="absolute inset-0 size-full object-cover" />}
+        {src && <img src={src} alt="" draggable={false} loading="lazy" decoding="async" className="absolute inset-0 size-full object-cover transition-transform duration-300 group-hover:scale-105" />}
+        {selected && (
+          <span className="absolute top-1.5 left-1.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow">
+            <Check className="size-3" />
+          </span>
+        )}
         <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-1.5 pt-4 pb-1 text-[11px] leading-tight font-medium text-white truncate">
           {caption}
         </span>
@@ -73,6 +78,31 @@ const Tile = memo(function Tile({
     </div>
   )
 })
+
+/** Крупный показ выбранного фона рядом с его настройками. */
+const CurrentBg: React.FC<{ name: string; gradient: string | null }> = ({ name, gradient }) => {
+  const thumb = useThumb(name)
+  const src = name ? thumb : null
+  const kind = name ? bgKind(name) : null
+  const title = !name ? (gradient ? 'Градиент' : 'Без фона') : isBuiltin(name) ? (builtinById(name)?.name ?? 'Обои') : kind === 'video' ? 'Своё видео' : kind === 'animated' ? 'Своя анимация' : 'Своя картинка'
+  return (
+    <div className="relative aspect-video w-full max-w-[300px] overflow-hidden rounded-xl border border-border bg-background shadow-sm">
+      {src ? (
+        <img src={src} alt="" draggable={false} className="absolute inset-0 size-full object-cover" />
+      ) : gradient ? (
+        <span className="absolute inset-0" style={{ background: gradient }} />
+      ) : (
+        <span className="absolute inset-0 flex items-center justify-center bg-[color:var(--background)] text-muted-foreground">
+          <ImageOff className="size-6 opacity-60" />
+        </span>
+      )}
+      <span className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-gradient-to-t from-black/80 to-transparent px-2.5 pt-6 pb-1.5 text-[11px] font-semibold text-white">
+        <span className="rounded bg-white/20 px-1 text-[9px] font-bold tracking-wide uppercase backdrop-blur-sm">Сейчас</span>
+        <span className="truncate">{title}</span>
+      </span>
+    </div>
+  )
+}
 
 function SolidColorRow({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }): React.JSX.Element {
   return (
@@ -164,7 +194,72 @@ export const WallpaperCard: React.FC = () => {
       title="Фон"
       tip="PNG, JPG, WebP, GIF, MP4 или WebM. Картинка до 25 МБ (крупнее экрана — уменьшится), GIF и анимированный WebP до 30 МБ, видео до 50 МБ. Файл копируется в папку данных программы."
     >
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,170px))] gap-1.5">
+      <div className="@container">
+        <div className="grid gap-3 @[600px]:grid-cols-[minmax(200px,250px)_minmax(0,1fr)]">
+          <CurrentBg name={st.bgImage} gradient={st.bgGradient ? `linear-gradient(${st.bgGradientAngle}deg, ${st.bgGradientFrom}, ${st.bgGradientTo})` : null} />
+          <div className="min-w-0 space-y-2">
+            {hasBg || st.bgGradient ? (
+              <div className="space-y-1">
+                {/* Размытие и затемнение действуют только на картинку/видео — у градиента их не показываем. */}
+                {hasBg && (
+                  <>
+                    <SliderRow id="setting:bgBlur" label="Размытие" value={st.bgBlur} min={0} max={40} step={1} format={(v) => `${Math.round(v)} px`} onChange={(v) => setSettings({ bgBlur: v })} />
+                    <SliderRow id="setting:bgDim" label="Затемнение" value={st.bgDim} min={0} max={0.9} step={0.01} format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => setSettings({ bgDim: v })} />
+                  </>
+                )}
+                {/* Больше 85% — панели почти исчезают, текст на пёстром фоне не читается. */}
+                <SliderRow
+                  id="setting:panelOpacity"
+                  label="Прозрачность панелей"
+                  value={Math.min(0.85, 1 - st.panelOpacity)}
+                  min={0}
+                  max={0.85}
+                  step={0.01}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  onChange={(v) => setSettings({ panelOpacity: Math.round((1 - v) * 100) / 100 })}
+                />
+              </div>
+            ) : (
+              <p className="rounded-lg bg-foreground/[0.04] px-3 py-2 text-[11px] leading-snug text-muted-foreground">
+                Сейчас без фона: под панелями виден цвет «Фон приложения». Выберите обои ниже, загрузите свою картинку или включите градиент.
+              </p>
+            )}
+            {!hasBg && (
+              <div className="space-y-1.5 rounded-lg border border-border px-2 py-1.5">
+                <div className="flex items-center justify-between px-1 text-xs">
+                  <span>Градиент вместо сплошного фона</span>
+                  <Switch size="sm" checked={st.bgGradient} onCheckedChange={(v) => setSettings({ bgGradient: v })} />
+                </div>
+                {st.bgGradient && (
+                  <>
+                    <SolidColorRow label="Начало" value={st.bgGradientFrom} onChange={(v) => setSettings({ bgGradientFrom: v })} />
+                    <SolidColorRow label="Конец" value={st.bgGradientTo} onChange={(v) => setSettings({ bgGradientTo: v })} />
+                    <SliderRow id="setting:bgGradientAngle" label="Направление" value={st.bgGradientAngle} min={0} max={360} step={5} format={(v) => `${Math.round(v)}°`} onChange={(v) => setSettings({ bgGradientAngle: v })} />
+                  </>
+                )}
+              </div>
+            )}
+            {hasBg && (
+              <div className="flex items-center gap-2 rounded-xl border border-primary/50 bg-primary/5 px-2.5 py-2">
+                <span className="relative shrink-0">
+                  <Sparkles className="size-4 text-primary" />
+                  {!seen && <span className="absolute -top-1 -right-1 size-2 animate-[pulse_1.2s_ease-in-out_3] rounded-full bg-primary" />}
+                </span>
+                <span className="min-w-0 flex-1 text-[11px] leading-snug">{builtin ? 'Для этих обоев тема уже готова' : 'Подобрать все цвета под этот фон'}</span>
+                <Button size="xs" onClick={suggest} disabled={busy}>
+                  {builtin ? 'Применить тему' : 'Подобрать'}
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 mb-1.5 flex items-center gap-2">
+        <span className="text-[11px] font-semibold text-muted-foreground">Обои</span>
+        <span className="h-px flex-1 bg-border/70" />
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(118px,1fr))] gap-1.5">
         <button
           type="button"
           onClick={() => setSettings({ bgImage: '' })}
@@ -179,43 +274,19 @@ export const WallpaperCard: React.FC = () => {
         {files.map((f) => (
           <Tile key={f} name={f} caption={bgKind(f) === 'video' ? 'Видео' : bgKind(f) === 'animated' ? 'Анимация' : 'Моё'} selected={st.bgImage === f} onSelect={select} onRemove={remove} />
         ))}
+        <button
+          type="button"
+          onClick={upload}
+          title="PNG, JPG, WebP, GIF, MP4 или WebM. Картинка до 25 МБ, GIF и анимированный WebP до 30 МБ, видео до 50 МБ."
+          className={cn(tileBase, 'flex flex-col items-center justify-center gap-1 border-dashed border-border bg-transparent text-muted-foreground hover:border-primary/60 hover:bg-primary/5 hover:text-primary hover:brightness-100')}
+        >
+          <ImagePlus className="size-4" />
+          <span className="text-[10px] font-semibold">Загрузить свою</span>
+          <span className="text-[9px] opacity-70">картинка или видео</span>
+        </button>
       </div>
-      <Button size="sm" variant="outline" className="mt-2 w-full border-primary text-primary hover:bg-primary/10" onClick={upload}>
-        <ImagePlus /> Загрузить свою картинку
-      </Button>
 
       {hasBg && (
-        <div className="mt-2 flex items-center gap-2 rounded-xl border border-primary/60 bg-primary/5 px-2.5 py-2">
-          <span className="relative shrink-0">
-            <Sparkles className="size-4 text-primary" />
-            {!seen && <span className="absolute -top-1 -right-1 size-2 animate-[pulse_1.2s_ease-in-out_3] rounded-full bg-primary" />}
-          </span>
-          <span className="min-w-0 flex-1 text-xs leading-snug">
-            {builtin ? 'Для этих обоев тема уже готова' : 'Сделать тему под этот фон — подберём все цвета автоматически'}
-          </span>
-          <Button size="xs" onClick={suggest} disabled={busy}>
-            {builtin ? 'Применить подобранную тему' : 'Подобрать'}
-          </Button>
-        </div>
-      )}
-
-      {(hasBg || st.bgGradient) && (
-        <div className="mt-2 grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-x-3">
-          <SliderRow id="setting:bgBlur" label="Размытие" value={st.bgBlur} min={0} max={40} step={1} format={(v) => `${Math.round(v)} px`} onChange={(v) => setSettings({ bgBlur: v })} />
-          <SliderRow id="setting:bgDim" label="Затемнение" value={st.bgDim} min={0} max={0.9} step={0.01} format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => setSettings({ bgDim: v })} />
-          <SliderRow
-            id="setting:panelOpacity"
-            label="Прозрачность панелей"
-            value={1 - st.panelOpacity}
-            min={0}
-            max={1}
-            step={0.01}
-            format={(v) => `${Math.round(v * 100)}%`}
-            onChange={(v) => setSettings({ panelOpacity: Math.round((1 - v) * 100) / 100 })}
-          />
-        </div>
-      )}
-
       <button
         type="button"
         onClick={() => setMore((v) => !v)}
@@ -223,9 +294,10 @@ export const WallpaperCard: React.FC = () => {
         className="mt-2 flex w-full cursor-pointer items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground"
       >
         <ChevronDown className={cn('size-3.5 transition-transform', more && 'rotate-180')} />
-        Ещё настройки фона
+        Ещё настройки фона: яркость, насыщенность, режим{animated ? ', анимация' : ''}, стекло
       </button>
-      {more && (
+      )}
+      {more && hasBg && (
         <div className="mt-1 space-y-1.5">
           {hasBg && (
             <>
@@ -256,7 +328,7 @@ export const WallpaperCard: React.FC = () => {
               </div>
               <div className="flex items-center justify-between px-1 text-xs">
                 <span className="flex items-center gap-1">
-                  Пауза без фокуса <InfoTip text="Когда окно свёрнуто или скрыто в трей, видео ставится на паузу, а GIF заменяется неподвижным кадром." />
+                  Пауза без фокуса <InfoTip text="Ставит анимацию на паузу, пока окно программы не в фокусе (например, вы в игре). Свёрнутое или скрытое в трей окно ставит анимацию на паузу всегда." />
                 </span>
                 <Switch size="sm" checked={st.bgPauseOnBlur} onCheckedChange={(v) => setSettings({ bgPauseOnBlur: v })} />
               </div>
@@ -269,20 +341,6 @@ export const WallpaperCard: React.FC = () => {
               </span>
               <Switch size="sm" checked={st.bgGlass} onCheckedChange={(v) => setSettings({ bgGlass: v })} />
             </div>
-          )}
-          {!hasBg && (
-            <>
-              <div className="flex items-center justify-between px-1 text-xs">
-                <span>Градиент вместо сплошного фона</span>
-                <Switch size="sm" checked={st.bgGradient} onCheckedChange={(v) => setSettings({ bgGradient: v })} />
-              </div>
-              {st.bgGradient && (
-                <>
-                  <SolidColorRow label="Начало" value={st.bgGradientFrom} onChange={(v) => setSettings({ bgGradientFrom: v })} />
-                  <SolidColorRow label="Конец" value={st.bgGradientTo} onChange={(v) => setSettings({ bgGradientTo: v })} />
-                </>
-              )}
-            </>
           )}
         </div>
       )}

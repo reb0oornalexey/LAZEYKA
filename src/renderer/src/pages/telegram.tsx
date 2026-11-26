@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { toast } from 'sonner'
-import { QRCodeSVG } from 'qrcode.react'
+import { Loader2, Package, RefreshCw, Route, ShieldCheck, Smartphone, Sparkles, X } from 'lucide-react'
 import { useTgwsStore } from '@renderer/store/tgws-store'
+import { useIncyStore } from '@renderer/store/incy-store'
 import {
   tgwsGetLink,
   tgwsStart,
@@ -17,39 +18,24 @@ import {
   tgwsEnableLan,
   tgwsDisableLan,
   tgwsPingDataCenters,
-  tgwsCheckWorkers,
-  incyReapplyTunnel,
-  openExternalUrl,
   type TgwsUpdateInfo,
   type TgwsShareInfo,
-  type TelegramDCPing,
-  type TgwsWorkerCheck
+  type TelegramDCPing
 } from '@renderer/utils/ipc'
 import ComponentUpdateDialog from '@renderer/components/component-update-dialog'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
-import { platform } from '@renderer/utils/init'
+import { useTourTab } from '@renderer/lib/tour-focus'
 import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
-import { Label } from '@renderer/components/ui/label'
-import { Switch } from '@renderer/components/ui/switch'
-import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
-import {
-  Copy,
-  ExternalLink,
-  MoreVertical,
-  Download,
-  Loader2,
-  Sparkles,
-  QrCode,
-  Wifi,
-  Smartphone,
-  RefreshCw,
-  Server
-} from 'lucide-react'
-import TelegramIcon from '@renderer/components/telegram-icon'
-import ReloadTgwsIcon from '@renderer/components/reload-tgws-icon'
+import { TelegramBrandIcon as TelegramIcon } from '@renderer/components/service-icons'
 import BasePage from '@renderer/components/base/base-page'
-import SwitcherCard from '@renderer/components/switcher-card'
+import { LzHero, StatChip, type LzTone } from '@renderer/components/lz'
+import { ConnectDial } from '@renderer/components/incy/connect-dial'
+import { Uptime } from '@renderer/components/incy/incy-console'
+import { DcRadar } from '@renderer/components/telegram/dc-radar'
+import { ProxyRoute } from '@renderer/components/telegram/proxy-route'
+import { PhoneQr } from '@renderer/components/telegram/phone-qr'
+import { ConnectLink } from '@renderer/components/telegram/connect-link'
+import { TgSettings, type TgSettingsTab } from '@renderer/components/telegram/tg-settings'
 import { cn, POWER_ON_BANNER_STYLE, formatInstalledVersion } from '@renderer/lib/utils'
 
 const POWER_ON_TOAST_STYLE = POWER_ON_BANNER_STYLE
@@ -60,128 +46,32 @@ function generateTgwsSecret(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
+/*
+ * Раздел Telegram на языке «Сигнал»:
+ *  1. Пульт: клавиша питания, состояние крупно, путь «Telegram → прокси →
+ *     способ → датацентры», «Добавить в Telegram» и QR для телефона, чипы.
+ *  2. Радар датацентров DC1–DC5 со «станциями» (задержка, состояние).
+ *  3. Настройки прокси — одна панель с вкладками «Ссылка / Соединение / Маршрут».
+ * Обновление TgWsProxy — в шапке страницы.
+ */
 const TelegramPage: React.FC = () => {
   const status = useTgwsStore((s) => s.status)
+  const incyState = useIncyStore((s) => s.status.state)
   const { appConfig, patchAppConfig } = useAppConfig()
   const [link, setLink] = useState('')
   const [shareInfo, setShareInfo] = useState<TgwsShareInfo | null>(null)
-  const [showQr, setShowQr] = useState(false)
+  const [qrOpen, setQrOpen] = useState(false)
+  const [linkOpen, setLinkOpen] = useState(false)
   const [enablingLan, setEnablingLan] = useState(false)
   const [dcs, setDcs] = useState<TelegramDCPing[]>([])
+  const [dcsAt, setDcsAt] = useState<number | null>(null)
   const [pingingDcs, setPingingDcs] = useState(false)
+  const [pending, setPending] = useState<boolean | null>(null)
+  const [settingsTab, setSettingsTab] = useState<TgSettingsTab>('link')
+  useTourTab<TgSettingsTab>('/telegram', setSettingsTab)
+  const settingsRef = useRef<HTMLDivElement>(null)
 
   const tgws = appConfig?.tgws
-  const [workerDraft, setWorkerDraft] = useState<string | null>(null)
-  // Черновик параметров соединения. Раньше каждое нажатие клавиши сразу
-  // сохранялось (а при вводе секрета — ещё и генерировало случайный ключ),
-  // и прокси продолжал работать со старыми значениями.
-  const [hostDraft, setHostDraft] = useState<string | null>(null)
-  const [portDraft, setPortDraft] = useState<string | null>(null)
-  const [secretDraft, setSecretDraft] = useState<string | null>(null)
-  const connDirty = hostDraft !== null || portDraft !== null || secretDraft !== null
-
-  const handleSaveConnection = async (): Promise<void> => {
-    const host = (hostDraft ?? tgws?.host ?? '127.0.0.1').trim() || '127.0.0.1'
-    const port = Number(portDraft ?? tgws?.port ?? 1443)
-    const secret = (secretDraft ?? tgws?.secret ?? '').trim().toLowerCase()
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      toast.error('Порт должен быть числом от 1 до 65535')
-      return
-    }
-    if (!/^[0-9a-f]{32}$/.test(secret)) {
-      toast.error('Секрет — ровно 32 шестнадцатеричных символа (0–9, a–f)')
-      return
-    }
-    try {
-      await patchAppConfig({ tgws: { ...tgws!, host, port, secret } })
-      setHostDraft(null)
-      setPortDraft(null)
-      setSecretDraft(null)
-      if (status.state === 'running') {
-        await tgwsRestart()
-        toast.success('Параметры сохранены, Telegram Proxy перезапущен', { style: POWER_ON_TOAST_STYLE })
-      } else {
-        toast.success('Параметры сохранены')
-      }
-    } catch (e) {
-      toast.error('Не удалось применить параметры', { description: e instanceof Error ? e.message : String(e) })
-    }
-  }
-
-  /** Пускать TgWsProxy через VPN INCY. Туннель переподключается сам, если поднят. */
-  const handleToggleViaIncy = async (v: boolean): Promise<void> => {
-    await patchAppConfig({ tgws: { ...tgws!, viaIncy: v } })
-    const reapplied = await incyReapplyTunnel().catch(() => false)
-    toast.success(v ? 'Telegram пойдёт через VPN INCY' : 'Telegram идёт по обычным правилам INCY', {
-      description: reapplied
-        ? 'Туннель INCY переподключается, чтобы применить.'
-        : 'Начнёт действовать, когда INCY будет подключён.'
-    })
-  }
-
-  /** Маршрут Telegram: авто (как у Flowseal) или всё через свой Worker. */
-  const handleSetRouteMode = async (mode: 'auto' | 'worker'): Promise<void> => {
-    if (mode === 'worker' && !(workerDraft ?? tgws?.cfproxyWorkerDomain ?? '').trim()) {
-      toast.error('Сначала укажите домен своего Cloudflare Worker ниже и сохраните его')
-      return
-    }
-    const value = (workerDraft ?? tgws?.cfproxyWorkerDomain ?? '').trim()
-    await patchAppConfig({ tgws: { ...tgws!, routeMode: mode, cfproxyWorkerDomain: value } })
-    setWorkerDraft(null)
-    if (status.state === 'running') {
-      try {
-        await tgwsRestart()
-        toast.success(mode === 'worker' ? 'Telegram идёт через ваш Cloudflare Worker' : 'Маршрут Telegram: авто', {
-          description: 'Telegram Proxy перезапущен.'
-        })
-      } catch (e) {
-        toast.error('Маршрут сохранён, но прокси не перезапустился', {
-          description: e instanceof Error ? e.message : String(e)
-        })
-      }
-    } else {
-      toast.success('Маршрут сохранён — применится при запуске Telegram Proxy')
-    }
-  }
-
-  const [workerChecks, setWorkerChecks] = useState<TgwsWorkerCheck[] | null>(null)
-  const [checkingWorker, setCheckingWorker] = useState(false)
-  const handleCheckWorker = async (): Promise<void> => {
-    if (checkingWorker) return
-    setCheckingWorker(true)
-    setWorkerChecks(null)
-    try {
-      const res = await tgwsCheckWorkers()
-      setWorkerChecks(res)
-      if (res.length === 0) toast.info('Домен Worker не указан')
-    } catch (e) {
-      toast.error('Проверка не удалась', { description: e instanceof Error ? e.message : String(e) })
-    } finally {
-      setCheckingWorker(false)
-    }
-  }
-
-  /** Сохранить свой Cloudflare Worker и перезапустить прокси, если он работает. */
-  const handleSaveWorker = async (): Promise<void> => {
-    const value = (workerDraft ?? tgws?.cfproxyWorkerDomain ?? '').trim()
-    await patchAppConfig({
-      tgws: { ...tgws!, cfproxyWorkerDomain: value, routeMode: value ? tgws?.routeMode : 'auto' }
-    })
-    setWorkerDraft(null)
-    setWorkerChecks(null)
-    if (status.state === 'running') {
-      try {
-        await tgwsRestart()
-        toast.success('Cloudflare Worker сохранён, Telegram Proxy перезапущен')
-      } catch (e) {
-        toast.error('Worker сохранён, но прокси не перезапустился', {
-          description: e instanceof Error ? e.message : String(e)
-        })
-      }
-    } else {
-      toast.success('Cloudflare Worker сохранён')
-    }
-  }
 
   useEffect(() => {
     tgwsGetLink().then(setLink).catch(() => setLink(''))
@@ -190,33 +80,43 @@ const TelegramPage: React.FC = () => {
 
   const running = status.state === 'running'
 
-  // ---- Auto-update banner
+  // ---- Обновление TgWsProxy
   const [updateInfo, setUpdateInfo] = useState<TgwsUpdateInfo | null>(null)
   const [installing, setInstalling] = useState(false)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
   const installingRef = useRef(false)
 
   useEffect(() => {
     tgwsCheckUpdate(false).then(setUpdateInfo).catch(() => setUpdateInfo(null))
   }, [])
 
-  const handlePingDcs = async (): Promise<void> => {
-    if (pingingDcs) return
+  const handlePingDcs = useCallback(async (): Promise<void> => {
     setPingingDcs(true)
     try {
       const results = await tgwsPingDataCenters()
       setDcs(results)
+      setDcsAt(Date.now())
     } catch {
       toast.error('Не удалось замерить задержку датацентров')
     } finally {
       setPingingDcs(false)
     }
+  }, [])
+  const pingingRef = useRef(false)
+  const pingDcs = (): void => {
+    if (pingingRef.current) return
+    pingingRef.current = true
+    void handlePingDcs().finally(() => {
+      pingingRef.current = false
+    })
   }
 
+  // Один замер при открытии раздела (как раньше), дальше — по кнопке «Проверить».
   useEffect(() => {
-    void handlePingDcs()
+    pingDcs()
   }, [])
 
-  const showBanner = !!updateInfo && updateInfo.hasUpdate && !updateInfo.dismissed && !!updateInfo.assetUrl
+  const showUpdate = !!updateInfo && updateInfo.hasUpdate && !updateInfo.dismissed && !!updateInfo.assetUrl
 
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false)
   // «Подробнее» на главной ведёт сюда и сразу открывает окно обновления.
@@ -245,7 +145,11 @@ const TelegramPage: React.FC = () => {
       const fresh = await tgwsCheckUpdate(true).catch(() => null)
       setUpdateInfo(fresh)
       if (running) {
-        try { await tgwsStart() } catch { /* user can retry */ }
+        try {
+          await tgwsStart()
+        } catch {
+          /* user can retry */
+        }
       }
     } finally {
       setInstalling(false)
@@ -257,6 +161,21 @@ const TelegramPage: React.FC = () => {
     if (!updateInfo?.latest) return
     void tgwsDismissUpdate(updateInfo.latest).catch(() => void 0)
     setUpdateInfo({ ...updateInfo, dismissed: true })
+  }
+
+  const handleCheckUpdate = async (): Promise<void> => {
+    if (checkingUpdate) return
+    setCheckingUpdate(true)
+    try {
+      const fresh = await tgwsCheckUpdate(true)
+      setUpdateInfo(fresh)
+      if (fresh.hasUpdate && fresh.assetUrl) setUpdateDialogOpen(true)
+      else toast.success('Установлена последняя версия TgWsProxy', { description: formatInstalledVersion(fresh.installed) })
+    } catch (e) {
+      toast.error('Не удалось проверить обновления', { description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setCheckingUpdate(false)
+    }
   }
 
   const regeneratingRef = useRef(false)
@@ -286,11 +205,6 @@ const TelegramPage: React.FC = () => {
     }
   }
 
-  // QR нужен только телефону: ссылка всегда с адресом ПК в Wi-Fi. Ссылка на
-  // 127.0.0.1 в QR телефону бесполезна — поэтому режима «Этот ПК» больше нет.
-  const activeQrLink = shareInfo?.lanLink ?? ''
-  const activeHttpLink = shareInfo?.httpLanLink ?? ''
-
   const handleEnableLan = async (): Promise<void> => {
     setEnablingLan(true)
     try {
@@ -313,8 +227,119 @@ const TelegramPage: React.FC = () => {
     }
   }
 
+  /** Клавиша питания. Ошибку запуска показывает пульт (lastError), здесь — только всплывашка. */
+  const toggle = async (next: boolean): Promise<void> => {
+    if (pending !== null) return
+    setPending(next)
+    try {
+      if (next) await tgwsStart()
+      else await tgwsStop()
+    } catch (e) {
+      toast.error(next ? 'Не удалось запустить Telegram Proxy' : 'Не удалось остановить Telegram Proxy', {
+        description: e instanceof Error ? e.message : String(e)
+      })
+    } finally {
+      setPending(null)
+    }
+  }
+
+  const addToTelegram = (): void => {
+    if (!link) {
+      toast.error('Ссылка ещё не готова', { description: 'Включите прокси и попробуйте снова.' })
+      return
+    }
+    openTelegramLink(link).catch(() => void 0)
+  }
+
+  const copyLink = async (): Promise<void> => {
+    if (!link) return
+    await writeClipboard(link)
+    toast.success('Ссылка скопирована', { style: POWER_ON_TOAST_STYLE })
+  }
+
+  const openSettings = (tab: TgSettingsTab): void => {
+    setSettingsTab(tab)
+    requestAnimationFrame(() => settingsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  }
+
+  // ---- Состояние пульта
+  const busy = pending !== null || status.state === 'starting' || status.state === 'stopping'
+  const starting = pending === true || (pending === null && status.state === 'starting')
+  const isError = !busy && status.state === 'error'
+  const tone: LzTone = busy ? 'busy' : running ? 'on' : isError ? 'error' : 'off'
+
+  const host = tgws?.host ?? '127.0.0.1'
+  const port = tgws?.port ?? 1443
+  const lanOpen = host === '0.0.0.0' || !!shareInfo?.lanLink
+  const address = `127.0.0.1:${port}`
+  const route = tgws?.routeMode ?? 'auto'
+  const viaVpn = Boolean(tgws?.viaIncy) && incyState === 'running'
+  const measured = dcs.length > 0
+  const dcOk = measured ? dcs.filter((d) => d.latencyMs !== null).length : null
+  const version = updateInfo?.installed ?? tgws?.installedVersion
+
+  const title = busy ? (starting ? 'Запускаем прокси…' : 'Останавливаем прокси…') : running ? 'Прокси работает' : isError ? 'Прокси не запустился' : 'Прокси выключен'
+  const text = busy ? (
+    <span className="inline-flex items-center gap-1.5 text-primary">
+      <Loader2 className="size-3.5 animate-spin" />
+      {starting ? 'Поднимаем TgWsProxy на этом компьютере' : 'Останавливаем TgWsProxy'}
+    </span>
+  ) : running ? (
+    lanOpen ? (
+      'Telegram на этом компьютере и телефоны в вашей Wi-Fi сети подключаются через прокси LAZEYKA.'
+    ) : (
+      'Telegram на этом компьютере подключается через прокси LAZEYKA.'
+    )
+  ) : isError ? (
+    <span className="text-st-err-text">{status.lastError || 'TgWsProxy завершился с ошибкой. Попробуйте включить ещё раз или загляните в логи.'}</span>
+  ) : (
+    'Помогает, если Telegram плохо грузит фото, видео и сообщения. Включите прокси и добавьте его в Telegram одной кнопкой.'
+  )
+
+  const routeValue = `${route === 'worker' ? 'Свой Cloudflare Worker' : 'Авто'}${tgws?.viaIncy ? ', через VPN' : ''}`
+
   return (
-    <BasePage title="Telegram">
+    <BasePage
+      title="Telegram"
+      header={
+        showUpdate && updateInfo ? (
+          <div className="mr-1 flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              data-tour="tg-update"
+              disabled={installing}
+              onClick={() => setUpdateDialogOpen(true)}
+              title={formatInstalledVersion(updateInfo.installed)}
+              className="h-8 gap-1.5 rounded-lg border-primary/45 text-xs"
+            >
+              {installing ? <Loader2 className="size-3.5 animate-spin text-primary" /> : <Sparkles className="size-3.5 text-primary" />}
+              {installing ? 'Устанавливаем TgWsProxy…' : 'Обновить TgWsProxy'}
+              {!installing && (
+                <span className="rounded-md bg-primary px-1.5 py-px text-[10.5px] font-bold text-primary-foreground tabular-nums">v{updateInfo.latest}</span>
+              )}
+            </Button>
+            {!installing && (
+              <Button variant="ghost" size="icon" className="size-8 rounded-lg" onClick={dismissUpdate} title="Позже: не напоминать об этой версии" aria-label="Позже">
+                <X className="size-3.5" />
+              </Button>
+            )}
+          </div>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleCheckUpdate()}
+            disabled={checkingUpdate || installing}
+            title="Проверить, вышла ли новая версия TgWsProxy"
+            className="mr-1 h-8 rounded-lg text-xs"
+          >
+            <RefreshCw className={cn('size-3.5', checkingUpdate && 'animate-spin')} />
+            {checkingUpdate ? 'Проверяем…' : 'Проверить обновления'}
+          </Button>
+        )
+      }
+    >
       <ComponentUpdateDialog
         component="tgws"
         open={updateDialogOpen}
@@ -323,513 +348,129 @@ const TelegramPage: React.FC = () => {
         onLater={dismissUpdate}
         onClose={() => setUpdateDialogOpen(false)}
       />
-      <div className="px-4 pb-6 space-y-4">
-        {showBanner && updateInfo && (
-          <div className={cn(
-            'ui-glow relative flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 transition',
-            installing && 'pointer-events-none opacity-80'
-          )}>
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/20 text-primary ">
-              {installing
-                ? <Loader2 className="h-4 w-4 animate-spin" />
-                : <Sparkles className="h-4 w-4" />}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-foreground">
-                {installing
-                  ? 'Устанавливаем TgWsProxy…'
-                  : `Доступно обновление TgWsProxy — v${updateInfo.latest}`}
-              </div>
-              <div className="text-xs text-muted-foreground truncate">
-                {installing
-                  ? 'Проверяем новую версию и зависимости, затем перезапускаем прокси…'
-                  : formatInstalledVersion(updateInfo.installed)}
-              </div>
-            </div>
-            {!installing && (
-              <div className="flex shrink-0 items-center gap-2">
-                <Button variant="ghost" size="sm" onClick={dismissUpdate}>
-                  Позже
-                </Button>
-                <Button size="sm" onClick={() => setUpdateDialogOpen(true)}>
-                  <Download className="h-3.5 w-3.5" />
-                  Обновить
-                </Button>
-              </div>
-            )}
-          </div>
-        )}
-
-        <SwitcherCard
-          icon={TelegramIcon}
-          title="Telegram"
-          subtitle={
-            (tgws?.host ?? '127.0.0.1') === '0.0.0.0'
-              ? `127.0.0.1:${tgws?.port ?? 1443} · открыт для телефона`
-              : `${tgws?.host ?? '127.0.0.1'}:${tgws?.port ?? 1443}`
+      <div className="mx-auto flex w-full max-w-[1080px] flex-col lz-page-gap lz-page-x pb-5">
+        <LzHero
+          data-tour="tg-console"
+          tone={tone}
+          className={cn(isError && 'border-st-err/45')}
+          visual={
+            <ConnectDial
+              tone={tone}
+              pingMs={null}
+              size={128}
+              label={running ? 'Выключить прокси Telegram' : 'Включить прокси Telegram'}
+              onPress={() => void toggle(!(running || status.state === 'starting'))}
+              disabled={busy}
+            />
           }
-          version={updateInfo?.installed ?? tgws?.installedVersion}
-          versionFallback="встроенная"
-          onVersionClick={() => setUpdateDialogOpen(true)}
-          status={status}
-          onToggle={(v) => (v ? tgwsStart() : tgwsStop()).catch(() => void 0)}
-          footer={running ? null : 'Нажмите для запуска'}
+          title={
+            <span className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+              {title}
+              {running && status.startedAt && <Uptime since={status.startedAt} className="text-[13px] font-semibold tracking-normal text-primary" />}
+            </span>
+          }
+          text={text}
+          extra={
+            <div className="mt-1 w-full">
+              <ProxyRoute on={running} busy={busy} error={isError} address={address} route={route} viaVpn={viaVpn} dcOk={dcOk} dcTotal={5} />
+            </div>
+          }
+          actions={
+            <>
+              <Button size="lg" onClick={addToTelegram} data-tour="tg-add" title="Telegram откроется и предложит добавить прокси" className="h-11 rounded-xl px-5 text-[14px]">
+                <TelegramIcon className="size-4" />
+                Добавить в Telegram
+              </Button>
+              <PhoneQr
+                open={qrOpen}
+                onOpenChange={setQrOpen}
+                share={shareInfo}
+                enabling={enablingLan}
+                onEnable={() => void handleEnableLan()}
+                onDisable={() => void tgwsDisableLan().then(setShareInfo).catch(() => void 0)}
+              >
+                <Button variant="outline" size="lg" data-tour="tg-qr-button" className="h-10 rounded-xl px-5 text-[13px]">
+                  <Smartphone className="size-4" />
+                  Показать QR
+                </Button>
+              </PhoneQr>
+            </>
+          }
+          footer={
+            <div className="flex flex-wrap items-stretch gap-2">
+              <ConnectLink
+                open={linkOpen}
+                onOpenChange={setLinkOpen}
+                link={link}
+                onOpen={() => {
+                  setLinkOpen(false)
+                  addToTelegram()
+                }}
+                onCopy={() => void copyLink()}
+                onPhone={() => {
+                  setLinkOpen(false)
+                  setQrOpen(true)
+                }}
+              >
+                <StatChip
+                  icon={<ShieldCheck />}
+                  tone={running ? 'on' : isError ? 'error' : 'off'}
+                  label="Адрес прокси"
+                  value={host === '0.0.0.0' ? `0.0.0.0:${port}` : `${host}:${port}`}
+                  sensitive={host === '127.0.0.1' ? undefined : 'ip'}
+                  title="Подключить Telegram по ссылке"
+                  onClick={() => setLinkOpen(true)}
+                />
+              </ConnectLink>
+              <StatChip
+                icon={<Smartphone />}
+                tone={lanOpen ? 'on' : 'off'}
+                label="Телефон"
+                value={shareInfo?.lanLink ? `открыт, ${shareInfo.lanIp}` : 'только этот ПК'}
+                sensitive={shareInfo?.lanLink ? 'ip' : undefined}
+                title="Подключить Telegram на телефоне по QR"
+                onClick={() => setQrOpen(true)}
+              />
+              <StatChip
+                icon={<Route />}
+                tone={viaVpn || route === 'worker' ? 'on' : 'off'}
+                label="Маршрут"
+                value={routeValue}
+                title="Изменить маршрут"
+                onClick={() => openSettings('route')}
+                className="min-w-[180px] flex-1"
+              />
+              <StatChip
+                icon={<Package />}
+                label="Версия"
+                value={`TgWsProxy ${version ?? 'встроенный'}`}
+                title="Сменить или обновить версию TgWsProxy"
+                onClick={() => setUpdateDialogOpen(true)}
+                aside={
+                  showUpdate && updateInfo ? (
+                    <span className="shrink-0 rounded-md bg-primary/12 px-1.5 py-0.5 text-[11px] font-bold text-primary tabular-nums">есть v{updateInfo.latest}</span>
+                  ) : undefined
+                }
+              />
+            </div>
+          }
         />
 
-        {/* Connection Link & Quick Share */}
-        <Card className="cyber-card">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-            <div>
-              <CardTitle className="text-base font-bold flex items-center gap-2">
-                <TelegramIcon className="size-5 text-st-info-text" />
-                <span>Ссылка для подключения Telegram</span>
-              </CardTitle>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Защищённый MTProto прокси с маскировкой под WebSocket трафик.
-              </p>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <Button
-                size="sm"
-                variant="outline"
-                className={cn(
-                  'h-8 text-xs gap-1.5 rounded-xl border-border/80 transition-all',
-                  showQr && 'bg-primary/15 border-primary/40 text-primary '
-                )}
-                onClick={() => setShowQr((v) => !v)}
-              >
-                <QrCode className="size-3.5" />
-                <span>QR-код</span>
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <Input
-                  readOnly
-                  value={link || 'Запустите прокси для получения ссылки…'}
-                  placeholder="Запустите прокси для получения ссылки"
-                  className="font-mono text-xs pr-9 bg-background/50 border-border/70 rounded-xl select-all"
-                  onClick={(e) => (e.target as HTMLInputElement).select()}
-                />
-              </div>
-              <Button
-                size="icon-sm"
-                variant="outline"
-                className="rounded-xl cursor-pointer hover:border-primary/50 hover:text-primary transition-colors"
-                onClick={async () => {
-                  if (!link) return
-                  await writeClipboard(link)
-                  toast.success('Ссылка скопирована', { style: POWER_ON_TOAST_STYLE })
-                }}
-                title="Скопировать ссылку"
-              >
-                <Copy className="size-4" />
-              </Button>
-              <Button
-                size="icon-sm"
-                variant="outline"
-                className="rounded-xl cursor-pointer hover:border-st-info/50 hover:text-st-info-text dark:hover:text-st-info-text transition-colors"
-                onClick={() => link && openTelegramLink(link).catch(() => void 0)}
-                title="Открыть в Telegram"
-              >
-                <ExternalLink className="size-4" />
-              </Button>
-              <Button
-                size="icon-sm"
-                variant="outline"
-                className="rounded-xl cursor-pointer hover:border-primary/50 hover:text-primary transition-colors"
-                onClick={handleRegenerateLink}
-                disabled={regenerating}
-                title="Сгенерировать новый секретный ключ"
-              >
-                {regenerating
-                  ? <Loader2 className="size-4 animate-spin" />
-                  : <ReloadTgwsIcon className="size-4" />}
-              </Button>
-            </div>
+        <DcRadar dcs={dcs} pinging={pingingDcs} checkedAt={dcsAt} proxyOn={running} onCheck={pingDcs} />
 
-            {/* QR Code Section */}
-            {showQr && (
-              <div className="rounded-2xl border border-border/80 bg-background/60 p-5 animate-in fade-in zoom-in-95">
-                <div className="flex flex-col md:flex-row items-center gap-6">
-                  {activeQrLink ? (
-                    <div className="rounded-2xl bg-white p-3.5 shadow-[0_0_25px_rgba(255,255,255,0.15)] shrink-0">
-                      <QRCodeSVG
-                        value={activeQrLink}
-                        size={150}
-                        level="M"
-                        includeMargin={false}
-                      />
-                    </div>
-                  ) : (
-                    <div className="relative flex size-[178px] shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-border/80 bg-card/60">
-                      {/* Размытый «QR» на фоне — понятно, что здесь появится код. */}
-                      <div aria-hidden className="absolute inset-4 grid grid-cols-6 gap-1 opacity-[0.12] blur-[1.5px]">
-                        {Array.from({ length: 36 }, (_, i) => (
-                          <span key={i} className={cn('rounded-[2px]', (i * 7 + (i % 5)) % 3 ? 'bg-foreground' : 'bg-transparent')} />
-                        ))}
-                      </div>
-                      <Button className="relative h-10 rounded-xl px-4 text-xs font-bold shadow-lg" disabled={enablingLan} onClick={() => void handleEnableLan()}>
-                        {enablingLan ? <Loader2 className="size-4 animate-spin" /> : <Smartphone className="size-4" />}
-                        Показать QR
-                      </Button>
-                    </div>
-                  )}
-
-                  <div className="flex-1 space-y-3 min-w-0">
-                    <div>
-                      <div className="text-sm font-bold text-foreground flex items-center gap-2">
-                        <Smartphone className="size-4 text-primary" />
-                        Подключение смартфона через Wi-Fi
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                        Отсканируйте камерой телефона для моментального добавления прокси в официальное приложение Telegram.
-                      </p>
-                    </div>
-
-                    <div className="flex items-start gap-2 rounded-xl border border-border/60 bg-card/50 px-3 py-2 text-xs text-muted-foreground">
-                      <Wifi className="mt-0.5 size-3.5 shrink-0 text-primary" />
-                      {shareInfo?.lanLink ? (
-                        <span className="flex-1 leading-relaxed">
-                          Адрес ПК в сети: <span className="font-mono font-semibold text-foreground">{shareInfo.lanIp}:{shareInfo.port}</span>. Телефон должен
-                          быть в той же Wi-Fi сети.{' '}
-                          <button
-                            type="button"
-                            className="cursor-pointer font-semibold text-primary hover:underline"
-                            onClick={() => void tgwsDisableLan().then(setShareInfo).catch(() => void 0)}
-                          >
-                            Закрыть доступ для телефона
-                          </button>
-                        </span>
-                      ) : (
-                        <span className="flex-1 leading-relaxed">
-                          Сейчас прокси работает только для этого ПК. «Показать QR» откроет его для устройств в вашей Wi-Fi сети — Telegram на ПК
-                          продолжит работать как раньше.
-                        </span>
-                      )}
-                    </div>
-
-                    {activeQrLink && (
-                    <div className="flex flex-wrap gap-2 pt-1">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-8 text-xs gap-1.5 rounded-xl cursor-pointer hover:border-primary/50"
-                        onClick={async () => {
-                          await writeClipboard(activeQrLink)
-                          toast.success('tg:// ссылка скопирована', { style: POWER_ON_TOAST_STYLE })
-                        }}
-                      >
-                        <Copy className="size-3.5" />
-                        Скопировать tg://
-                      </Button>
-                      {activeHttpLink && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-8 text-xs gap-1.5 rounded-xl cursor-pointer hover:bg-foreground/[0.06]"
-                          onClick={async () => {
-                            await writeClipboard(activeHttpLink)
-                            toast.success('t.me ссылка скопирована', { style: POWER_ON_TOAST_STYLE })
-                          }}
-                        >
-                          <ExternalLink className="size-3.5" />
-                          Скопировать t.me/proxy
-                        </Button>
-                      )}
-                    </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <p className="text-xs text-muted-foreground inline-flex flex-wrap items-center gap-x-1 gap-y-0.5">
-              Вставьте ссылку в Telegram
-              <span className="opacity-70">&rarr;</span>
-              Настройки
-              <span className="opacity-70">&rarr;</span>
-              Продвинутые настройки
-              <span className="opacity-70">&rarr;</span>
-              Тип соединения
-              <span className="opacity-70">&rarr;</span>
-              <MoreVertical className="size-3.5 translate-y-px -mx-1.5" />
-              <span>или нажмите</span>
-              <ExternalLink className="size-3.5 translate-y-px" />
-              <span>для мгновенного подключения.</span>
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Telegram Data Centers Ping Monitor */}
-        <Card className="cyber-card">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-            <div>
-              <CardTitle className="text-base font-bold flex items-center gap-2">
-                <Server className="size-4.5 text-primary" />
-                <span>Датацентры Telegram (DC1 - DC5)</span>
-              </CardTitle>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Мониторинг задержки прямого подключения к узлам Telegram.
-              </p>
-            </div>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => { void handlePingDcs() }}
-              disabled={pingingDcs}
-              className="h-8 text-xs gap-1.5 rounded-xl cursor-pointer border-border/80 hover:border-primary/50 hover:text-primary transition-all"
-            >
-              {pingingDcs ? <Loader2 className="size-3.5 animate-spin text-primary" /> : <RefreshCw className="size-3.5" />}
-              <span>Замерить задержку</span>
-            </Button>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-              {(dcs.length > 0 ? dcs : [
-                { dc: 1, name: 'DC1 (Pluto)', location: 'США (Майами)', ip: '149.154.175.50', port: 443, latencyMs: null, status: 'offline' as const },
-                { dc: 2, name: 'DC2 (Venus)', location: 'Европа (Амстердам)', ip: '149.154.167.51', port: 443, latencyMs: null, status: 'offline' as const },
-                { dc: 3, name: 'DC3 (Aurora)', location: 'США (Майами)', ip: '149.154.175.100', port: 443, latencyMs: null, status: 'offline' as const },
-                { dc: 4, name: 'DC4 (Vesta)', location: 'Европа (Амстердам)', ip: '149.154.167.91', port: 443, latencyMs: null, status: 'offline' as const },
-                { dc: 5, name: 'DC5 (Flora)', location: 'Азия (Сингапур)', ip: '91.108.56.165', port: 443, latencyMs: null, status: 'offline' as const }
-              ]).map((d) => {
-                const isGood = d.latencyMs !== null && d.latencyMs < 100
-                const isMedium = d.latencyMs !== null && d.latencyMs >= 100 && d.latencyMs < 200
-                const isBad = d.latencyMs !== null && d.latencyMs >= 200
-
-                return (
-                  <div
-                    key={d.dc}
-                    className={cn(
-                      'rounded-xl border p-3 flex flex-col justify-between transition-all duration-200 bg-card/60 ',
-                      isGood && 'border-st-ok/30 hover:border-st-ok/50 shadow-[0_0_15px_-4px_rgba(16,185,129,0.15)]',
-                      isMedium && 'border-st-warn/30 hover:border-st-warn/50',
-                      isBad && 'border-st-err/30 hover:border-st-err/50',
-                      d.latencyMs === null && 'border-border/60'
-                    )}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-bold text-xs text-foreground font-mono">{d.name}</span>
-                        {d.latencyMs !== null ? (
-                          <span className={cn(
-                            'rounded-full px-2 py-0.5 text-[10px] font-mono font-bold border',
-                            isGood && 'bg-st-ok/15 text-st-ok-text border-st-ok/30',
-                            isMedium && 'bg-st-warn/15 text-st-warn-text border-st-warn/30',
-                            isBad && 'bg-st-err/15 text-st-err-text border-st-err/30'
-                          )}>
-                            {d.latencyMs} мс
-                          </span>
-                        ) : pingingDcs ? (
-                          <span className="text-[10px] text-primary font-mono animate-pulse">пинг…</span>
-                        ) : (
-                          <span className="text-[10px] text-muted-foreground/60 font-mono">—</span>
-                        )}
-                      </div>
-                      <div className="text-[11px] text-muted-foreground">{d.location}</div>
-                    </div>
-                    <div className="mt-3 pt-2 border-t border-border/40 text-[10px] font-mono text-muted-foreground/70 truncate" title={`${d.ip}:${d.port}`}>
-                      {d.ip}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Parameters */}
-        <Card className="cyber-card">
-          <CardHeader>
-            <CardTitle className="text-base font-bold">Параметры соединения</CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-4">
-            <div className="space-y-1.5">
-              <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Хост</Label>
-              <Input paste
-                value={hostDraft ?? tgws?.host ?? ''}
-                onChange={(e) => setHostDraft(e.target.value)}
-                placeholder="127.0.0.1"
-                className="rounded-xl bg-background/50 border-border/70 font-mono text-xs"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Порт</Label>
-              <Input
-                type="number"
-                value={portDraft ?? String(tgws?.port ?? 1443)}
-                onChange={(e) => setPortDraft(e.target.value)}
-                className="rounded-xl bg-background/50 border-border/70 font-mono text-xs"
-              />
-            </div>
-            <div className="md:col-span-2 space-y-1.5">
-              <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Секретный ключ (32-hex MTProto)</Label>
-              <Input paste
-                value={secretDraft ?? tgws?.secret ?? ''}
-                onChange={(e) => setSecretDraft(e.target.value)}
-                className="font-mono text-xs rounded-xl bg-background/50 border-border/70"
-              />
-            </div>
-            <div className="md:col-span-2 flex items-center justify-between gap-3">
-              <p className="text-[11px] text-muted-foreground">
-                Хост 0.0.0.0 открывает прокси для телефона в той же Wi-Fi сети.
-              </p>
-              <div className="flex gap-2">
-                {connDirty && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      setHostDraft(null)
-                      setPortDraft(null)
-                      setSecretDraft(null)
-                    }}
-                  >
-                    Отменить
-                  </Button>
-                )}
-                <Button size="sm" disabled={!connDirty} onClick={() => void handleSaveConnection()}>
-                  Сохранить
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Маршрут Telegram: свой Cloudflare Worker и VPN */}
-        <Card className="cyber-card">
-          <CardHeader>
-            <CardTitle className="text-base font-bold">Маршрут Telegram</CardTitle>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Каким путём TgWsProxy соединяется с серверами Telegram.
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {(
-                [
-                  {
-                    id: 'auto',
-                    title: 'Авто (как у Flowseal)',
-                    text: 'Прямой WebSocket к Telegram. Если не вышло — ваш Worker, затем общий CF-прокси.'
-                  },
-                  {
-                    id: 'worker',
-                    title: 'Через свой Cloudflare Worker',
-                    text: 'Все соединения идут через ваш Worker, прямой WebSocket выключен. Для случаев, когда провайдер режет Telegram.'
-                  }
-                ] as const
-              ).map((o) => {
-                const active = (tgws?.routeMode ?? 'auto') === o.id
-                return (
-                  <button
-                    key={o.id}
-                    type="button"
-                    onClick={() => void handleSetRouteMode(o.id)}
-                    className={cn(
-                      'rounded-xl border px-3 py-2.5 text-left transition-colors cursor-pointer',
-                      active ? 'border-primary/60 bg-primary/10' : 'border-border/60 bg-card/50 hover:border-primary/40'
-                    )}
-                  >
-                    <span className="flex items-center gap-2 text-xs font-semibold text-foreground">
-                      <span className={cn('size-2 rounded-full', active ? 'bg-primary' : 'bg-border')} />
-                      {o.title}
-                    </span>
-                    <span className="mt-1 block text-[11px] leading-snug text-muted-foreground">{o.text}</span>
-                  </button>
-                )
-              })}
-            </div>
-
-            <div className="space-y-1.5">
-              <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                Свой Cloudflare Worker (домен)
-              </Label>
-              <div className="flex gap-2">
-                <Input paste
-                  value={workerDraft ?? tgws?.cfproxyWorkerDomain ?? ''}
-                  onChange={(e) => setWorkerDraft(e.target.value)}
-                  placeholder="my-worker.example.workers.dev"
-                  className="rounded-xl bg-background/50 border-border/70 font-mono text-xs"
-                />
-                <Button
-                  size="sm"
-                  onClick={() => void handleSaveWorker()}
-                  disabled={workerDraft === null}
-                  className="shrink-0"
-                >
-                  Сохранить
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void handleCheckWorker()}
-                  disabled={checkingWorker || !(tgws?.cfproxyWorkerDomain ?? '').trim()}
-                  className="shrink-0"
-                >
-                  {checkingWorker ? <Loader2 className="size-3.5 animate-spin" /> : 'Проверить'}
-                </Button>
-              </div>
-              {workerChecks && workerChecks.length > 0 && (
-                <div className="space-y-1">
-                  {workerChecks.map((c) => (
-                    <div
-                      key={c.domain}
-                      className={cn(
-                        'rounded-lg border px-2.5 py-1.5 text-[11px]',
-                        c.ok
-                          ? 'border-st-ok/30 bg-st-ok/10 text-st-ok-text'
-                          : 'border-st-err/30 bg-st-err/10 text-st-err-text'
-                      )}
-                    >
-                      <span className="font-mono font-semibold">{c.domain}</span> — {c.ok ? `работает, ${c.ms} мс. ` : ''}
-                      {c.detail}
-                    </div>
-                  ))}
-                </div>
-              )}
-              <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Бесплатный способ Flowseal: свой Worker на Cloudflare (домен вида <span className="font-mono">имя.аккаунт.workers.dev</span>).
-                Несколько доменов — через запятую.{' '}
-                {platform !== 'darwin' &&
-                  'Домены Cloudflare (workers.dev, cloudflare.com, cloudflare.dev) LAZEYKA сама добавит в список Zapret, как требует инструкция. '}
-                Кнопка «Проверить» делает то же рукопожатие, что и
-                TgWsProxy. Инструкция:{' '}
-                <button
-                  type="button"
-                  className="text-primary underline underline-offset-2"
-                  onClick={() =>
-                    void openExternalUrl('https://github.com/Flowseal/tg-ws-proxy/blob/main/docs/RU/CfWorker.md')
-                  }
-                >
-                  CfWorker.md
-                </button>
-                .
-              </p>
-            </div>
-
-            <label className="flex items-center justify-between gap-4 cursor-pointer rounded-xl border border-border/60 bg-card/50 px-3 py-2.5">
-              <span className="text-xs leading-relaxed">
-                <span className="font-semibold text-foreground block">Дополнительно: TgWsProxy через VPN INCY</span>
-                <span className="text-muted-foreground">
-                  Когда INCY подключён, соединения TgWsProxy (в том числе к Worker) выходят через VPN — и при полном VPN,
-                  и в режиме ExitLag. Не действует, пока INCY отключён.
-                </span>
-              </span>
-              <Switch checked={Boolean(tgws?.viaIncy)} onCheckedChange={(v) => void handleToggleViaIncy(v)} />
-            </label>
-          </CardContent>
-        </Card>
-
-        {status.lastError && (
-          <Card className="border-st-err/40 bg-st-err/20 ">
-            <CardContent className="pt-4">
-              <p className="text-xs text-st-err-text font-mono">{status.lastError}</p>
-            </CardContent>
-          </Card>
-        )}
+        <TgSettings
+          ref={settingsRef}
+          tab={settingsTab}
+          onTab={setSettingsTab}
+          link={link}
+          regenerating={regenerating}
+          onRegenerate={() => void handleRegenerateLink()}
+          onShowQr={() => {
+            // Окно QR привязано к кнопке в пульте — сначала вернуть пульт в поле зрения.
+            document.querySelector('[data-tour="tg-console"]')?.scrollIntoView({ block: 'start' })
+            requestAnimationFrame(() => setQrOpen(true))
+          }}
+        />
       </div>
     </BasePage>
   )

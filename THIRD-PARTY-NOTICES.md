@@ -82,6 +82,13 @@ script and add `--profile` plumbing needed by LAZEYKA's strategy
 selector; they are released under the same terms as the upstream files
 they touch.
 
+The Ubuntu package uses `nfqws` from the [bol-van v72.13 release](https://github.com/bol-van/zapret/releases/tag/v72.13)
+and ships its upstream license next to the executable. The build imports
+the 22 bundled profiles, lists, and packet templates from the verified
+[Flowseal 1.10.3 archive](https://github.com/Flowseal/zapret-discord-youtube/releases/tag/1.10.3).
+The Linux port translates the profiles to nfqws arguments in
+`scripts/fetch-linux-zapret.mjs`.
+
 ---
 
 ## 4. WinDivert

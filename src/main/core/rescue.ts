@@ -1,7 +1,8 @@
 /**
  * Мастер «Ничего не открывается».
  *
- * Проверяет по шагам: интернет вообще → DNS → популярные сайты → VPN-узел →
+ * Проверяет по шагам: интернет вообще → DNS → VPN-узел → популярные сайты
+ * (общая с панелью «Сервисы» проверка getServicesReport) →
  * системные причины (права, службы, hosts, прокси). У каждой найденной
  * проблемы — кнопка «Исправить»; там, где исправление что-то меняет, ответ
  * несёт действие «Откатить». Без нажатия ничего не меняется, записи Flowseal
@@ -12,6 +13,7 @@ import dns from 'node:dns'
 import { getZapretStatus, restartZapret, startZapret } from './zapret'
 import { getIncyStatus, incyTunnelAlive, forceIncyFailover } from './incy-engine'
 import { applySystemDns, readDnsActive } from './dns-doh'
+import { getServicesReport } from './service-status'
 
 export interface RescueAction {
   action: string
@@ -60,15 +62,6 @@ function tcpOk(host: string, port: number, ms = 4000): Promise<boolean> {
     s.once('connect', () => done(true))
     s.once('error', () => done(false))
   })
-}
-
-async function siteOk(url: string): Promise<boolean> {
-  try {
-    const res = await fetch(url, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(8000) })
-    return res.status > 0 && res.status < 500
-  } catch {
-    return false
-  }
 }
 
 export async function runRescue(): Promise<RescueItem[]> {
@@ -124,23 +117,27 @@ export async function runRescue(): Promise<RescueItem[]> {
     }
   }
 
-  // 4. Популярные сайты.
-  const sites: [string, string][] = [
-    ['YouTube', 'https://www.youtube.com/generate_204'],
-    ['Discord', 'https://discord.com/'],
-    ['Telegram (веб)', 'https://web.telegram.org/']
-  ]
-  const results = await Promise.all(sites.map(async ([name, url]) => [name, await siteOk(url)] as const))
-  const failed = results.filter(([, ok]) => !ok).map(([n]) => n)
+  // 4. Популярные сайты — та же проверка и те же правила, что у панели «Сервисы»
+  // на главной (service-status.ts). Свежий результат уходит и в панель.
+  const rep = await getServicesReport(true)
+  const MAIN: string[] = ['youtube', 'discord', 'telegram', 'twitch', 'steam']
+  const main = rep.results.filter((r) => MAIN.includes(r.id))
+  const down = main.filter((r) => r.state === 'down')
+  const partial = main.filter((r) => r.state === 'partial')
   const zapretOn = getZapretStatus().state === 'running'
-  if (failed.length === 0) {
-    items.push({ id: 'sites', title: 'Популярные сайты', status: 'ok', message: 'YouTube, Discord и Telegram отвечают.' })
+  const okNames = main.filter((r) => r.state === 'ok' || r.state === 'slow').map((r) => (r.via === 'proxy' ? `${r.name} (через прокси LAZEYKA)` : r.name))
+  if (down.length === 0 && partial.length === 0) {
+    items.push({ id: 'sites', title: 'Популярные сайты', status: 'ok', message: `Отвечают: ${okNames.join(', ')}.` })
   } else {
+    const lines = [
+      down.length ? `Не открываются: ${down.map((r) => `${r.name} — ${r.detail}`).join('; ')}.` : '',
+      partial.length ? `Частично: ${partial.map((r) => `${r.name} — ${r.detail}`).join('; ')}.` : ''
+    ].filter(Boolean)
     items.push({
       id: 'sites',
       title: 'Популярные сайты',
-      status: 'warn',
-      message: `Не открываются: ${failed.join(', ')}.${
+      status: down.length ? 'fail' : 'warn',
+      message: `${lines.join(' ')}${
         zapretOn
           ? ' Zapret включён — перезапустите его; если не поможет, подберите стратегию на вкладке Zapret («Тест стратегий»).'
           : incy.state === 'running'

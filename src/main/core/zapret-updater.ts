@@ -1,10 +1,12 @@
-import { fetchWithMirror } from '../utils/mirror'
+import { fetchWithMirror, normalizeSha256 } from '../utils/mirror'
+import { appLog } from '../utils/app-logger'
 import { installZapretBundle } from './zapret'
 import { bundledZapretVersion } from './zapret-service-settings'
 import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 import { fetchLatestGithubRelease, type GhRelease } from '../utils/github-release'
 import { checkMacUpdate, installMacUpdate } from './zapret-mac-updater'
+import { linuxZapretVersion } from './zapret-linux'
 
 const REPO = 'Flowseal/zapret-discord-youtube'
 const REQUEST_HEADERS: Record<string, string> = {
@@ -19,6 +21,8 @@ export interface ZapretUpdateInfo {
   assetName?: string
   assetUrl?: string
   assetSize?: number
+  /** SHA-256 архива из API релизов GitHub («sha256:…»), если GitHub его отдал. */
+  assetDigest?: string
   releaseUrl?: string
   publishedAt?: string
   // True when the current `latest` tag matches the one the user previously
@@ -95,6 +99,7 @@ function installedVersion(cfgInstalled?: string): string | undefined {
 
 /** Installed/bundled version for the UI — works offline (no GitHub call). */
 export async function getZapretInstalledVersion(): Promise<string | null> {
+  if (process.platform === 'linux') return linuxZapretVersion()
   if (process.platform === 'darwin') {
     const cfg = await getAppConfig()
     return cfg.zapret?.installedVersion?.trim() || null
@@ -109,6 +114,7 @@ function compareBaseline(installed?: string): string {
 }
 
 export async function checkZapretUpdate(force = false): Promise<ZapretUpdateInfo> {
+  if (process.platform === 'linux') return { installed: (await linuxZapretVersion()) ?? undefined, hasUpdate: false }
   // macOS: Mac-сборка берётся из Flowseal/zapret-mac-discord-youtube (zapret-mac-updater.ts).
   if (process.platform === 'darwin') return checkMacUpdate(force)
   hydrateCacheFromDisk()
@@ -164,6 +170,7 @@ export async function checkZapretUpdate(force = false): Promise<ZapretUpdateInfo
     assetName: zipAsset?.name ?? `zapret-discord-youtube-${cleanTag}.zip`,
     assetUrl: assetDownloadUrl,
     assetSize: zipAsset?.size,
+    assetDigest: normalizeSha256(zipAsset?.digest) ?? undefined,
     releaseUrl: release.html_url ?? (tag ? `https://github.com/${REPO}/releases/tag/${tag}` : undefined),
     publishedAt: release.published_at,
     dismissed: !!latest && dismissedTag === latest
@@ -174,22 +181,86 @@ export async function checkZapretUpdate(force = false): Promise<ZapretUpdateInfo
   return info
 }
 
+/** Ссылка на архив релиза Flowseal: только github.com/<REPO>/releases/download/<tag>/<имя>.zip. */
+export function parseOfficialZapretAssetUrl(url: string | undefined): { tag: string; name: string } | null {
+  if (!url) return null
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return null
+  }
+  if (u.protocol !== 'https:' || u.hostname !== 'github.com' || u.search || u.hash) return null
+  const m = /^\/([^/]+)\/([^/]+)\/releases\/download\/([^/]+)\/([^/]+\.zip)$/i.exec(u.pathname)
+  if (!m || `${m[1]}/${m[2]}`.toLowerCase() !== REPO.toLowerCase()) return null
+  let tag: string
+  let name: string
+  try {
+    tag = decodeURIComponent(m[3])
+    name = decodeURIComponent(m[4])
+  } catch {
+    return null
+  }
+  if (tag.includes('..') || name.includes('..') || /[\\/]/.test(tag + name)) return null
+  return { tag, name }
+}
+
+/** Сумма ассета из API релиза по тегу (если в кэше её нет: проверка шла через запасной путь без API). */
+async function digestForTag(tag: string, assetName: string): Promise<string | null> {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/${encodeURIComponent(tag)}`, {
+      headers: REQUEST_HEADERS,
+      signal: AbortSignal.timeout(15_000)
+    })
+    if (!res.ok) return null
+    const rel = (await res.json()) as GhRelease
+    return normalizeSha256(rel.assets?.find((a) => a.name === assetName)?.digest)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Установить обновление Zapret. Ссылку из окна программы не используем:
+ * архив берётся по ссылке из ответа API релизов GitHub, полученного самим
+ * main-процессом, и сверяется с SHA-256 оттуда же (с GitHub и с зеркала).
+ * Без суммы файл с зеркала не ставится.
+ */
 export async function installZapretUpdate(
-  assetUrl: string,
+  requestedUrl: string,
   expectedVersion?: string
 ): Promise<{ strategies: number; installedVersion?: string }> {
-  if (process.platform === 'darwin') return installMacUpdate(assetUrl, expectedVersion)
-  if (!assetUrl) throw new Error('Пустая ссылка на архив')
+  if (process.platform === 'linux') throw new Error('Zapret обновляется вместе с пакетом LAZEYKA для Linux.')
+  if (process.platform === 'darwin') return installMacUpdate(requestedUrl, expectedVersion)
+
+  let info = await checkZapretUpdate(false)
+  let asset = parseOfficialZapretAssetUrl(info.assetUrl)
+  if (!asset) {
+    info = await checkZapretUpdate(true)
+    asset = parseOfficialZapretAssetUrl(info.assetUrl)
+  }
+  if (!asset || !info.assetUrl) throw new Error('Не удалось получить ссылку на архив Zapret из релизов GitHub')
+  const assetUrl = info.assetUrl
+  if (requestedUrl && requestedUrl !== assetUrl) {
+    appLog('warn', 'zapret-updater: ссылка из окна не совпала с ответом GitHub — используется ссылка из ответа GitHub')
+  }
+  const digest = normalizeSha256(info.assetDigest) ?? (await digestForTag(asset.tag, asset.name))
+  if (!digest) appLog('warn', 'zapret-updater: GitHub не отдал SHA-256 архива — зеркало для этой установки отключено')
 
   let buf: Buffer
   try {
-    const res = await fetchWithMirror(assetUrl, { headers: { 'User-Agent': REQUEST_HEADERS['User-Agent'] } })
+    const res = await fetchWithMirror(
+      assetUrl,
+      { headers: { 'User-Agent': REQUEST_HEADERS['User-Agent'] } },
+      { sha256: digest, mirrorRequiresDigest: true }
+    )
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const ab = await res.arrayBuffer()
     buf = Buffer.from(ab)
   } catch (e) {
     throw new Error(`Не удалось скачать архив: ${e instanceof Error ? e.message : String(e)}`)
   }
+  expectedVersion = info.latest ?? asset.tag.replace(/^v/i, '')
 
   const result = await installZapretBundle(new Uint8Array(buf))
 

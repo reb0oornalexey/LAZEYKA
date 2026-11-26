@@ -1,0 +1,17 @@
+[Unit]
+Description=LAZEYKA DNS resolver
+After=network.target
+
+[Service]
+DynamicUser=yes
+LoadCredential=resolver.json:/var/lib/lazeyka-dns/resolver.json
+ExecStart=/opt/LAZEYKA/resources/incy/sing-box run -c ${CREDENTIALS_DIRECTORY}/resolver.json
+Restart=on-failure
+RestartSec=2s
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

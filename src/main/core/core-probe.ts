@@ -22,7 +22,7 @@ import {
   buildWireGuardEndpoint,
   type IncyNode
 } from './incy-engine'
-import { corePreferenceFor, computePorts } from './incy-topology'
+import { buildChainOutbounds, corePreferenceFor, computePorts } from './incy-topology'
 import { buildXrayConfig } from './incy-xray'
 import { dataDir, incyBinaryPath, isXrayAvailable, xrayAssetsDir, xrayBinaryPath } from '../utils/dirs'
 import { registerChild, unregisterChild } from '../utils/child-registry'
@@ -63,9 +63,9 @@ export function freePort(): Promise<number> {
   })
 }
 
-async function waitListening(port: number, cp: ChildProcess, timeoutMs = 6000): Promise<boolean> {
+async function waitListening(port: number, cp: ChildProcess, timeoutMs = 6000, signal?: AbortSignal): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !signal?.aborted) {
     if (cp.exitCode !== null) return false
     const ok = await new Promise<boolean>((resolve) => {
       const s = net.createConnection({ host: '127.0.0.1', port })
@@ -88,7 +88,13 @@ export interface TempCore {
 }
 
 /** Поднять временное ядро с SOCKS5 (UDP включён) на loopback для одного узла. */
-export async function startTempCore(node: IncyNode): Promise<TempCore> {
+interface ProbeChain {
+  entry: IncyNode
+  core: TempCore['core']
+}
+
+export async function startTempCore(node: IncyNode, signal?: AbortSignal, chain?: { core: TempCore['core']; entry?: IncyNode }): Promise<TempCore> {
+  signal?.throwIfAborted()
   const settings = {
     ...loadIncySettings(),
     // Замер: весь трафик через узел, без блокировок.
@@ -97,11 +103,14 @@ export async function startTempCore(node: IncyNode): Promise<TempCore> {
     routingMode: 'global' as const
   }
   const port = await freePort()
-  const pref = corePreferenceFor(node, settings)
+  signal?.throwIfAborted()
+  const pref = chain?.core ?? corePreferenceFor(node, settings)
   const useXray = pref === 'xray' && isXrayAvailable()
+  if (chain?.core === 'xray' && !useXray) throw new Error('Ядро Xray недоступно')
   const tmp = path.join(dataDir(), `temp-probe-${randomBytes(5).toString('hex')}.json`)
 
   let bin: string
+  let config: Record<string, unknown>
   let env: NodeJS.ProcessEnv = process.env
   if (useXray) {
     const ports = { ...computePorts(port), bridge: port }
@@ -110,28 +119,40 @@ export async function startTempCore(node: IncyNode): Promise<TempCore> {
       chained: true,
       bypassDomains: [],
       routingMode: 'global',
-      geoTier: 'none'
+      geoTier: 'none',
+      chainEntry: chain?.entry
     }) as Record<string, any> | null
     if (!cfg) throw new Error('узел не поддерживается ядром Xray')
     cfg.log = { loglevel: 'none', access: 'none' }
-    writeFileSync(tmp, JSON.stringify(cfg), 'utf-8')
+    config = cfg
     bin = xrayBinaryPath()
     env = { ...process.env, XRAY_LOCATION_ASSET: xrayAssetsDir() }
   } else {
     const isWg = node.protocol === 'wireguard'
-    const cfg: Record<string, unknown> = {
+    const outbound = isWg ? null : buildSingBoxOutbound(node, settings)
+    let outbounds = outbound ? [outbound] : []
+    if (chain?.entry) {
+      if (!outbound) throw new Error('WireGuard не поддерживается в этой цепочке')
+      const pair = buildChainOutbounds(outbound, buildSingBoxOutbound(chain.entry, settings))
+      if (!pair.ok) throw new Error(pair.reason)
+      outbounds = pair.outbounds
+    }
+    config = {
       log: { level: 'error' },
       inbounds: [{ type: 'mixed', tag: 'in', listen: '127.0.0.1', listen_port: port }],
       ...(isWg ? { endpoints: [buildWireGuardEndpoint(node)] } : {}),
-      outbounds: isWg
-        ? [{ type: 'direct', tag: 'direct' }]
-        : [buildSingBoxOutbound(node, settings), { type: 'direct', tag: 'direct' }],
-      route: { final: 'proxy', auto_detect_interface: true }
+      outbounds: [...outbounds, { type: 'direct', tag: 'direct' }],
+      ...(chain ? { dns: { servers: [{ type: 'local', tag: 'probe-local' }] } } : {}),
+      route: {
+        final: 'proxy',
+        auto_detect_interface: true,
+        ...(chain ? { default_domain_resolver: 'probe-local' } : {})
+      }
     }
-    writeFileSync(tmp, JSON.stringify(cfg), 'utf-8')
     bin = incyBinaryPath()
   }
   if (!existsSync(bin)) throw new Error(`ядро не найдено: ${bin}`)
+  writeFileSync(tmp, JSON.stringify(config), 'utf-8')
 
   const cp = spawn(bin, ['run', '-c', tmp], { windowsHide: true, env, cwd: path.dirname(bin), stdio: 'ignore' })
   registerChild(cp.pid, bin)
@@ -149,9 +170,11 @@ export async function startTempCore(node: IncyNode): Promise<TempCore> {
     unregisterChild(cp.pid)
     try { if (existsSync(tmp)) unlinkSync(tmp) } catch { /* noop */ }
   }
+  cp.once('error', stop)
   cp.on('exit', () => unregisterChild(cp.pid))
-  if (!(await waitListening(port, cp))) {
+  if (!(await waitListening(port, cp, undefined, signal)) || signal?.aborted) {
     stop()
+    signal?.throwIfAborted()
     throw new Error('ядро не запустилось')
   }
   return { core: useXray ? 'xray' : 'sing-box', port, stop }
@@ -160,9 +183,9 @@ export async function startTempCore(node: IncyNode): Promise<TempCore> {
 // ---- SOCKS5 -------------------------------------------------------------------
 
 /** SOCKS5 CONNECT к host:port через временное ядро. */
-export function socksConnect(socksPort: number, host: string, port: number, timeoutMs: number): Promise<net.Socket> {
+export function socksConnect(socksPort: number, host: string, port: number, timeoutMs: number, signal?: AbortSignal): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
-    const s = net.createConnection({ host: '127.0.0.1', port: socksPort })
+    const s = net.createConnection({ host: '127.0.0.1', port: socksPort, signal })
     let stage = 0
     let buf = Buffer.alloc(0)
     const fail = (e: Error): void => {
@@ -265,6 +288,7 @@ export interface CoreFetchResult {
   body: string
   ms: number
   error?: string
+  stage?: 'socks' | 'tls' | 'http'
 }
 
 /**
@@ -273,63 +297,119 @@ export interface CoreFetchResult {
  * факт ответа (так определяем, что трафик WARP реально идёт через Cloudflare).
  */
 export async function fetchViaCore(node: IncyNode, testUrl: string, timeoutMs: number): Promise<CoreFetchResult> {
-  const url = new URL(testUrl)
-  const https = url.protocol === 'https:'
-  const port = Number(url.port) || (https ? 443 : 80)
   return withCoreSlot(async () => {
-    let tc: TempCore | null = null
-    const t0 = performance.now()
+    let temp: TempCore | undefined
+    const started = performance.now()
     try {
-      tc = await startTempCore(node)
-      const deadline = Date.now() + timeoutMs
-      const left = (): number => Math.max(500, deadline - Date.now())
-      const raw = await socksConnect(tc.port, url.hostname, port, left())
-      const sock: net.Socket = https
-        ? await new Promise<net.Socket>((resolve, reject) => {
-            const t = tls.connect({ socket: raw, servername: url.hostname, ALPNProtocols: ['http/1.1'] })
-            t.setTimeout(left(), () => {
-              t.destroy()
-              reject(new Error('timeout'))
-            })
-            t.once('secureConnect', () => resolve(t))
-            t.once('error', reject)
-            t.once('close', () => reject(new Error('closed')))
-          })
-        : raw
-      let firstByte = 0
-      const text = await new Promise<string>((resolve) => {
-        const chunks: Buffer[] = []
-        let size = 0
-        const finish = (): void => resolve(Buffer.concat(chunks).toString('utf8'))
-        sock.setTimeout(left(), finish)
-        sock.on('data', (d: Buffer) => {
-          if (!firstByte) firstByte = performance.now()
-          chunks.push(d)
-          size += d.length
-          if (size > 65536) finish()
-        })
-        sock.once('error', finish)
-        sock.once('close', finish)
-        sock.write(
-          `GET ${url.pathname || '/'}${url.search} HTTP/1.1\r\nHost: ${url.hostname}\r\nUser-Agent: LAZEYKA\r\nConnection: close\r\n\r\n`
-        )
-      })
-      sock.destroy()
-      const m = /^HTTP\/1\.[01] (\d{3})/.exec(text)
-      if (!m) return { ok: false, status: 0, body: '', ms: 0, error: 'нет ответа' }
-      const idx = text.indexOf('\r\n\r\n')
-      return {
-        ok: true,
-        status: Number(m[1]),
-        body: idx >= 0 ? text.slice(idx + 4) : '',
-        ms: Math.max(1, Math.round((firstByte || performance.now()) - t0))
-      }
-    } catch (e) {
-      return { ok: false, status: 0, body: '', ms: 0, error: e instanceof Error ? e.message : String(e) }
+      temp = await startTempCore(node)
+      return await fetchThroughSocks(temp.port, testUrl, timeoutMs, started)
+    } catch (error) {
+      return coreFetchError(error)
     } finally {
-      tc?.stop()
+      temp?.stop()
     }
   })
+}
+
+function coreFetchError(error: unknown): CoreFetchResult {
+  return { ok: false, status: 0, body: '', ms: 0, error: error instanceof Error ? error.message : String(error) }
+}
+
+async function fetchThroughSocks(socksPort: number, testUrl: string, timeoutMs: number, t0 = performance.now()): Promise<CoreFetchResult> {
+  let connection: net.Socket | undefined
+  let stage: CoreFetchResult['stage'] = 'socks'
+  try {
+    const url = new URL(testUrl)
+    const https = url.protocol === 'https:'
+    const port = Number(url.port) || (https ? 443 : 80)
+    const deadline = Date.now() + timeoutMs
+    const left = (): number => Math.max(500, deadline - Date.now())
+    const raw = await socksConnect(socksPort, url.hostname, port, left())
+    connection = raw
+    stage = https ? 'tls' : 'http'
+    const sock: net.Socket = https
+      ? await new Promise<net.Socket>((resolve, reject) => {
+          const t = tls.connect({ socket: raw, servername: url.hostname, ALPNProtocols: ['http/1.1'] })
+          t.setTimeout(left(), () => {
+            t.destroy()
+            reject(new Error('timeout'))
+          })
+          t.once('secureConnect', () => resolve(t))
+          t.once('error', reject)
+          t.once('close', () => reject(new Error('closed')))
+        })
+      : raw
+    connection = sock
+    stage = 'http'
+    let firstByte = 0
+    const text = await new Promise<string>((resolve) => {
+      const chunks: Buffer[] = []
+      let size = 0
+      const finish = (): void => resolve(Buffer.concat(chunks).toString('utf8'))
+      sock.setTimeout(left(), finish)
+      sock.on('data', (d: Buffer) => {
+        if (!firstByte) firstByte = performance.now()
+        chunks.push(d)
+        size += d.length
+        if (size > 65536) finish()
+      })
+      sock.once('error', finish)
+      sock.once('close', finish)
+      sock.write(
+        `GET ${url.pathname || '/'}${url.search} HTTP/1.1\r\nHost: ${url.hostname}\r\nUser-Agent: LAZEYKA\r\nConnection: close\r\n\r\n`
+      )
+    })
+    const m = /^HTTP\/1\.[01] (\d{3})/.exec(text)
+    if (!m) return { ok: false, status: 0, body: '', ms: 0, error: 'нет ответа', stage }
+    const idx = text.indexOf('\r\n\r\n')
+    return {
+      ok: true,
+      stage,
+      status: Number(m[1]),
+      body: idx >= 0 ? text.slice(idx + 4) : '',
+      ms: Math.max(1, Math.round((firstByte || performance.now()) - t0))
+    }
+  } catch (error) {
+    return { ...coreFetchError(error), stage }
+  } finally {
+    connection?.destroy()
+  }
+}
+
+type ChainProbeOutcome = 'ok' | 'core' | 'socks' | 'tls' | 'http'
+
+async function probeChainRoute(exit: IncyNode, route: { core: TempCore['core']; entry?: IncyNode }): Promise<ChainProbeOutcome> {
+  return withCoreSlot(async () => {
+    let temp: TempCore | undefined
+    try {
+      temp = await startTempCore(exit, undefined, route)
+      const results = await Promise.all([
+        fetchThroughSocks(temp.port, 'https://www.gstatic.com/generate_204', 6500),
+        fetchThroughSocks(temp.port, 'https://www.cloudflare.com/cdn-cgi/trace', 6500)
+      ])
+      if (results.some((result) => result.ok && result.status >= 200 && result.status < 300)) return 'ok'
+      if (results.some((result) => result.stage === 'http')) return 'http'
+      return results.some((result) => result.stage === 'tls') ? 'tls' : 'socks'
+    } catch {
+      return 'core'
+    } finally {
+      temp?.stop()
+    }
+  })
+}
+
+/** On failure compare both hops alone so a dead endpoint is distinguishable from a failing chain. */
+export async function probeChainPair(
+  exit: IncyNode,
+  chain: ProbeChain
+): Promise<{ ok: true } | { ok: false; pair: ChainProbeOutcome; entry: ChainProbeOutcome; exit: ChainProbeOutcome }> {
+  const pair = await probeChainRoute(exit, chain)
+  if (pair === 'ok') return { ok: true }
+  const [entry, exitOnly] = await Promise.all([
+    probeChainRoute(chain.entry, { core: chain.core }),
+    probeChainRoute(exit, { core: chain.core })
+  ])
+  return { ok: false, pair, entry, exit: exitOnly }
 }
 
 // ---- in front of the TUN ---------------------------------------------------------

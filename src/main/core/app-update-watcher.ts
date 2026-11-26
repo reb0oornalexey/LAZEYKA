@@ -122,7 +122,7 @@ async function runCheck(force: boolean): Promise<void> {
   showSystemNotification(
     `LAZEYKA ${info.latest ?? ''} уже вышла`,
     'Нажмите, чтобы открыть окно обновления. Установка занимает 5–10 секунд, настройки сохраняются.',
-    () => { void openUpdateWindow() }
+    () => { void openUpdateWindow() }, 'updates'
   )
   broadcast()
 }

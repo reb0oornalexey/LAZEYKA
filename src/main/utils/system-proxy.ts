@@ -5,6 +5,7 @@ import path from 'node:path'
 import { domainToASCII } from 'node:url'
 import { dataDir } from './dirs'
 import { decodeConsole } from './console-decode'
+import { clearLinuxSystemProxy, setLinuxSystemProxy } from './system-proxy-linux'
 
 const execFileAsync = promisify(execFile)
 
@@ -360,16 +361,19 @@ function clearDarwinSystemProxySync(): void {
 // ---------------------------------------------------------------------------
 
 export async function setSystemProxy(port = 20808, bypassDomains: string[] = []): Promise<void> {
+  if (process.platform === 'linux') return setLinuxSystemProxy(port, bypassDomains)
   if (process.platform === 'darwin') return setDarwinSystemProxy(port, bypassDomains)
   return setWindowsSystemProxy(port, bypassDomains)
 }
 
 export async function clearSystemProxy(): Promise<void> {
+  if (process.platform === 'linux') return clearLinuxSystemProxy()
   if (process.platform === 'darwin') return clearDarwinSystemProxy()
   return clearWindowsSystemProxy()
 }
 
 export function clearSystemProxySync(): void {
+  if (process.platform === 'linux') return clearLinuxSystemProxy()
   if (process.platform === 'darwin') return clearDarwinSystemProxySync()
   clearWindowsSystemProxySync()
 }

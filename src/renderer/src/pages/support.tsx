@@ -1,23 +1,18 @@
 import React from 'react'
-import {
-  Send,
-  UserCheck,
-  Heart,
-  Coins,
-  ExternalLink,
-  Headset,
-  MessageSquare,
-  Lightbulb,
-  Bug,
-  ScrollText,
-  Copy
-} from 'lucide-react'
+import { RepliesInbox } from '@renderer/components/hub/replies-inbox'
+import { SupportReportCard } from '@renderer/components/hub/support-report-card'
+import { IdeaCard } from '@renderer/components/hub/idea-card'
+import { AuthorCorner, useAuthorSecretTap } from '@renderer/components/hub/author-panel'
+import { DonationsBlock } from '@renderer/components/hub/donations-block'
+import { Coins, ExternalLink, Headset, Lightbulb, Bug, Copy, Bell } from 'lucide-react'
 import { toast } from 'sonner'
-import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
-import { Badge } from '@renderer/components/ui/badge'
+import { LzPanel, LzSectionHead, Segmented } from '@renderer/components/lz'
+import { Button } from '@renderer/components/ui/button'
 import BasePage from '@renderer/components/base/base-page'
 import { openExternalUrl } from '@renderer/utils/ipc'
-import { SUPPORT_TELEGRAM_URL } from '@renderer/lib/utils'
+import { cn, SUPPORT_TELEGRAM_URL } from '@renderer/lib/utils'
+import { Hint } from '@renderer/components/prematch/hint'
+import { TelegramBrandIcon } from '@renderer/components/service-icons'
 
 /**
  * Отдельная страница про автора, поддержку и обратную связь.
@@ -29,170 +24,188 @@ import { SUPPORT_TELEGRAM_URL } from '@renderer/lib/utils'
  * а эта страница — «что делать, если не работает, и как поддержать».
  */
 
-const FEEDBACK_KINDS: { icon: React.ReactNode; title: string; text: string }[] = [
-  {
-    icon: <Bug className="size-4 text-st-err-text" />,
-    title: 'Что-то не работает',
-    text: 'Опишите, что делали и что получилось вместо ожидаемого. Приложите логи со вкладки «Логи» — по ним причина видна почти всегда.'
-  },
-  {
-    icon: <Lightbulb className="size-4 text-st-warn-text" />,
-    title: 'Есть идея',
-    text: 'Расскажите, какой задачи вам не хватает в приложении. Предложения читаются все.'
-  },
-  {
-    icon: <MessageSquare className="size-4 text-st-info-text" />,
-    title: 'Просто вопрос',
-    text: 'Не разобрались с настройкой или не поняли, что выбрать — спрашивайте, это нормально.'
+type WriteTab = 'report' | 'idea'
+const WRITE_TAB_KEY = 'lz-support-write-tab'
+
+const readTab = (): WriteTab => {
+  try {
+    return localStorage.getItem(WRITE_TAB_KEY) === 'idea' ? 'idea' : 'report'
+  } catch {
+    return 'report'
   }
-]
+}
 
 const Support: React.FC = () => {
+  const authorTap = useAuthorSecretTap()
   const handle = SUPPORT_TELEGRAM_URL.replace(/^https?:\/\//, '')
+  const [tab, setTab] = React.useState<WriteTab>(readTab)
+  // Есть ли активный сбор: тогда старая карточка с постоянными ссылками не нужна — способы оплаты в сборе.
+  const [hasCampaign, setHasCampaign] = React.useState(false)
+  const openWrite = (t: WriteTab): void => {
+    pickTab(t)
+    requestAnimationFrame(() => {
+      const el = document.getElementById('support-write')
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      // Курсор сразу в форму: у отчёта — первая плитка вида, у идеи — поле текста.
+      window.setTimeout(() => {
+        const target = el?.querySelector<HTMLElement>(t === 'idea' ? '[data-write="idea"] textarea' : '[data-write="report"] button')
+        target?.focus({ preventScroll: true })
+      }, 350)
+    })
+  }
+  const pickTab = (t: WriteTab): void => {
+    setTab(t)
+    try {
+      localStorage.setItem(WRITE_TAB_KEY, t)
+    } catch {
+      /* хранилище недоступно — просто не запоминаем */
+    }
+  }
 
   return (
     <BasePage title="Автор и поддержка">
-      <div className="px-4 pb-8 space-y-5 max-w-3xl mx-auto">
-        {/* Автор */}
-        <Card className="cyber-card border-primary/40 bg-gradient-to-br from-card via-card to-primary/5">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <UserCheck className="size-4 text-primary" />
-              Создатель проекта
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="size-11 rounded-2xl bg-primary/20 border border-primary/40 flex items-center justify-center font-bold text-base text-primary font-mono">
-                R
-              </div>
-              <div>
-                <div className="font-bold text-sm text-foreground flex items-center gap-2">
-                  reb0oorn
-                  <Badge
-                    variant="outline"
-                    className="text-[10px] px-2 py-0 font-mono text-primary border-primary/40 bg-primary/10"
-                  >
-                    Автор
-                  </Badge>
-                </div>
-                <div className="text-[11px] text-muted-foreground font-mono">
-                  Разработчик и создатель проекта
-                </div>
-              </div>
-            </div>
-
-            <p className="text-[11px] text-muted-foreground leading-relaxed pt-1 border-t border-border/40">
-              LAZEYKA развивается силами одного человека и распространяется бесплатно. Приложение
-              не продаёт доступ к VPN и не имеет своих серверов — оно только помогает работать с
-              теми, что у вас уже есть.
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Поддержка и обратная связь */}
-        <Card className="cyber-card border-primary/40">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <Headset className="size-4 text-primary" />
-              Поддержка: жалобы, вопросы, предложения
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <p className="text-[11px] text-muted-foreground leading-relaxed">
-              Официальный канал поддержки LAZEYKA в Telegram. Пишите туда по любому поводу,
-              связанному с приложением.
-            </p>
-
-            <div className="space-y-2">
-              {FEEDBACK_KINDS.map((k) => (
+      <div className="mx-auto flex w-full max-w-[1080px] flex-col lz-page-gap lz-page-x pb-5">
+        {/* Сверху — кто делает программу и куда писать: это должно быть видно без прокрутки */}
+        <div className="grid gap-3 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+          <LzPanel className="flex flex-col p-5">
+            <div className="flex items-center gap-3.5">
+              <div className="relative flex size-14 shrink-0 items-center justify-center">
                 <div
-                  key={k.title}
-                  className="flex items-start gap-2.5 p-2.5 rounded-lg border border-border/50 bg-card/40"
-                >
-                  <span className="shrink-0 mt-px">{k.icon}</span>
-                  <div className="min-w-0">
-                    <div className="text-xs font-semibold text-foreground">{k.title}</div>
-                    <div className="text-[11px] text-muted-foreground leading-relaxed mt-0.5">
-                      {k.text}
-                    </div>
-                  </div>
+                  aria-hidden
+                  className="absolute -inset-2 rounded-full"
+                  style={{ background: 'radial-gradient(closest-side, color-mix(in oklab, var(--primary) 22%, transparent), transparent)' }}
+                />
+                <div className="relative flex size-14 items-center justify-center rounded-2xl border border-primary/40 bg-primary/15 text-[22px] font-extrabold text-primary">R</div>
+              </div>
+              <div className="min-w-0">
+                <div className="text-[12px] text-muted-foreground">Создатель проекта</div>
+                <div className="flex items-center gap-2 text-[20px] font-extrabold leading-tight tracking-[-0.01em] text-[color:var(--text-title)]">
+                  <span onClick={authorTap} className="select-none">
+                    reb0oorn
+                  </span>
+                  <span className="rounded-md bg-primary px-1.5 py-px text-[10.5px] font-bold text-primary-foreground">Автор</span>
                 </div>
-              ))}
+                <div className="text-[12px] text-muted-foreground">Разработчик и создатель LAZEYKA</div>
+              </div>
             </div>
+            <p className="mt-3.5 border-t border-foreground/[0.07] pt-3 text-[12.5px] leading-relaxed text-muted-foreground">
+              LAZEYKA делает один человек, программа бесплатна. Она не продаёт VPN и не имеет своих серверов — только помогает работать с теми, что у вас уже
+              есть.
+            </p>
+          </LzPanel>
 
-            <button
-              type="button"
-              onClick={() => openExternalUrl(SUPPORT_TELEGRAM_URL)}
-              className="group w-full cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-primary/20 via-primary/15 to-primary/20 text-primary border border-primary/40 hover:border-primary/70 transition-all duration-200 active:brightness-90"
-            >
-              <Headset className="size-4 group-hover:scale-110 transition-transform" />
-              <span>Открыть поддержку LAZEYKA в Telegram</span>
-              <ExternalLink className="size-3 opacity-70" />
-            </button>
-
-            {/* Адрес текстом: если кнопка почему-то не откроет браузер, его
-                можно скопировать и вбить вручную. */}
-            <button
-              type="button"
-              onClick={() => {
-                navigator.clipboard.writeText(SUPPORT_TELEGRAM_URL)
-                toast.success('Ссылка скопирована')
-              }}
-              className="w-full cursor-pointer inline-flex items-center justify-center gap-1.5 text-[11px] font-mono text-muted-foreground/80 hover:text-foreground transition-colors"
-            >
-              {handle}
-              <Copy className="size-3" />
-            </button>
-
-            <div className="flex items-start gap-2 p-2.5 rounded-lg border border-border/50 bg-card/40 text-[11px] text-muted-foreground leading-relaxed">
-              <ScrollText className="size-3.5 mt-px shrink-0 text-primary" />
-              <span>
-                Перед обращением: откройте вкладку «Логи», нажмите «Очистить», повторите проблему и
-                нажмите «Копировать». Приложите этот текст к сообщению — так причину найдут в разы
-                быстрее.
-              </span>
+          {/* Главный путь — написать прямо в программе: ответ придёт в колокольчик */}
+          <LzPanel hero tone="on" glow={12} className="flex flex-col p-5" data-tour="support-write-cta">
+            <LzSectionHead
+              title="Написать автору прямо в программе"
+              hint="Отчёт или идея уходят автору напрямую, без Telegram и регистрации. К отчёту можно приложить логи — по ним причину видно почти всегда. Ответ придёт в колокольчик в шапке окна."
+            />
+            <p className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">
+              Что-то не работает или есть идея — напишите здесь. Автор читает всё сам и отвечает прямо в программе.
+            </p>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <Button className="h-11 rounded-xl text-[14px] shadow-[0_0_18px_-6px_var(--primary)]" onClick={() => openWrite('report')}>
+                <Bug /> Есть проблема
+              </Button>
+              <Button variant="outline" className="h-11 rounded-xl text-[14px]" onClick={() => openWrite('idea')}>
+                <Lightbulb /> Есть идея
+              </Button>
             </div>
-          </CardContent>
-        </Card>
+            <div className="mt-auto flex items-center gap-1.5 pt-3 text-[12px] text-muted-foreground">
+              <Bell className="size-3.5 shrink-0 text-primary" />
+              Ответ придёт в колокольчик в шапке окна
+            </div>
+          </LzPanel>
+        </div>
+
+        {/* Сбор — сразу под автором: сумма, полоса и «Поддержать» видны без прокрутки */}
+        <div data-tour={hasCampaign ? 'support-donate' : undefined} className="flex flex-col gap-3 empty:hidden">
+          <DonationsBlock onLoaded={setHasCampaign} />
+        </div>
+
+        <RepliesInbox />
+
+        {/* Написать автору из программы: отчёт или идея — одна карточка с переключателем */}
+        <section id="support-write" className="scroll-mt-4 space-y-2.5" data-tour="support-write">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="lz-onwall flex items-center gap-1.5 text-[14px] font-bold text-[color:var(--text-title)]">
+              Написать автору из программы
+              <Hint text="Сообщение уйдёт автору напрямую, без Telegram. Ответ придёт в колокольчик в шапке окна." />
+            </div>
+            <Segmented
+              items={[
+                { id: 'report' as WriteTab, label: 'Сообщить о проблеме', icon: Bug },
+                { id: 'idea' as WriteTab, label: 'Предложить идею', icon: Lightbulb }
+              ]}
+              value={tab}
+              onChange={pickTab}
+              aria-label="Что отправить"
+              className="ml-auto w-[380px]"
+            />
+          </div>
+          {/* Обе формы остаются смонтированными: набранный текст не теряется при переключении */}
+          <div data-tour="support-report" data-write="report" className={cn(tab !== 'report' && 'hidden')}>
+            <SupportReportCard />
+          </div>
+          <div data-write="idea" className={cn(tab !== 'idea' && 'hidden')}>
+            <IdeaCard />
+          </div>
+        </section>
 
         {/* Донаты */}
-        <Card className="cyber-card">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <Heart className="size-4 text-st-err-text fill-st-err/20" />
-              Поддержать развитие проекта
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <p className="text-[11px] text-muted-foreground leading-relaxed">
-              Это не обязательно и ни на что в приложении не влияет: все функции доступны всем и
-              всегда. Но если LAZEYKA оказалась полезной — любая сумма помогает продолжать.
-            </p>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                onClick={() => openExternalUrl('https://www.donationalerts.com/r/reb0oorn')}
-                className="group cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-st-warn/15 via-orange-500/15 to-st-err/15 text-st-warn-text hover:text-st-warn-text border border-st-warn/30 hover:border-st-warn/60 shadow-[0_0_12px_rgba(245,158,11,0.15)] hover:shadow-[0_0_18px_rgba(245,158,11,0.3)] transition-all duration-200 active:brightness-90"
-              >
-                <Coins className="size-4 group-hover:scale-110 transition-transform" />
-                <span>DonationAlerts</span>
+        {!hasCampaign && (
+          <LzPanel className="p-4" data-tour="support-donate">
+            <LzSectionHead
+              title="Поддержать развитие проекта"
+              sub="Это не обязательно и ни на что в приложении не влияет: все функции доступны всем и всегда"
+            />
+            <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">Если LAZEYKA оказалась полезной — любая сумма помогает продолжать.</p>
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <Button variant="outline" className="h-10 rounded-xl" onClick={() => openExternalUrl('https://www.donationalerts.com/r/reb0oorn')}>
+                <Coins className="size-4" />
+                DonationAlerts
                 <ExternalLink className="size-3 opacity-70" />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => openExternalUrl('https://t.me/send?start=IVCka2D1cl42')}
-                className="group cursor-pointer inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-st-info/15 via-st-info/15 to-indigo-500/15 text-st-info-text hover:text-st-info-text border border-st-info/30 hover:border-st-info/60 shadow-[0_0_12px_rgba(14,165,233,0.15)] hover:shadow-[0_0_18px_rgba(14,165,233,0.3)] transition-all duration-200 active:brightness-90"
-              >
-                <Send className="size-4 group-hover:scale-110 transition-transform" />
-                <span>CryptoBot в Telegram</span>
+              </Button>
+              <Button variant="outline" className="h-10 rounded-xl" onClick={() => openExternalUrl('https://t.me/send?start=IVCka2D1cl42')}>
+                <TelegramBrandIcon className="size-4" />
+                CryptoBot в Telegram
                 <ExternalLink className="size-3 opacity-70" />
-              </button>
+              </Button>
             </div>
-          </CardContent>
-        </Card>
+          </LzPanel>
+        )}
+
+        {/* Telegram — запасной путь, если программа не может связаться с сервером */}
+        <div
+          className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-foreground/[0.07] bg-foreground/[0.03] px-3.5 py-2.5 text-[12px] text-muted-foreground"
+          data-tour="support-telegram"
+        >
+          <Headset className="size-3.5 shrink-0" />
+          <span>Не получается отправить из программы? Есть канал поддержки в Telegram.</span>
+          <button
+            type="button"
+            onClick={() => openExternalUrl(SUPPORT_TELEGRAM_URL)}
+            className="inline-flex cursor-pointer items-center gap-1 font-semibold text-foreground/80 hover:text-foreground"
+          >
+            <TelegramBrandIcon className="size-3.5" />
+            Открыть
+            <ExternalLink className="size-3 opacity-70" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              navigator.clipboard.writeText(SUPPORT_TELEGRAM_URL)
+              toast.success('Ссылка скопирована')
+            }}
+            className="inline-flex cursor-pointer items-center gap-1 font-mono hover:text-foreground"
+            title="Скопировать ссылку"
+          >
+            {handle}
+            <Copy className="size-3" />
+          </button>
+        </div>
+
+        <AuthorCorner />
       </div>
     </BasePage>
   )

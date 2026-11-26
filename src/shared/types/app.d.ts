@@ -67,6 +67,26 @@ interface AppConfig {
   // ---- Logs
   maxLogDays: number
 
+  // ---- Окно и интерфейс (Е6)
+  /** Какой раздел открывать при запуске: Главная или последний открытый. */
+  startPage?: 'home' | 'last'
+  /** Основное окно поверх всех окон. */
+  windowAlwaysOnTop?: boolean
+  /** Масштаб всего основного окна: 0.9 / 1 / 1.1 / 1.25. */
+  windowZoom?: number
+  /** Подсказки «i»: подробные или только первая фраза. */
+  hintMode?: 'full' | 'short'
+  /** Показывать состояние служб во всплывающей подсказке значка в трее. */
+  trayStatusTooltip?: boolean
+  /** Какие системные уведомления показывать (по умолчанию все). */
+  notifyKinds?: NotifyKindsConfig
+  /** Напоминание о трафике подписки INCY: остаток меньше этого процента. */
+  subTrafficNotifyPct?: number
+  /** Проверять и скачивать обновления через локальный прокси INCY, если VPN подключён. */
+  updatesViaIncy?: boolean
+  /** Сохранять профиль .lazeyka перед установкой новой версии (последние 3). */
+  backupBeforeUpdate?: boolean
+
   // ---- Shortcuts
   showWindowShortcut?: string
   restartAppShortcut?: string
@@ -76,6 +96,12 @@ interface AppConfig {
   exitlagToggleShortcut?: string
   incyBestNodeShortcut?: string
   zapretRestartShortcut?: string
+  /** «Перед каткой»: начать сессию с последней целью или завершить идущую. */
+  prematchToggleShortcut?: string
+  /** Мини-окно с переключателями поверх остальных окон — показать / скрыть. */
+  miniWindowShortcut?: string
+  /** Включить / выключить все звуки программы. */
+  muteSoundsShortcut?: string
   /** Короткий системный звук при срабатывании горячей клавиши (слышно в полноэкранной игре). */
   hotkeySound?: boolean
   /** Какой звук играть при срабатывании горячей клавиши и сценария. */
@@ -93,6 +119,21 @@ interface AppConfig {
   // ---- Feature-specific sub-configs
   tgws?: TgwsConfig
   zapret?: ZapretConfig
+}
+
+/**
+ * Виды системных уведомлений (Е6). Выключенный вид не показывает всплывашку
+ * системы; предупреждения автора в окне (плашка) от этого не зависят.
+ */
+interface NotifyKindsConfig {
+  /** Горячие клавиши, сценарии, включение и выключение служб. */
+  actions?: boolean
+  /** Новая версия LAZEYKA. */
+  updates?: boolean
+  /** Сбои служб и автоматические переключения. */
+  errors?: boolean
+  /** Ответы, объявления и предупреждения автора. */
+  author?: boolean
 }
 
 interface TgwsConfig {
@@ -164,4 +205,11 @@ interface CoreStatus {
   pid?: number
   startedAt?: number
   lastError?: string
+  /**
+   * Уточнение к state === 'starting' (сейчас — только Zapret на Windows):
+   * waiting — ждём готовности Windows, verifying — запущен, идёт самопроверка (жёлтый, «проверяю»),
+   * retrying — повторный запуск после неудачи. Текст для пользователя — в detail.
+   */
+  phase?: 'waiting' | 'verifying' | 'retrying'
+  detail?: string
 }

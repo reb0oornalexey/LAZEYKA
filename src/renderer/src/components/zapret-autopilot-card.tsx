@@ -1,21 +1,9 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import {
-  Compass,
-  Gamepad2,
-  Headphones,
-  Activity,
-  CheckCircle2,
-  AlertTriangle,
-  RefreshCw,
-  Loader2,
-  ChevronDown,
-  ChevronRight,
-  Sparkles
-} from 'lucide-react'
-import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
+import { Compass, Gamepad2, Headphones, Activity, RefreshCw, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { Switch } from '@renderer/components/ui/switch'
+import { Rows, SettingRow, SettingsGroup, SwitchRow } from '@renderer/components/settings/setting-row'
+import { useZapretMeta } from '@renderer/components/zapret/zapret-meta'
 import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
 import {
   autopilotGetStatus,
@@ -29,8 +17,8 @@ import {
   type DiscordRegionPing
 } from '@renderer/utils/ipc'
 
-const ZapretAutopilotCard: React.FC = () => {
-  const [open, setOpen] = useState(false)
+const ZapretAutopilotCard = (): React.JSX.Element => {
+  const patchMeta = useZapretMeta((s) => s.patch)
   const [autopilot, setAutopilot] = useState<AutopilotStatus | null>(null)
   const [gameMode, setGameMode] = useState<GameModeStatus | null>(null)
   const [discordPings, setDiscordPings] = useState<DiscordRegionPing[]>([])
@@ -53,12 +41,13 @@ const ZapretAutopilotCard: React.FC = () => {
     try {
       const next = await autopilotSetEnabled(enabled)
       setAutopilot(next)
+      patchMeta({ autopilot: next })
       toast.success(enabled ? 'Автопилот стратегий включен' : 'Автопилот выключен', {
         description: enabled ? 'LAZEYKA будет автоматически мониторить и подбирать рабочие стратегии' : undefined,
         style: POWER_ON_BANNER_STYLE
       })
-    } catch (e: any) {
-      toast.error('Ошибка переключения автопилота', { description: e?.message || String(e) })
+    } catch (e) {
+      toast.error('Ошибка переключения автопилота', { description: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -66,12 +55,13 @@ const ZapretAutopilotCard: React.FC = () => {
     try {
       const next = await gameModeSetEnabled(enabled)
       setGameMode(next)
+      patchMeta({ gameMode: next })
       toast.success(enabled ? 'Умный игровой режим включен' : 'Игровой режим выключен', {
         description: enabled ? 'Game Filter будет автоматически включаться при запуске игр и Discord' : undefined,
         style: POWER_ON_BANNER_STYLE
       })
-    } catch (e: any) {
-      toast.error('Ошибка переключения игрового режима', { description: e?.message || String(e) })
+    } catch (e) {
+      toast.error('Ошибка переключения игрового режима', { description: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -81,9 +71,10 @@ const ZapretAutopilotCard: React.FC = () => {
     try {
       const next = await autopilotRunCycle(true)
       setAutopilot(next)
+      patchMeta({ autopilot: next })
       toast.success('Проверка автопилота завершена', { style: POWER_ON_BANNER_STYLE })
-    } catch (e: any) {
-      toast.error('Ошибка проверки автопилота', { description: e?.message || String(e) })
+    } catch (e) {
+      toast.error('Ошибка проверки автопилота', { description: e instanceof Error ? e.message : String(e) })
     } finally {
       setCheckingAutopilot(false)
     }
@@ -102,156 +93,110 @@ const ZapretAutopilotCard: React.FC = () => {
     }
   }
 
+  const apState =
+    autopilot?.lastStatus === 'healthy'
+      ? { text: 'Последняя проверка: всё открывается', cls: 'text-st-ok-text' }
+      : autopilot?.lastStatus === 'degraded'
+        ? { text: 'Последняя проверка: сайты открываются плохо, ищет замену', cls: 'text-st-warn-text' }
+        : autopilot?.lastStatus === 'switching'
+          ? { text: 'Переключает стратегию…', cls: 'text-primary' }
+          : { text: 'Ещё не проверял', cls: 'text-muted-foreground' }
+
   return (
-    <Card className="cyber-card">
-      <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
-        <div className="min-w-0 flex-1">
-          <CardTitle className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-primary" />
-            Автопилот & Игровой режим
-          </CardTitle>
-        </div>
-        <Button
-          variant={open ? 'secondary' : 'outline'}
-          size="sm"
-          onClick={() => setOpen((v) => !v)}
-          className="shrink-0"
-        >
-          {open ? <><ChevronDown className="h-3.5 w-3.5" /> Свернуть</> : <><ChevronRight className="h-3.5 w-3.5" /> Открыть</>}
-        </Button>
-      </CardHeader>
-
-      {open && (
-        <CardContent className="space-y-5 pt-0">
-          {/* 1. Autopilot */}
-          <div className="rounded-lg border border-border bg-card/40 p-3.5 space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-xs font-semibold uppercase tracking-wide text-foreground flex items-center gap-1.5">
-                  <Compass className="h-3.5 w-3.5 text-primary" />
-                  Автопилот стратегий (Smart Auto-Switch)
+    <SettingsGroup title="Автопилот и игры" hint="Программа сама следит за стратегией и включает Game Filter, когда запускается игра." data-tour="zapret-autopilot">
+      <Rows>
+        <SwitchRow
+          id="zapret-autopilot"
+          icon={<Compass />}
+          title="Автопилот стратегий"
+          desc="Время от времени проверяет YouTube и Discord и при сбое переключает Zapret на лучшую стратегию"
+          checked={autopilot?.enabled ?? false}
+          onChange={(v) => void handleToggleAutopilot(v)}
+          below={
+            autopilot && (autopilot.enabled || autopilot.lastStatus !== 'idle') ? (
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+                  <span className={apState.cls}>{apState.text}</span>
+                  <button
+                    type="button"
+                    onClick={() => void handleRunAutopilotCheck()}
+                    disabled={checkingAutopilot}
+                    className="inline-flex cursor-pointer items-center gap-1 font-semibold text-primary hover:underline disabled:opacity-50"
+                  >
+                    {checkingAutopilot ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                    Проверить сейчас
+                  </button>
                 </div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  Фоновый мониторинг доступности YouTube/Discord. При сбоях автоматически переключает Zapret на лучшую стратегию.
-                </div>
-              </div>
-              <Switch
-                checked={autopilot?.enabled ?? false}
-                onCheckedChange={(v) => { void handleToggleAutopilot(v) }}
-              />
-            </div>
-
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pt-1 border-t border-border/50 text-xs">
-              <div className="flex items-center gap-2">
-                <span className="text-muted-foreground">Статус соединения:</span>
-                {autopilot?.lastStatus === 'healthy' ? (
-                  <span className="inline-flex items-center gap-1 text-st-ok-text font-medium">
-                    <CheckCircle2 className="h-3 w-3" /> Стабильно
-                  </span>
-                ) : autopilot?.lastStatus === 'degraded' ? (
-                  <span className="inline-flex items-center gap-1 text-st-warn-text font-medium">
-                    <AlertTriangle className="h-3 w-3" /> Деградация (подбор стратегии)
-                  </span>
-                ) : (
-                  <span className="text-muted-foreground">Ожидание проверки</span>
+                {autopilot?.log && autopilot.log.length > 0 && (
+                  <div className="space-y-0.5 rounded-lg bg-foreground/[0.04] px-2.5 py-1.5 text-[11px] text-muted-foreground">
+                    {autopilot.log.slice(0, 3).map((line, idx) => (
+                      <div key={idx} className="truncate" title={line}>
+                        {line}
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
-
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => { void handleRunAutopilotCheck() }}
-                disabled={checkingAutopilot}
-                className="h-6 px-2 text-[11px] gap-1 self-start sm:self-center"
-              >
-                {checkingAutopilot ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                Проверить сейчас
-              </Button>
-            </div>
-
-            {autopilot?.log && autopilot.log.length > 0 && (
-              <div className="bg-background/80 rounded p-2 text-[10px] font-mono text-muted-foreground max-h-20 overflow-y-auto space-y-0.5">
-                {autopilot.log.slice(0, 4).map((line, idx) => (
-                  <div key={idx} className="truncate">{line}</div>
+            ) : undefined
+          }
+        />
+        <SwitchRow
+          id="zapret-game-mode"
+          icon={<Gamepad2 />}
+          title="Игровой режим"
+          desc="Включает Game Filter, когда запущены Steam, Discord, CS2, Valorant, Dota 2 или Apex"
+          checked={gameMode?.enabled ?? false}
+          onChange={(v) => void handleToggleGameMode(v)}
+          aside={
+            gameMode?.activeGameDetected ? (
+              <span className="rounded-md bg-primary/12 px-1.5 py-0.5 text-[11px] font-semibold text-primary">{gameMode.activeGameDetected}</span>
+            ) : undefined
+          }
+        />
+        <SettingRow
+          id="zapret-discord-rtc"
+          icon={<Headphones />}
+          title="Голосовые серверы Discord"
+          desc="Задержка до ближайших серверов голоса"
+          on={discordPings.length > 0}
+          control={
+            <Button size="sm" variant="outline" onClick={() => void handlePingDiscord()} disabled={pingingDiscord} className="h-8 rounded-lg text-xs">
+              {pingingDiscord ? <Loader2 className="size-3.5 animate-spin" /> : <Activity className="size-3.5" />}
+              Замерить
+            </Button>
+          }
+          below={
+            discordPings.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {discordPings.map((r) => (
+                  <span
+                    key={r.id}
+                    title={r.name}
+                    className="inline-flex items-center gap-2 rounded-lg border border-foreground/[0.08] bg-foreground/[0.035] px-2.5 py-1 text-[12px]"
+                  >
+                    <span className="text-foreground">{r.location}</span>
+                    <span
+                      className={cn(
+                        'font-bold tabular-nums',
+                        r.latencyMs === null
+                          ? 'text-st-err-text'
+                          : r.latencyMs < 65
+                            ? 'text-primary'
+                            : r.latencyMs < 120
+                              ? 'text-st-warn-text'
+                              : 'text-st-err-text'
+                      )}
+                    >
+                      {r.latencyMs === null ? 'нет ответа' : `${r.latencyMs} мс`}
+                    </span>
+                  </span>
                 ))}
               </div>
-            )}
-          </div>
-
-          {/* 2. Smart Game Mode */}
-          <div className="rounded-lg border border-border bg-card/40 p-3.5 space-y-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-xs font-semibold uppercase tracking-wide text-foreground flex items-center gap-1.5">
-                  <Gamepad2 className="h-3.5 w-3.5 text-primary" />
-                  Умный игровой режим (Smart Game Mode)
-                </div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  Автоматически включает Game Filter (порты 1024-65535) при запуске Steam, Discord, CS2, Valorant, Dota 2, Apex.
-                </div>
-              </div>
-              <Switch
-                checked={gameMode?.enabled ?? false}
-                onCheckedChange={(v) => { void handleToggleGameMode(v) }}
-              />
-            </div>
-
-            {gameMode?.activeGameDetected && (
-              <div className="inline-flex items-center gap-1.5 text-xs text-primary bg-primary/10 px-2 py-0.5 rounded">
-                <Gamepad2 className="h-3.5 w-3.5" /> Обнаружена игра: <span className="font-semibold">{gameMode.activeGameDetected}</span>
-              </div>
-            )}
-          </div>
-
-          {/* 3. Discord Voice RTC Ping */}
-          <div className="rounded-lg border border-border bg-card/40 p-3.5 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-xs font-semibold uppercase tracking-wide text-foreground flex items-center gap-1.5">
-                <Headphones className="h-3.5 w-3.5 text-primary" />
-                Discord Voice RTC (Замер задержки голосовых серверов)
-              </div>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => { void handlePingDiscord() }}
-                disabled={pingingDiscord}
-                className="h-6 px-2 text-[11px] gap-1"
-              >
-                {pingingDiscord ? <Loader2 className="h-3 w-3 animate-spin" /> : <Activity className="h-3 w-3" />}
-                Замерить пинг
-              </Button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              {(discordPings.length > 0 ? discordPings : [
-                { id: '1', name: 'Stockholm (Near RU)', location: 'Стокгольм', latencyMs: null, status: 'optimal' as const, endpoint: '' },
-                { id: '2', name: 'Frankfurt (EU Central)', location: 'Франкфурт', latencyMs: null, status: 'optimal' as const, endpoint: '' },
-                { id: '3', name: 'Rotterdam / Amsterdam', location: 'Роттердам', latencyMs: null, status: 'optimal' as const, endpoint: '' }
-              ]).map((r) => (
-                <div key={r.id} className="rounded border border-border/60 bg-background/50 p-2 flex items-center justify-between">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium text-foreground truncate">{r.name}</div>
-                    <div className="text-[10px] text-muted-foreground">{r.location}</div>
-                  </div>
-                  {r.latencyMs !== null ? (
-                    <span className={cn(
-                      'rounded px-1.5 py-0.5 text-[10px] font-mono font-medium',
-                      r.latencyMs < 65 && 'bg-st-ok/15 text-st-ok-text',
-                      r.latencyMs >= 65 && r.latencyMs < 120 && 'bg-st-warn/15 text-st-warn-text',
-                      r.latencyMs >= 120 && 'bg-st-err/15 text-st-err-text'
-                    )}>
-                      {r.latencyMs} мс
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-muted-foreground font-mono">-- мс</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        </CardContent>
-      )}
-    </Card>
+            ) : undefined
+          }
+        />
+      </Rows>
+    </SettingsGroup>
   )
 }
 

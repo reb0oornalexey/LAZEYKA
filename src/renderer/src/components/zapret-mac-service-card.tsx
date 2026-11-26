@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { Loader2, RefreshCw } from 'lucide-react'
-import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
+import { Loader2, Network, RefreshCw, Server, Trash2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import { Segmented } from '@renderer/components/lz'
+import { Rows, SettingRow, SettingsGroup } from '@renderer/components/settings/setting-row'
+import { useZapretMeta } from '@renderer/components/zapret/zapret-meta'
 import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
 import { platform } from '@renderer/utils/init'
 import {
@@ -25,10 +27,10 @@ const LABEL: Record<ZapretMacStateId, string> = {
   ready: 'установлена'
 }
 
-const IPSET_OPTIONS: { value: IpsetFilterMode; label: string; title: string }[] = [
-  { value: 'none', label: 'Выкл', title: 'Без обхода по IP-адресам (только по спискам доменов)' },
-  { value: 'loaded', label: 'Список', title: 'Обход для IP-адресов из ipset-all.txt' },
-  { value: 'any', label: 'Все IP', title: 'Обход для всех IPv4-адресов, кроме исключений' }
+const IPSET_OPTIONS: { id: IpsetFilterMode; label: string; title: string }[] = [
+  { id: 'none', label: 'Выкл', title: 'Без обхода по IP-адресам (только по спискам доменов)' },
+  { id: 'loaded', label: 'Список', title: 'Обход для IP-адресов из ipset-all.txt' },
+  { id: 'any', label: 'Все IP', title: 'Обход для всех IPv4-адресов, кроме исключений' }
 ]
 
 interface Props {
@@ -41,19 +43,24 @@ const ZapretMacServiceCard: React.FC<Props> = ({ disabled }) => {
   const [busy, setBusy] = useState<'install' | 'uninstall' | null>(null)
   const [ipset, setIpset] = useState<IpsetFilterSnapshot | null>(null)
   const [busyIpset, setBusyIpset] = useState<string | null>(null)
+  const patchMeta = useZapretMeta((s) => s.patch)
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
-      setInfo(await zapretMacGetState())
+      const mac = await zapretMacGetState()
+      setInfo(mac)
+      patchMeta({ mac })
     } catch {
       setInfo(null)
     }
     try {
-      setIpset(await zapretGetIpsetFilter())
+      const next = await zapretGetIpsetFilter()
+      setIpset(next)
+      patchMeta({ ipset: next })
     } catch {
       setIpset(null)
     }
-  }, [])
+  }, [patchMeta])
 
   useEffect(() => {
     if (platform === 'darwin') void refresh()
@@ -81,7 +88,9 @@ const ZapretMacServiceCard: React.FC<Props> = ({ disabled }) => {
     if (busyIpset || mode === ipset?.mode) return
     setBusyIpset(mode)
     try {
-      setIpset(await zapretSetIpsetFilter(mode))
+      const next = await zapretSetIpsetFilter(mode)
+      setIpset(next)
+      patchMeta({ ipset: next })
       toast.success('Режим IPset обновлён', {
         description: 'Если Zapret включён, он перезапущен — изменения уже действуют',
         style: POWER_ON_BANNER_STYLE
@@ -100,6 +109,7 @@ const ZapretMacServiceCard: React.FC<Props> = ({ disabled }) => {
     try {
       const next = await zapretUpdateIpsetList()
       setIpset(next)
+      patchMeta({ ipset: next })
       toast.success(`Список обновлён — ${next.lines} записей`, { id: tId, style: POWER_ON_BANNER_STYLE })
     } catch (e) {
       toast.error('Не удалось обновить ipset-список', { id: tId, description: e instanceof Error ? e.message : String(e) })
@@ -112,83 +122,86 @@ const ZapretMacServiceCard: React.FC<Props> = ({ disabled }) => {
   const installed = Boolean(info?.installed)
   const installLabel = !installed ? 'Установить' : state === 'needs_update' ? 'Обновить' : 'Переустановить'
   const lock = disabled || busy !== null
+  const versions = [info?.installedVersion ? `в службе ${info.installedVersion}` : null, info?.bundledVersion ? `в программе ${info.bundledVersion}` : null]
+    .filter(Boolean)
+    .join(', ')
 
   return (
-    <Card className="cyber-card">
-      <CardHeader>
-        <CardTitle>Служба Zapret (macOS)</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <p className="text-xs text-muted-foreground">
-          Zapret работает через службу с правами администратора. Пароль спросят один раз — при установке или обновлении.
-        </p>
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex flex-col">
-            <span className="text-sm">
-              Состояние: <b>{state ? LABEL[state] : '…'}</b>
-            </span>
-            {(info?.installedVersion || info?.bundledVersion) && (
-              <span className="text-xs text-muted-foreground">
-                {info?.installedVersion ? `В службе: ${info.installedVersion}` : 'Служба не установлена'}
-                {info?.bundledVersion ? ` · в приложении: ${info.bundledVersion}` : ''}
-              </span>
-            )}
-            {state === 'needs_update' && info?.detail && <span className="text-xs text-muted-foreground">{info.detail}</span>}
-          </div>
-          <div className="flex shrink-0 gap-2">
-            <Button size="sm" variant="secondary" disabled={lock} onClick={() => void run('install')} className="gap-1.5">
-              {busy === 'install' && <Loader2 className="size-3.5 animate-spin" />}
-              {installLabel}
-            </Button>
-            {installed && (
-              <Button size="sm" variant="outline" disabled={lock} onClick={() => void run('uninstall')} className="gap-1.5">
-                {busy === 'uninstall' && <Loader2 className="size-3.5 animate-spin" />}
-                Удалить
+    <SettingsGroup
+      title="Служба и IP-адреса"
+      hint="Zapret на macOS работает через службу с правами администратора. Пароль спросят один раз — при установке или обновлении."
+      data-tour="zapret-settings"
+    >
+      <Rows>
+        <SettingRow
+          id="zapret-mac-service"
+          icon={<Server />}
+          title="Служба Zapret"
+          desc={
+            <>
+              <span className={state === 'needs_update' ? 'text-st-warn-text' : undefined}>{state ? LABEL[state] : 'проверяю…'}</span>
+              {versions && <span>{`, ${versions}`}</span>}
+              {state === 'needs_update' && info?.detail && <span className="block">{info.detail}</span>}
+            </>
+          }
+          on={state === 'ready'}
+          control={
+            <>
+              <Button size="sm" variant={installed ? 'outline' : 'default'} disabled={lock} onClick={() => void run('install')} className="h-8 rounded-lg text-xs">
+                {busy === 'install' && <Loader2 className="size-3.5 animate-spin" />}
+                {installLabel}
               </Button>
-            )}
-          </div>
-        </div>
-
-        <div>
-          <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
-            IPset
-            {ipset && <span className="ml-1.5 normal-case font-normal">({ipset.lines} IP в списке)</span>}
-          </div>
-          {ipset === null ? (
-            <p className="text-sm text-muted-foreground">Не удалось прочитать списки Zapret.</p>
-          ) : (
-            <div className="flex flex-wrap items-center gap-1.5">
-              {IPSET_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  onClick={() => void pickIpset(opt.value)}
-                  disabled={disabled || !!busyIpset}
-                  title={opt.title}
-                  className={cn(
-                    'rounded-md border px-2.5 py-1 text-xs font-medium transition',
-                    ipset.mode === opt.value ? 'border-primary bg-primary/10 text-foreground' : 'border-border hover:bg-accent/30 text-muted-foreground',
-                    (disabled || !!busyIpset) && 'pointer-events-none opacity-50'
-                  )}
+              {installed && (
+                <Button
+                  size="icon-sm"
+                  variant="outline"
+                  disabled={lock}
+                  onClick={() => void run('uninstall')}
+                  title="Удалить службу"
+                  aria-label="Удалить службу"
+                  className="size-8 rounded-lg text-st-err-text hover:border-st-err/40 hover:text-st-err-text"
                 >
-                  {busyIpset === opt.value ? <Loader2 className="h-3 w-3 animate-spin inline" /> : opt.label}
-                </button>
-              ))}
-              <Button
+                  {busy === 'uninstall' ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                </Button>
+              )}
+            </>
+          }
+        />
+        <SettingRow
+          id="zapret-ipset"
+          icon={<Network />}
+          title="IPset"
+          desc={ipset ? `Обход по IP-адресам · в списке ${ipset.lines.toLocaleString('ru-RU')} IP` : 'Не удалось прочитать списки Zapret'}
+          on={!!ipset && ipset.mode !== 'none'}
+          control={
+            ipset ? (
+              <Segmented
                 size="sm"
-                variant="ghost"
-                onClick={() => void updateList()}
-                disabled={disabled || !!busyIpset}
-                className="ml-1"
-                title="Скачать свежий ipset-список у Flowseal и сделать его активным"
-              >
-                {busyIpset === 'update' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                Обновить список
-              </Button>
-            </div>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+                items={IPSET_OPTIONS}
+                value={ipset.mode}
+                onChange={(v) => {
+                  if (!(disabled || busyIpset)) void pickIpset(v)
+                }}
+                aria-label="IPset"
+                className={cn('w-[230px]', (disabled || !!busyIpset) && 'pointer-events-none opacity-60')}
+              />
+            ) : undefined
+          }
+        />
+        <SettingRow
+          id="zapret-ipset-update"
+          icon={<RefreshCw />}
+          title="Список IP от Flowseal"
+          desc="Скачать свежий ipset-список и сделать его активным"
+          control={
+            <Button size="sm" variant="outline" onClick={() => void updateList()} disabled={disabled || !!busyIpset} className="h-8 rounded-lg text-xs">
+              {busyIpset === 'update' ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+              Обновить список
+            </Button>
+          }
+        />
+      </Rows>
+    </SettingsGroup>
   )
 }
 

@@ -3,15 +3,17 @@
  *
  * Xray exists here for two reasons sing-box cannot cover:
  *
- *  1. **TCP fragmentation** and **noise packets**. Both are Xray features
- *     (`freedom` outbound with `fragment` / `noises`). sing-box 1.11 has no
- *     equivalent at all, which is why the "Фрагментация" and "Шумы" sections
- *     of the settings tab were dead switches before this module existed.
+ *  1. **TCP fragmentation** and **noise packets**, а также параметры узлов из
+ *     ссылок INCY (ECH, закрепление сертификата, finalmask, XHTTP…). В Xray 26
+ *     фрагментация и шумы задаются масками `streamSettings.finalmask` на самом
+ *     прокси-исходящем (см. `incy-finalmask.ts`); прежний отдельный
+ *     `freedom`-исходящий с `dialerProxy` объявлен устаревшим и не строится.
  *  2. **VMess**, which sing-box supports but which LAZEYKA never parsed.
  *
- * Hysteria2 is deliberately absent: Xray-core has no Hysteria2 implementation,
- * so those nodes stay on sing-box. See `incy-topology.ts` for the routing
- * between the two cores.
+ * Hysteria2 по умолчанию остаётся на sing-box. Через Xray (`protocol:
+ * "hysteria"`) идут только узлы с параметрами, которых у sing-box нет
+ * (`pinSHA256`, `fm`), и узлы JSON-подписки, записанные провайдером для Xray.
+ * См. `incy-topology.ts` — выбор ядра.
  *
  * Schema note: Xray outbounds are keyed by `protocol` and nest their transport
  * under `streamSettings`; sing-box outbounds are keyed by `type` and inline
@@ -21,9 +23,15 @@
 
 import type { IncyNode, IncySettings } from './incy-engine'
 import type { IncyPorts } from './incy-topology'
-
-/** Tag of the freedom outbound that applies fragmentation / noises. */
-const FRAGMENT_TAG = 'fragment-out'
+import type { NodeFinalmask } from './incy-links'
+import {
+  applyFinalmask,
+  resolveFragment,
+  resolveNoise,
+  type FragmentShape,
+  type NoiseShape
+} from './incy-finalmask'
+import { muxSkipReason, xrayOutboundSubject } from './incy-mux'
 
 export interface XrayBuildOptions {
   /** Ports this Xray instance should bind. */
@@ -35,6 +43,13 @@ export interface XrayBuildOptions {
   chained: boolean
   /** Domains that must skip the tunnel (split tunnelling + user extras). */
   bypassDomains: string[]
+  /**
+   * Свои исключения «Адреса мимо VPN» (домены и подсети): всегда напрямую; домены
+   * здесь нужны для режима `global`, где список обхода РФ не действует.
+   */
+  extraDirect?: { domains: string[]; cidrs: string[] }
+  /** Не включать логин и пароль на входящих (системный прокси их передать не может). */
+  ignoreAuth?: boolean
   routingMode: 'bypass-ru' | 'global' | 'direct'
   /**
    * How much of the geo database to rely on.
@@ -53,6 +68,11 @@ export interface XrayBuildOptions {
    *                private CIDRs.
    */
   geoTier: 'full' | 'minimal' | 'none'
+  /**
+   * Цепочка узлов на Xray: узел-вход. Выход (тег `proxy`) подключается через него
+   * (`streamSettings.sockopt.dialerProxy`). Фрагментация и шумы — на входе: DPI видит только его.
+   */
+  chainEntry?: IncyNode
 }
 
 /**
@@ -159,56 +179,10 @@ const GEOSITE_PROXY = [
 /** Telemetry, ad and torrent-DHT domains — dropped outright. */
 const GEOSITE_BLOCK = ['geosite:win-spy', 'geosite:category-ads', 'geosite:torrent']
 
-/** `min-max` → validated string, falling back when the user typed nonsense. */
-function rangeOr(value: string | undefined, fallback: string): string {
-  const v = (value ?? '').trim()
-  return /^\d+-\d+$/.test(v) || /^\d+$/.test(v) ? v : fallback
-}
-
-/**
- * Build the `freedom` outbound that performs fragmentation and/or noise
- * injection. The proxy outbound chains through it via
- * `streamSettings.sockopt.dialerProxy`, which is the standard Xray idiom for
- * "dial the real server, but shape the packets on the way out".
- *
- * Returns null when neither feature is enabled, so no dead outbound is emitted.
- */
-function buildFragmentOutbound(settings: IncySettings): Record<string, unknown> | null {
-  if (!settings.fragmentation && !settings.noises) return null
-
-  const out: Record<string, unknown> = {
-    tag: FRAGMENT_TAG,
-    protocol: 'freedom',
-    settings: {} as Record<string, unknown>
-  }
-  const s = out.settings as Record<string, unknown>
-
-  if (settings.fragmentation) {
-    // `packets` accepts "tlshello", a packet range like "1-3", or "all".
-    const packets = (settings.fragmentationPackets ?? '').trim() || 'tlshello'
-    s.fragment = {
-      packets: /^(tlshello|all|\d+(-\d+)?)$/.test(packets) ? packets : 'tlshello',
-      length: rangeOr(settings.fragmentationLength, '50-100'),
-      interval: rangeOr(settings.fragmentationInterval, '10-20')
-    }
-  }
-
-  if (settings.noises) {
-    const type = ['rand', 'str', 'hex'].includes(settings.noisesType)
-      ? settings.noisesType
-      : 'rand'
-    s.noises = [
-      {
-        type,
-        // For "rand" the packet field is a length range; for str/hex it is the
-        // literal payload, so it is passed through untouched.
-        packet: (settings.noisesPacket ?? '').trim() || '50-100',
-        delay: rangeOr(settings.noisesDelay, '10-16')
-      }
-    ]
-  }
-
-  return out
+/** Что накладывается на исходящий: фрагментация TCP и шумовые UDP-пакеты. */
+interface Shaping {
+  fragment: FragmentShape | null
+  noise: NoiseShape | null
 }
 
 /** Attach mux / xudp settings shared by every Xray proxy outbound. */
@@ -224,10 +198,23 @@ function applyXrayMux(outbound: Record<string, unknown>, settings: IncySettings)
   }
 }
 
+/** Глубокая копия finalmask из ссылки (`fm`), чтобы правки не трогали узел. */
+function cloneFinalmask(fm: NodeFinalmask | undefined): Record<string, unknown> | null {
+  if (!fm) return null
+  try {
+    return JSON.parse(JSON.stringify(fm)) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
 /**
  * Translate a node into an Xray `streamSettings` block (TLS / Reality / uTLS).
+ *
+ * Фрагментация и шумы сюда не входят: они добавляются отдельно через
+ * `applyFinalmask`, уже поверх готового блока.
  */
-function buildStreamSettings(node: IncyNode, hasFragment: boolean): Record<string, unknown> {
+function buildStreamSettings(node: IncyNode): Record<string, unknown> {
   // Transport first. This used to be hard-coded to `tcp`, which silently
   // downgraded every WebSocket / gRPC node into something that connects and
   // then fails its handshake.
@@ -239,9 +226,17 @@ function buildStreamSettings(node: IncyNode, hasFragment: boolean): Record<strin
     if (node.wsHost) wsSettings.headers = { Host: node.wsHost }
     stream[network === 'ws' ? 'wsSettings' : 'httpupgradeSettings'] = wsSettings
   } else if (network === 'grpc') {
-    stream.grpcSettings = { serviceName: node.grpcServiceName || '' }
+    stream.grpcSettings = {
+      serviceName: node.grpcServiceName || '',
+      ...(node.grpcAuthority ? { authority: node.grpcAuthority } : {})
+    }
   } else if (network === 'xhttp') {
-    stream.xhttpSettings = { path: node.wsPath || '/', ...(node.wsHost ? { host: node.wsHost } : {}) }
+    stream.xhttpSettings = {
+      path: node.wsPath || '/',
+      ...(node.wsHost ? { host: node.wsHost } : {}),
+      ...(node.xhttpMode ? { mode: node.xhttpMode } : {}),
+      ...(node.xhttpExtra ? { extra: node.xhttpExtra } : {})
+    }
   }
 
   if (node.security === 'reality' && node.publicKey) {
@@ -250,7 +245,9 @@ function buildStreamSettings(node: IncyNode, hasFragment: boolean): Record<strin
       serverName: node.sni || node.server,
       publicKey: node.publicKey,
       shortId: node.shortId || '',
-      fingerprint: node.fingerprint || 'chrome'
+      fingerprint: node.fingerprint || 'chrome',
+      ...(node.spiderX ? { spiderX: node.spiderX } : {}),
+      ...(node.mldsa65Verify ? { mldsa65Verify: node.mldsa65Verify } : {})
     }
   } else if (node.security === 'tls') {
     stream.security = 'tls'
@@ -258,16 +255,100 @@ function buildStreamSettings(node: IncyNode, hasFragment: boolean): Record<strin
       serverName: node.sni || node.server,
       fingerprint: node.fingerprint || 'chrome',
       allowInsecure: node.insecure === true,
-      ...(node.alpn && node.alpn.length > 0 ? { alpn: node.alpn } : {})
+      ...(node.alpn && node.alpn.length > 0 ? { alpn: node.alpn } : {}),
+      ...(node.echConfigList ? { echConfigList: node.echConfigList } : {}),
+      ...(node.pinnedCertSha256 ? { pinnedPeerCertSha256: node.pinnedCertSha256 } : {}),
+      ...(node.verifyCertByName ? { verifyPeerCertByName: node.verifyCertByName } : {})
     }
   }
 
-  // Chain the real dial through the fragment/noise outbound.
-  if (hasFragment) {
-    stream.sockopt = { dialerProxy: FRAGMENT_TAG }
-  }
+  // Маски из ссылки (`fm`) — как есть; наши добавляются к ним позже.
+  const fm = cloneFinalmask(node.finalmask)
+  if (fm) stream.finalmask = fm
 
   return stream
+}
+
+/**
+ * Hysteria2 для Xray (`protocol: "hysteria"`, Xray ≥ 26) из узла-ссылки.
+ *
+ * Нужен только для узлов с параметрами, которых нет у sing-box: закрепление
+ * сертификата `pinSHA256` и маски `fm`. Obfs salamander, прыжки портов и
+ * скорости переносятся в `finalmask.udp` / `finalmask.quicParams`.
+ */
+function buildHysteriaOutbound(node: IncyNode): Record<string, unknown> {
+  const fm: Record<string, unknown> = cloneFinalmask(node.finalmask) ?? {}
+  const udp = Array.isArray(fm.udp) ? [...(fm.udp as unknown[])] : []
+  if (node.obfsPassword) {
+    udp.unshift({ type: 'salamander', settings: { password: node.obfsPassword } })
+  }
+  if (udp.length > 0) fm.udp = udp
+
+  const quic: Record<string, unknown> = {
+    ...(fm.quicParams && typeof fm.quicParams === 'object' ? (fm.quicParams as Record<string, unknown>) : {})
+  }
+  if (node.hopPorts && node.hopPorts.length > 0 && quic.udpHop === undefined) {
+    quic.udpHop = {
+      ports: node.hopPorts.map((p) => p.replace(':', '-').replace(/^(\d+)-\1$/, '$1')).join(','),
+      interval: String(node.hopInterval ?? 30)
+    }
+  }
+  if ((node.upMbps || node.downMbps) && quic.congestion === undefined) {
+    quic.congestion = 'brutal'
+    if (node.upMbps) quic.brutalUp = `${node.upMbps} mbps`
+    if (node.downMbps) quic.brutalDown = `${node.downMbps} mbps`
+  }
+  if (Object.keys(quic).length > 0) fm.quicParams = quic
+
+  const stream: Record<string, unknown> = {
+    network: 'hysteria',
+    security: 'tls',
+    tlsSettings: {
+      serverName: node.sni || node.server,
+      alpn: node.alpn && node.alpn.length > 0 ? node.alpn : ['h3'],
+      allowInsecure: node.insecure === true,
+      ...(node.pinSha256 ? { pinnedPeerCertSha256: node.pinSha256 } : {})
+    },
+    hysteriaSettings: { version: 2, auth: node.password || '' }
+  }
+  if (Object.keys(fm).length > 0) stream.finalmask = fm
+
+  return {
+    tag: 'proxy',
+    protocol: 'hysteria',
+    settings: { version: 2, address: node.server, port: node.port },
+    streamSettings: stream
+  }
+}
+
+/** Тег исходящего узла-входа (как в sing-box). */
+export const XRAY_CHAIN_ENTRY_TAG = 'chain-entry'
+
+/**
+ * Цепочка на Xray: [выход с dialerProxy на вход, вход]. Маски (фрагментация, шумы) — на входе:
+ * провайдер видит только первый сервер, а выход идёт уже внутри его туннеля.
+ */
+export function buildXrayChainOutbounds(
+  exit: IncyNode,
+  entry: IncyNode,
+  settings: IncySettings
+): { ok: true; outbounds: Record<string, unknown>[] } | { ok: false; reason: string } {
+  const none: Shaping = { fragment: null, noise: null }
+  const entryShaping: Shaping = {
+    fragment: resolveFragment(entry, settings)?.shape ?? null,
+    noise: resolveNoise(entry, settings)?.shape ?? null
+  }
+  const out = buildProxyOutbound(exit, settings, none)
+  if (!out) return { ok: false, reason: `Ядро Xray не может собрать узел-выход «${exit.name}»` }
+  const inn = buildProxyOutbound(entry, settings, entryShaping)
+  if (!inn) return { ok: false, reason: `Ядро Xray не может собрать узел-вход «${entry.name}»` }
+  const ss = ((out.streamSettings as Record<string, unknown> | undefined) ?? {}) as Record<string, unknown>
+  const sockopt = (ss.sockopt as Record<string, unknown> | undefined) ?? {}
+  if (sockopt.dialerProxy !== undefined) return { ok: false, reason: `«${exit.name}» уже настроен провайдером на подключение через другой сервер` }
+  out.streamSettings = { ...ss, sockopt: { ...sockopt, dialerProxy: XRAY_CHAIN_ENTRY_TAG } }
+  out.tag = 'proxy'
+  inn.tag = XRAY_CHAIN_ENTRY_TAG
+  return { ok: true, outbounds: [out, inn] }
 }
 
 /**
@@ -279,7 +360,7 @@ function buildStreamSettings(node: IncyNode, hasFragment: boolean): Record<strin
 function reuseProviderXrayOutbound(
   node: IncyNode,
   settings: IncySettings,
-  hasFragment: boolean
+  shaping: Shaping
 ): Record<string, unknown> | null {
   if (node.rawOutboundDialect !== 'xray' || !node.rawOutbound) return null
   let clone: Record<string, unknown>
@@ -293,28 +374,24 @@ function reuseProviderXrayOutbound(
   clone.tag = 'proxy'
   // Hysteria работает поверх QUIC: mux и TCP-фрагментация к нему неприменимы.
   const isQuic = clone.protocol === 'hysteria'
-  if (clone.mux === undefined && !isQuic) applyXrayMux(clone, settings)
-
-  // Only inject the dialerProxy chain when the provider left sockopt alone —
-  // overwriting their sockopt could break a deliberate binding.
-  if (hasFragment && !isQuic) {
-    const stream = (clone.streamSettings ?? {}) as Record<string, unknown>
-    const sockopt = (stream.sockopt ?? {}) as Record<string, unknown>
-    if (sockopt.dialerProxy === undefined) {
-      sockopt.dialerProxy = FRAGMENT_TAG
-      stream.sockopt = sockopt
-      clone.streamSettings = stream
-    }
+  // Исходящее провайдера с flow (Vision), XHTTP и т. п. MUX не получает:
+  // иначе соединение не поднимется (см. incy-mux.ts).
+  if (clone.mux === undefined && !isQuic && muxSkipReason(xrayOutboundSubject(clone)) === null) {
+    applyXrayMux(clone, settings)
   }
+
+  // Маски кладутся в finalmask самого исходящего. Свои маски провайдера
+  // (в том числе fragment) сохраняются, `sockopt.dialerProxy` не трогается.
+  applyFinalmask(clone, shaping, { allowTcp: !isQuic })
   return clone
 }
 
 function buildProxyOutbound(
   node: IncyNode,
   settings: IncySettings,
-  hasFragment: boolean
+  shaping: Shaping
 ): Record<string, unknown> | null {
-  const verbatim = reuseProviderXrayOutbound(node, settings, hasFragment)
+  const verbatim = reuseProviderXrayOutbound(node, settings, shaping)
   if (verbatim) return verbatim
 
   // Refuse to rebuild a node whose provider object is written for the other
@@ -325,7 +402,13 @@ function buildProxyOutbound(
   // to sing-box, which can replay the object exactly as the provider wrote it.
   if (node.rawOutboundDialect === 'sing-box') return null
 
-  const streamSettings = buildStreamSettings(node, hasFragment)
+  if (node.protocol === 'hysteria2') {
+    const outbound = buildHysteriaOutbound(node)
+    applyFinalmask(outbound, shaping, { allowTcp: false })
+    return outbound
+  }
+
+  const streamSettings = buildStreamSettings(node)
 
   if (node.protocol === 'vless') {
     const outbound: Record<string, unknown> = {
@@ -349,7 +432,10 @@ function buildProxyOutbound(
       streamSettings
     }
     // xtls-rprx-vision and mux are mutually exclusive in Xray.
-    if (!node.flow) applyXrayMux(outbound, settings)
+    if (muxSkipReason({ protocol: 'vless', flow: node.flow, network: node.network }) === null) {
+      applyXrayMux(outbound, settings)
+    }
+    applyFinalmask(outbound, shaping)
     return outbound
   }
 
@@ -369,6 +455,7 @@ function buildProxyOutbound(
       streamSettings
     }
     applyXrayMux(outbound, settings)
+    applyFinalmask(outbound, shaping)
     return outbound
   }
 
@@ -381,12 +468,10 @@ function buildProxyOutbound(
       },
       // У старых сохранённых trojan-узлов нет поля security: считаем TLS, но
       // строим блок целиком (с serverName), а не одну пометку «tls».
-      streamSettings:
-        node.security === undefined
-          ? buildStreamSettings({ ...node, security: 'tls' }, hasFragment)
-          : streamSettings
+      streamSettings: node.security === undefined ? buildStreamSettings({ ...node, security: 'tls' }) : streamSettings
     }
     applyXrayMux(outbound, settings)
+    applyFinalmask(outbound, shaping)
     return outbound
   }
 
@@ -404,15 +489,15 @@ function buildProxyOutbound(
             uot: true
           }
         ]
-      },
-      ...(hasFragment ? { streamSettings: { sockopt: { dialerProxy: FRAGMENT_TAG } } } : {})
+      }
     }
     applyXrayMux(outbound, settings)
+    applyFinalmask(outbound, shaping)
     return outbound
   }
 
-  // Hysteria2 and anything else is not an Xray protocol — the caller must
-  // route those to sing-box instead.
+  // Anything else is not an Xray protocol — the caller must route those to
+  // sing-box instead.
   return null
 }
 
@@ -427,10 +512,16 @@ export function buildXrayConfig(
   settings: IncySettings,
   opts: XrayBuildOptions
 ): Record<string, unknown> | null {
-  const fragmentOutbound = buildFragmentOutbound(settings)
-  const hasFragment = fragmentOutbound !== null
+  // Фрагментация и шумы — маски finalmask на самом исходящем прокси. Отдельного
+  // freedom-исходящего с dialerProxy больше нет: в Xray 26 он объявлен устаревшим.
+  const shaping: Shaping = {
+    fragment: resolveFragment(node, settings)?.shape ?? null,
+    noise: resolveNoise(node, settings)?.shape ?? null
+  }
 
-  const proxy = buildProxyOutbound(node, settings, hasFragment)
+  const chain = opts.chainEntry ? buildXrayChainOutbounds(node, opts.chainEntry, settings) : null
+  if (opts.chainEntry && (!chain || !chain.ok)) return null
+  const proxy = chain && chain.ok ? chain.outbounds[0] : buildProxyOutbound(node, settings, shaping)
   if (!proxy) return null
 
   const sniffing = {
@@ -458,7 +549,7 @@ export function buildXrayConfig(
     // sing-box it cannot serve both on one port.)
     const listen = settings.allowLan ? '0.0.0.0' : '127.0.0.1'
     const accounts =
-      settings.socksAuth && settings.socksUser && settings.socksPass
+      settings.socksAuth && settings.socksUser && settings.socksPass && !opts.ignoreAuth
         ? [{ user: settings.socksUser, pass: settings.socksPass }]
         : undefined
 
@@ -483,7 +574,7 @@ export function buildXrayConfig(
   }
 
   const outbounds: Record<string, unknown>[] = [proxy]
-  if (fragmentOutbound) outbounds.push(fragmentOutbound)
+  if (chain && chain.ok) outbounds.push(chain.outbounds[1])
   outbounds.push({ tag: 'direct', protocol: 'freedom', settings: {} })
   outbounds.push({ tag: 'block', protocol: 'blackhole', settings: {} })
 
@@ -504,6 +595,21 @@ export function buildXrayConfig(
       rules.push({ type: 'field', ip: [value], outboundTag: tag })
     } else {
       rules.push({ type: 'field', domain: [`domain:${value.replace(/^\*\./, '')}`], outboundTag: tag })
+    }
+  }
+
+  // Свои исключения (если не действует список обхода РФ): всегда напрямую.
+  if (opts.extraDirect && opts.routingMode !== 'direct') {
+    // Домены в режиме «Раздельно» уже входят в список обхода (bypassDomains).
+    if (opts.routingMode === 'global' && opts.extraDirect.domains.length > 0) {
+      rules.push({
+        type: 'field',
+        domain: opts.extraDirect.domains.map((d) => `domain:${d}`),
+        outboundTag: 'direct'
+      })
+    }
+    if (opts.extraDirect.cidrs.length > 0) {
+      rules.push({ type: 'field', ip: opts.extraDirect.cidrs, outboundTag: 'direct' })
     }
   }
 

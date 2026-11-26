@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
-import { ChevronDown, ExternalLink, History, Loader2, RefreshCw, X } from 'lucide-react'
+import { ChevronDown, Compass, ExternalLink, History, Loader2, RefreshCw, X } from 'lucide-react'
 import { ReleaseBody } from '@renderer/components/update-window'
 import { cn } from '@renderer/lib/utils'
+import { latestTour, startTour } from '@renderer/lib/tour'
 import { appGetReleaseHistory, openExternalUrl, type AppReleaseNote } from '@renderer/utils/ipc'
 
 const PAGE_SIZE = 10
@@ -129,6 +130,19 @@ export function ChangelogDialog({ open, onClose }: { open: boolean; onClose: () 
             <div className="flex items-center gap-3 px-6 pb-3 pt-5">
               <History className="size-5 text-primary" />
               <h2 className="flex-1 text-lg font-black tracking-tight">Что нового в LAZEYKA</h2>
+              {latestTour() && (
+                <button
+                  type="button"
+                  title="Программа по шагам покажет новые разделы прямо в окне"
+                  onClick={() => {
+                    onClose()
+                    startTour()
+                  }}
+                  className="inline-flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-primary/40 px-2.5 text-xs font-semibold text-primary transition-colors hover:bg-primary/10"
+                >
+                  <Compass className="size-3.5" /> Показать, что нового
+                </button>
+              )}
               <button
                 type="button"
                 aria-label="Закрыть"

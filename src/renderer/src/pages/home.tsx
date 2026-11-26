@@ -2,14 +2,18 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import BasePage from '@renderer/components/base/base-page'
-import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
 import RescueDialog from '@renderer/components/rescue-dialog'
 import { AppVersionButton } from '@renderer/components/changelog-dialog'
 import ZapretIcon from '@renderer/components/zapret-icon'
-import TelegramIcon from '@renderer/components/telegram-icon'
-import LiveTrafficMonitor from '@renderer/components/live-traffic-monitor'
+import { TelegramBrandIcon as TelegramIcon } from '@renderer/components/service-icons'
 import NetSpeedDialog from '@renderer/components/net-speed-dialog'
+import { LiveNumber, LzHero, LzPanel, ServiceTile, StatChip, StatusRing, type LzTone } from '@renderer/components/lz'
+import SiteStrip, { type SiteSummary } from '@renderer/components/home/site-strip'
+import UpdatesButton, { type UpdateItem } from '@renderer/components/home/updates-button'
+import TrafficChip from '@renderer/components/home/traffic-chip'
+import { PingMeter, ProxyPath, StrategyScore } from '@renderer/components/home/service-live'
+import { useLiveTraffic } from '@renderer/components/home/use-live-traffic'
 import { useTgwsStore } from '@renderer/store/tgws-store'
 import { useZapretStore } from '@renderer/store/zapret-store'
 import { useZapretTestStore } from '@renderer/store/zapret-test-store'
@@ -28,32 +32,37 @@ import {
   incyDisconnect,
   incyGetNodes,
   incyGetSubscription,
+  zapretGetStrategyTestResults,
   getAppVersion,
   appCheckUpdateNow,
-  openExternalUrl,
+
   type IncyNode,
   type ZapretUpdateInfo,
-  type TgwsUpdateInfo
+  type TgwsUpdateInfo,
+  type StrategyTestReport
 } from '@renderer/utils/ipc'
-import { POWER_ON_BANNER_STYLE, SUPPORT_TELEGRAM_URL, formatInstalledVersion, cn } from '@renderer/lib/utils'
+import { POWER_ON_BANNER_STYLE, formatInstalledVersion, cn } from '@renderer/lib/utils'
 import {
   ChevronRight,
   Gauge,
   Globe,
   Headset,
+  Layers,
   Loader2,
+  Package,
+  Plus,
   Power,
-  RefreshCw,
   RotateCw,
+  Route,
   ScrollText,
+  Server,
   ShieldAlert,
-  ShieldCheck,
-  ShieldOff,
-  Sparkles,
   Stethoscope,
   Target,
-  X,
-  Zap
+  Timer,
+  Wand2,
+  Zap,
+  Sparkles
 } from 'lucide-react'
 
 /** «1 ч 24 мин», «12 мин», «меньше минуты». */
@@ -65,119 +74,31 @@ function formatUptime(ms: number): string {
   return h > 0 ? `${h} ч ${m} мин` : `${m} мин`
 }
 
+/** Коротко для строки статуса плитки: «1 ч 24 мин» → «1 ч 24 мин», «меньше минуты» → «< 1 мин». */
+function shortUptime(ms: number): string {
+  const s = formatUptime(ms)
+  return s === 'меньше минуты' ? 'только что' : s
+}
+
 type Tone = 'on' | 'busy' | 'off' | 'error'
 
-interface ServiceCardProps {
-  icon: React.ReactNode
-  title: string
-  tone: Tone
-  statusText: string
-  checked: boolean
-  onToggle: (next: boolean) => void
-  disabled?: boolean
-  rows: { label: string; value: string; title?: string }[]
-  note?: string
-  onOpen: () => void
-}
-
-/** Карточка службы на главной: иконка, статус, переключатель и детали. */
-function ServiceCard({
-  icon,
-  title,
-  tone,
-  statusText,
-  checked,
-  onToggle,
-  disabled,
-  rows,
-  note,
-  onOpen
-}: ServiceCardProps): React.ReactElement {
-  return (
-    <div className="flex min-w-0 flex-col ui-card rounded-2xl border border-border bg-card p-4 transition-colors hover:border-primary/35">
-      <div className="flex items-center gap-3">
-        <button
-          type="button"
-          onClick={onOpen}
-          title={`Открыть вкладку ${title}`}
-          className={cn(
-            'flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-secondary transition-colors',
-            tone === 'on' ? 'text-primary' : tone === 'error' ? 'text-destructive' : 'text-muted-foreground'
-          )}
-        >
-          {icon}
-        </button>
-        <button type="button" onClick={onOpen} className="min-w-0 flex-1 cursor-pointer text-left">
-          <div className="truncate text-[15px] font-semibold text-foreground">{title}</div>
-          <div
-            className={cn(
-              'flex items-center gap-1.5 text-xs font-medium',
-              tone === 'on'
-                ? 'text-primary'
-                : tone === 'busy'
-                  ? 'text-st-warn-text'
-                  : tone === 'error'
-                    ? 'text-destructive'
-                    : 'text-muted-foreground'
-            )}
-          >
-            {tone === 'busy' ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <span
-                className={cn(
-                  'size-1.5 rounded-full',
-                  tone === 'on' ? 'bg-primary' : tone === 'error' ? 'bg-destructive' : 'bg-muted-foreground/60'
-                )}
-              />
-            )}
-            {statusText}
-          </div>
-        </button>
-        <Switch
-          checked={checked}
-          disabled={disabled || tone === 'busy'}
-          onCheckedChange={onToggle}
-          className="data-[size=default]:h-6 data-[size=default]:w-11 data-[size=default]:[--sw-thumb:1.125rem]"
-        />
-      </div>
-      <div className="mt-3.5 divide-y divide-border rounded-xl bg-secondary px-3">
-        {rows.map((r) => (
-          <div key={r.label} className="flex items-center justify-between gap-3 py-2" title={r.title ?? r.value}>
-            <span className="shrink-0 text-[12px] text-muted-foreground">{r.label}</span>
-            <span className="min-w-0 truncate text-[12.5px] font-semibold text-foreground">{r.value}</span>
-          </div>
-        ))}
-      </div>
-      {note && <div className="mt-2.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground">{note}</div>}
-    </div>
-  )
-}
-
-interface UpdateNoticeProps {
-  title: string
-  subtitle: string
-  onDetails: () => void
-  onDismiss: () => void
-}
-const UpdateNotice: React.FC<UpdateNoticeProps> = ({ title, subtitle, onDetails, onDismiss }) => (
-  <div className="flex items-center gap-3 rounded-xl border border-primary/30 bg-primary/10 px-4 py-2.5">
-    <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
-      <Sparkles className="size-4" />
-    </div>
-    <div className="min-w-0 flex-1">
-      <div className="truncate text-sm font-semibold text-foreground">{title}</div>
-      <div className="truncate text-xs text-muted-foreground">{subtitle}</div>
-    </div>
-    <Button size="sm" onClick={onDetails} className="h-7 rounded-lg text-xs">
-      Подробнее
-    </Button>
-    <Button variant="ghost" size="icon" className="size-7 rounded-lg" onClick={onDismiss} title="Скрыть">
-      <X className="size-3.5" />
-    </Button>
-  </div>
+/** «Нужно действие» внизу модуля: пунктирная кнопка во всю ширину. */
+const ActionHint: React.FC<{ icon: React.ReactNode; text: string; onClick: () => void }> = ({ icon, text, onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className="flex w-full cursor-pointer items-center gap-2 rounded-xl border border-dashed border-primary/40 bg-primary/[0.06] px-3 py-2 text-left text-[12px] font-semibold text-foreground transition-colors hover:border-primary/70 hover:bg-primary/10"
+  >
+    <span className="flex shrink-0 text-primary [&_svg]:size-3.5">{icon}</span>
+    <span className="flex-1">{text}</span>
+    <ChevronRight className="size-3.5 text-muted-foreground" />
+  </button>
 )
 
+/*
+ * Главная LAZEYKA 2.0 в языке «Сигнал» (components/lz, описание — design-language.md).
+ * Логика служб, проверок и обновлений та же, что была в 1.x: меняется только вид.
+ */
 const Home: React.FC = () => {
   const navigate = useNavigate()
   const tgws = useTgwsStore((s) => s.status)
@@ -274,10 +195,13 @@ const Home: React.FC = () => {
   const zapretOn = zapret.state === 'running'
   const incyOn = incy.state === 'running'
   const tgwsBusy = pending.tgws !== undefined || tgws.state === 'starting' || tgws.state === 'stopping'
+  // Автозапуск ждёт сеть или повторяет запуск: переключатель показывает «включено» и позволяет отменить.
+  const zapretWaiting = zapret.state === 'starting' && (zapret.phase === 'waiting' || zapret.phase === 'retrying')
   const zapretBusy = pending.zapret !== undefined || zapret.state === 'starting' || zapret.state === 'stopping'
   const incyBusy = pending.incy !== undefined || incy.state === 'connecting'
   const toneOf = (on: boolean, busy: boolean, err: boolean): Tone => (busy ? 'busy' : on ? 'on' : err ? 'error' : 'off')
 
+  const isLinux = window.api.platform === 'linux'
   const totalServices = 3
   const runningCount = [tgwsOn, zapretOn, incyOn].filter(Boolean).length
   const startedAts = [
@@ -297,11 +221,13 @@ const Home: React.FC = () => {
     return () => clearInterval(id)
   }, [since])
 
-  const incyMode = incy.exitLagActive
-    ? `ExitLag · ${incy.exitLagApps?.length ?? 0} прил.`
-    : incy.routingMode === 'global'
-      ? 'Весь трафик'
-      : 'Обход РФ'
+  const incyMode = isLinux
+    ? (incy.connectionMode === 'tun' ? 'TUN' : incy.connectionMode === 'system_proxy' ? 'Системный прокси' : 'Только прокси')
+    : incy.exitLagActive
+      ? `ExitLag · ${incy.exitLagApps?.length ?? 0} прил.`
+      : incy.routingMode === 'global'
+        ? 'Весь трафик'
+        : 'Обход РФ'
 
   // ---- Общие действия ----
   const [diagOpen, setDiagOpen] = useState(false)
@@ -398,44 +324,148 @@ const Home: React.FC = () => {
   }
 
   // ---- Шапка статуса ----
-  const hero =
-    runningCount === totalServices
-      ? { tone: 'on' as const, title: 'Защита работает', icon: <ShieldCheck className="size-6" /> }
-      : runningCount > 0
-        ? { tone: 'part' as const, title: 'Работает частично', icon: <ShieldAlert className="size-6" /> }
-        : { tone: 'off' as const, title: 'Всё выключено', icon: <ShieldOff className="size-6" /> }
+  // Выключенная служба — это выбор человека, а не поломка: жёлтый цвет и значок-предупреждение
+  // только при настоящей ошибке. Если что-то включено — шапка спокойная и говорит, что именно работает.
   const onNames = [zapretOn && 'Zapret', tgwsOn && 'Telegram', incyOn && 'VPN'].filter(Boolean) as string[]
   const offNames = [!zapretOn && 'Zapret', !tgwsOn && 'Telegram', !incyOn && 'VPN'].filter(Boolean) as string[]
-  const heroText =
-    runningCount === totalServices
-      ? `Zapret, Telegram и VPN включены${since ? ` · ${formatUptime(now - since)} без перерыва` : ''}`
+  const errNames = [zapret.state === 'error' && 'Zapret', tgws.state === 'error' && 'Telegram', incy.state === 'error' && 'VPN'].filter(
+    Boolean
+  ) as string[]
+  const joinRu = (xs: string[]): string => (xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} и ${xs[xs.length - 1]}`)
+  const hero = errNames.length
+    ? {
+        tone: 'part' as const,
+        title: errNames.length === 1 ? `${errNames[0]} не запустился` : `Не запустились: ${joinRu(errNames)}`
+      }
+    : runningCount === totalServices
+      ? { tone: 'on' as const, title: 'Всё включено' }
       : runningCount > 0
-        ? `Работает: ${onNames.join(', ')} · выключено: ${offNames.join(', ')}`
+        ? { tone: 'on' as const, title: `${onNames.length === 1 ? 'Работает' : 'Работают'} ${joinRu(onNames)}` }
+        : { tone: 'off' as const, title: 'Всё выключено' }
+  const heroText = errNames.length
+    ? 'Подробности — в карточке службы ниже. Помогает «Перезагрузить службы» или «Проверить и исправить».'
+    : runningCount === totalServices
+      ? `${joinRu(onNames)} включены${since ? ` · ${formatUptime(now - since)} без перерыва` : ''}`
+      : runningCount > 0
+        ? `${since ? `${formatUptime(now - since)} без перерыва · ` : ''}${joinRu(offNames)} ${offNames.length === 1 ? 'выключен' : 'выключены'} — включите, если нужно`
         : 'Включите нужные службы переключателями ниже или всё сразу.'
+
+  // ---- Новое для вида 2.0 (только из уже известных данных) ----
+  // Наведение на плитку подсвечивает её дугу в кольце.
+  const [hot, setHot] = useState<string | null>(null)
+  const [sites, setSites] = useState<SiteSummary | null>(null)
+  const traffic = useLiveTraffic(tgwsOn || zapretOn || incyOn)
+
+  const [stoppingAll, setStoppingAll] = useState(false)
+  const handleStopAll = async (): Promise<void> => {
+    if (stoppingAll) return
+    setStoppingAll(true)
+    try {
+      const tasks: Promise<void>[] = []
+      if (zapretOn && !isZapretTesting) tasks.push(toggleZapret(false))
+      if (tgwsOn) tasks.push(toggleTgws(false))
+      if (incyOn) tasks.push(toggleIncy(false))
+      await Promise.allSettled(tasks)
+    } finally {
+      setStoppingAll(false)
+    }
+  }
+
+  const zapretTone = toneOf(zapretOn, zapretBusy, zapret.state === 'error')
+  const tgwsTone = toneOf(tgwsOn, tgwsBusy, tgws.state === 'error')
+  const incyTone = toneOf(incyOn, incyBusy, incy.state === 'error')
+  const anyBusy = zapretBusy || tgwsBusy || incyBusy
+  const heroTone: LzTone = errNames.length ? 'warn' : runningCount > 0 ? 'on' : anyBusy ? 'busy' : 'off'
+
+  const updates: UpdateItem[] = []
+  if (!isLinux && showZapretBanner && zapretUpdate)
+    updates.push({
+      key: 'zapret',
+      title: `Zapret — v${zapretUpdate.latest}`,
+      subtitle: formatInstalledVersion(zapretUpdate.installed),
+      onDetails: () => navigate('/zapret', { state: { openUpdate: true } }),
+      onDismiss: () => setZapretSessionDismissed(true)
+    })
+  if (showTgwsBanner && tgwsUpdate)
+    updates.push({
+      key: 'tgws',
+      title: `TgWsProxy — v${tgwsUpdate.latest}`,
+      subtitle: formatInstalledVersion(tgwsUpdate.installed),
+      onDetails: () => navigate('/telegram', { state: { openUpdate: true } }),
+      onDismiss: () => setTgwsSessionDismissed(true)
+    })
+
+  // Пинг узла для модуля VPN (известен и при выключенном VPN, если узел проверяли).
+  const nodePing = incyNode && typeof incyNode.latencyMs === 'number' && incyNode.latencyMs > 0 ? incyNode.latencyMs : null
+  // Баллы последней проверки выбранной стратегии — один запрос при открытии и после теста, без опросов.
+  const [strategyReport, setStrategyReport] = useState<StrategyTestReport | null>(null)
+  useEffect(() => {
+    if (isZapretTesting) return
+    zapretGetStrategyTestResults()
+      .then(setStrategyReport)
+      .catch(() => setStrategyReport(null))
+  }, [isZapretTesting])
+  const strategyScore = (zapretStrategy && strategyReport?.results?.[zapretStrategy]) || null
+
+  const ping = incyOn && incyNode && typeof incyNode.latencyMs === 'number' && incyNode.latencyMs > 0 ? incyNode.latencyMs : null
+
+  // Главная кнопка: «Включить всё» → «Включить остальное» → «Выключить всё».
+  const mainAction =
+    runningCount === totalServices ? (
+      <Button
+        variant="outline"
+        size="lg"
+        onClick={() => void handleStopAll()}
+        disabled={stoppingAll || anyBusy}
+        title="Выключить работающие службы"
+        className="h-11 rounded-xl px-5 text-[14px]"
+      >
+        {stoppingAll ? <Loader2 className="size-4 animate-spin" /> : <Power className="size-4" />}
+        Выключить всё
+      </Button>
+    ) : (
+      <Button
+        size="lg"
+        onClick={() => void handleStartAll()}
+        disabled={startingAll}
+        title={runningCount > 0 ? `Включить и остальное: ${offNames.join(', ')}` : 'Включить доступные службы'}
+        className="h-11 rounded-xl px-5 text-[14px]"
+      >
+        {startingAll ? <Loader2 className="size-4 animate-spin" /> : <Power className="size-4" />}
+        {runningCount > 0 ? 'Включить остальное' : 'Включить всё'}
+      </Button>
+    )
+
+  const tools = [
+    {
+      icon: <Gauge />,
+      title: 'Скорость интернета',
+      sub: incyOn ? 'Через подключённый VPN' : 'Напрямую, без VPN',
+      onClick: () => setSpeedOpen(true)
+    },
+    ...(!isLinux ? [{ icon: <Target />, title: 'Пинг до Faceit', sub: 'Лучший узел для матча', onClick: () => navigate('/optimizer') }] : []),
+    {
+      icon: <Zap />,
+      title: 'Сменить узел',
+      sub: nodes.length ? `Серверов в подписке: ${nodes.length}` : 'Добавить подписку',
+      onClick: () => navigate('/incy')
+    },
+    { icon: <ScrollText />, title: 'Логи и отчёт', sub: 'Если что-то не работает', onClick: () => navigate('/logs') }
+  ]
 
   return (
     <BasePage
       title="Главная"
       header={
         <>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void handleCheckUpdate()}
-            disabled={checkingUpdate}
-            title="Проверить, вышла ли новая версия LAZEYKA"
-            className="h-8 rounded-lg text-xs"
-          >
-            <RefreshCw className={cn('size-3.5', checkingUpdate && 'animate-spin')} />
-            {checkingUpdate ? 'Проверяем…' : 'Проверить обновления'}
-          </Button>
+          {!isLinux && <UpdatesButton items={updates} checking={checkingUpdate} onCheckApp={() => void handleCheckUpdate()} />}
           <Button
             variant="outline"
             size="sm"
             onClick={() => void handleReloadAll()}
             disabled={reloading}
-            title="Перезапустить все работающие службы: Zapret, Telegram, VPN"
-            className="mr-1 h-8 rounded-lg text-xs"
+            title="Перезапустить работающие службы"
+            className="mr-1 h-8 shrink-0 rounded-lg px-2 text-xs"
           >
             <RotateCw className={cn('size-3.5', reloading && 'animate-spin')} />
             {reloading ? 'Перезапуск…' : 'Перезагрузить службы'}
@@ -443,230 +473,270 @@ const Home: React.FC = () => {
         </>
       }
     >
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-6 pb-6">
-        {(showZapretBanner || showTgwsBanner) && (
-          <div className="space-y-2">
-            {showZapretBanner && zapretUpdate && (
-              <UpdateNotice
-                title={`Доступно обновление Zapret — v${zapretUpdate.latest}`}
-                subtitle={formatInstalledVersion(zapretUpdate.installed)}
-                onDetails={() => navigate('/zapret', { state: { openUpdate: true } })}
-                onDismiss={() => setZapretSessionDismissed(true)}
-              />
-            )}
-            {showTgwsBanner && tgwsUpdate && (
-              <UpdateNotice
-                title={`Доступно обновление TgWsProxy — v${tgwsUpdate.latest}`}
-                subtitle={formatInstalledVersion(tgwsUpdate.installed)}
-                onDetails={() => navigate('/telegram', { state: { openUpdate: true } })}
-                onDismiss={() => setTgwsSessionDismissed(true)}
-              />
-            )}
-          </div>
-        )}
-
-        {/* Общий статус */}
-        <div
-          className={cn(
-            'ui-glow flex flex-wrap items-center gap-4 rounded-2xl border p-5',
-            hero.tone === 'on'
-              ? 'border-primary/30 bg-gradient-to-br from-primary/[0.13] via-card to-card'
-              : hero.tone === 'part'
-                ? 'border-st-warn/30 bg-gradient-to-br from-st-warn/[0.10] via-card to-card'
-                : 'border-border bg-card'
-          )}
-        >
-          <div
-            className={cn(
-              'flex size-12 shrink-0 items-center justify-center rounded-xl',
-              hero.tone === 'on'
-                ? 'bg-primary/15 text-primary'
-                : hero.tone === 'part'
-                  ? 'bg-st-warn/15 text-st-warn-text'
-                  : 'bg-secondary text-muted-foreground'
-            )}
-          >
-            {hero.icon}
-          </div>
-          <div className="min-w-0 flex-1">
-            <h2 className="text-xl font-bold leading-tight text-foreground">{hero.title}</h2>
-            <p className="mt-1 text-[13px] text-muted-foreground">{heroText}</p>
-            <button
-              type="button"
-              onClick={() => setDiagOpen(true)}
-              className="mt-1.5 inline-flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-primary"
+      <div className="mx-auto flex w-full max-w-[1080px] flex-col lz-page-gap lz-page-x pb-5">
+        {/* Пульт: кольцо служб, состояние словами, одно главное действие, живые показатели */}
+        <LzHero
+          data-tour="home-status"
+          tone={heroTone}
+          visual={
+            <StatusRing
+              size={150}
+              waves
+              active={hot}
+              halo={heroTone === 'off' ? null : heroTone === 'warn' ? 'warn' : 'on'}
+              pulse={heroTone === 'on'}
+              segments={[
+                { key: 'zapret', label: 'Zapret', tone: zapretTone, icon: <ZapretIcon /> },
+                { key: 'tgws', label: 'Telegram', tone: tgwsTone, icon: <TelegramIcon /> },
+                { key: 'incy', label: 'VPN', tone: incyTone, icon: <Globe /> }
+              ]}
             >
-              <Stethoscope className="size-3" />
-              Ничего не открывается? Проверить и исправить
-            </button>
-          </div>
-          {incyOn && incyNode ? (
-            <div className="flex shrink-0 gap-2">
-              <div className="max-w-52 rounded-xl border border-border bg-background/60 px-3 py-2">
-                <div className="text-[11px] text-muted-foreground">Узел VPN</div>
-                <div className="truncate text-sm font-bold text-foreground" title={incyNode.name}>
-                  {incyNode.name}
-                </div>
+              <div className="flex items-baseline gap-1 leading-none">
+                <LiveNumber value={runningCount} className="text-[38px] font-extrabold tracking-tight text-[color:var(--text-title)]" />
+                <span className="text-[13px] font-semibold text-muted-foreground">из {totalServices}</span>
               </div>
-              {typeof incyNode.latencyMs === 'number' && incyNode.latencyMs > 0 && (
-                <div className="rounded-xl border border-border bg-background/60 px-3 py-2">
-                  <div className="text-[11px] text-muted-foreground">Пинг</div>
-                  <div className="text-sm font-bold tabular-nums text-foreground">{incyNode.latencyMs} мс</div>
-                </div>
+              <div className="mt-1 text-[10.5px] font-medium text-muted-foreground">
+                {runningCount === 1 ? 'служба' : 'службы'} {runningCount === 1 ? 'работает' : 'работают'}
+              </div>
+            </StatusRing>
+          }
+          title={hero.title}
+          text={heroText}
+          extra={
+            <>
+              <button
+                type="button"
+                onClick={() => setDiagOpen(true)}
+                data-tour="home-rescue"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-md text-[12px] font-medium text-muted-foreground transition-colors hover:text-primary"
+              >
+                <Stethoscope className="size-3.5" />
+                Ничего не открывается? Проверить и исправить
+              </button>
+            </>
+          }
+          actions={mainAction}
+          footer={
+            <div className="flex flex-wrap items-stretch gap-2">
+              <StatChip
+                icon={<Timer />}
+                tone={since ? 'on' : 'off'}
+                label="Без перерыва"
+                value={since ? formatUptime(now - since) : 'пока ничего не включено'}
+              />
+              {incyOn && incyNode ? (
+                <StatChip
+                  icon={<Globe />}
+                  tone="on"
+                  label="Узел VPN"
+                  value={incyNode.name}
+                  sensitive="node"
+                  title={`${incyNode.name} — сменить узел`}
+                  onClick={() => navigate('/incy')}
+                  className="max-w-[260px]"
+                  aside={
+                    ping !== null ? (
+                      <span className="shrink-0 rounded-md bg-primary/12 px-1.5 py-0.5 text-[11.5px] font-bold tabular-nums text-primary">{ping} мс</span>
+                    ) : undefined
+                  }
+                />
+              ) : (
+                <StatChip
+                  icon={<Globe />}
+                  tone="off"
+                  label="Режим VPN"
+                  value={incyMode}
+                  onClick={() => navigate('/incy')}
+                  title="Открыть INCY"
+                />
               )}
+              <StatChip
+                icon={<Stethoscope />}
+                tone={!sites || sites.checked === 0 ? 'off' : sites.bad > 0 ? 'warn' : 'on'}
+                label="Сайты"
+                value={
+                  !sites || sites.checked === 0 ? (
+                    'не проверялись'
+                  ) : (
+                    <>
+                      <LiveNumber value={sites.ok} /> из {sites.total} открываются{sites.partial > 0 ? ` · ${sites.partial} частично` : ''}
+                    </>
+                  )
+                }
+              />
+              <TrafficChip t={traffic} active={tgwsOn || zapretOn || incyOn} className="min-w-[280px] flex-1" />
             </div>
-          ) : runningCount < totalServices ? (
-            <Button onClick={() => void handleStartAll()} disabled={startingAll} className="shrink-0">
-              {startingAll ? <Loader2 className="size-4 animate-spin" /> : <Power className="size-4" />}
-              Включить всё
-            </Button>
-          ) : null}
-        </div>
+          }
+        />
 
-        {/* Службы */}
-        <div className={cn('grid grid-cols-1 gap-3.5', 'md:grid-cols-3')}>
-          <ServiceCard
-            icon={<ZapretIcon className="size-5" />}
+        {/* Службы — модули в том же порядке, что дуги кольца */}
+        <div className="grid grid-cols-1 gap-3 @min-[610px]:grid-cols-2 @min-[850px]:grid-cols-3">
+          <ServiceTile
+            icon={<ZapretIcon />}
             title="Zapret"
-            tone={toneOf(zapretOn, zapretBusy, zapret.state === 'error')}
+            tone={zapretTone}
             statusText={
               zapretBusy
-                ? (pending.zapret ?? zapret.state === 'starting') ? 'Запуск…' : 'Остановка…'
+                ? zapret.state === 'starting' && zapret.phase === 'verifying'
+                  ? 'Проверяю…'
+                  : zapret.state === 'starting' && zapret.phase === 'waiting'
+                    ? 'Жду сеть…'
+                    : zapret.state === 'starting' && zapret.phase === 'retrying'
+                      ? 'Повторный запуск…'
+                      : (pending.zapret ?? zapret.state === 'starting')
+                        ? 'Запуск…'
+                        : 'Остановка…'
                 : zapretOn
                   ? 'Работает'
                   : zapret.state === 'error'
                     ? 'Ошибка'
                     : 'Выключен'
             }
-            checked={pending.zapret ?? zapretOn}
+            uptime={zapretOn && zapret.startedAt ? shortUptime(now - zapret.startedAt) : undefined}
+            checked={pending.zapret ?? (zapretOn || zapretWaiting)}
             onToggle={(v) => void toggleZapret(v)}
             disabled={isZapretTesting}
-            rows={[
-              { label: 'Стратегия', value: zapretStrategy ? zapretStrategy.replace(/\.bat$/i, '') : 'не выбрана' },
-              { label: 'Версия', value: appConfig?.zapret?.installedVersion ?? zapretUpdate?.installed ?? 'встроенная' }
+            cancelable={zapretWaiting}
+            live={zapretStrategy ? <StrategyScore result={strategyScore} on={zapretOn} testing={isZapretTesting} /> : undefined}
+            chips={[
+              ...(zapretStrategy
+                ? [{ icon: <Layers />, label: 'Стратегия', value: isLinux ? zapretStrategy.replace(/-/g, ' ').toUpperCase() : zapretStrategy.replace(/\.bat$/i, '') }]
+                : []),
+              { icon: <Package />, label: 'Версия', value: `Zapret ${appConfig?.zapret?.installedVersion ?? zapretUpdate?.installed ?? 'встроенный'}` }
             ]}
             note={
               isZapretTesting
-                ? 'Идёт тестирование стратегий — переключатель заблокирован'
+                ? 'Идёт тестирование стратегий — кнопка включения заблокирована'
                 : zapret.state === 'error'
                   ? zapret.lastError
-                  : undefined
+                  : zapret.state === 'starting' && zapret.detail
+                    ? zapret.detail
+                    : undefined
+            }
+            footer={
+              !zapretStrategy && !zapretOn ? (
+                <ActionHint icon={<Wand2 />} text="Выбрать или подобрать стратегию" onClick={() => navigate('/zapret')} />
+              ) : undefined
             }
             onOpen={() => navigate('/zapret')}
+            onHoverChange={(h) => setHot(h ? 'zapret' : null)}
           />
-          <ServiceCard
-            icon={<TelegramIcon className="size-5" />}
+          <ServiceTile
+            icon={<TelegramIcon />}
             title="Telegram"
-            tone={toneOf(tgwsOn, tgwsBusy, tgws.state === 'error')}
+            tone={tgwsTone}
             statusText={
               tgwsBusy
-                ? (pending.tgws ?? tgws.state === 'starting') ? 'Запуск…' : 'Остановка…'
+                ? (pending.tgws ?? tgws.state === 'starting')
+                  ? 'Запуск…'
+                  : 'Остановка…'
                 : tgwsOn
                   ? 'Работает'
                   : tgws.state === 'error'
                     ? 'Ошибка'
                     : 'Выключен'
             }
+            uptime={tgwsOn && tgws.startedAt ? shortUptime(now - tgws.startedAt) : undefined}
             checked={pending.tgws ?? tgwsOn}
             onToggle={(v) => void toggleTgws(v)}
-            rows={[
-              { label: 'Прокси', value: `127.0.0.1:${appConfig?.tgws?.port || 1443}` },
-              { label: 'Версия', value: tgwsUpdate?.installed ?? appConfig?.tgws?.installedVersion ?? 'встроенная' }
+            live={<ProxyPath port={appConfig?.tgws?.port || 1443} on={tgwsOn} />}
+            chips={[
+              {
+                icon: <Package />,
+                label: 'Версия',
+                value: `TgWsProxy ${tgwsUpdate?.installed ?? appConfig?.tgws?.installedVersion ?? 'встроенный'}`
+              }
             ]}
             note={tgws.state === 'error' ? tgws.lastError : undefined}
             onOpen={() => navigate('/telegram')}
+            onHoverChange={(h) => setHot(h ? 'tgws' : null)}
           />
-          <ServiceCard
-            icon={<Globe className="size-5" />}
+          <ServiceTile
+            icon={<Globe />}
             title="INCY VPN"
-            tone={toneOf(incyOn, incyBusy, incy.state === 'error')}
+            tone={incyTone}
             statusText={
               incyBusy
-                ? (pending.incy ?? true) ? 'Подключение…' : 'Отключение…'
+                ? (pending.incy ?? true)
+                  ? 'Подключение…'
+                  : 'Отключение…'
                 : incyOn
                   ? 'Подключено'
                   : incy.state === 'error'
                     ? 'Ошибка'
                     : 'Отключено'
             }
+            uptime={incyOn && incy.connectedAt ? shortUptime(now - incy.connectedAt) : undefined}
             checked={pending.incy ?? incyOn}
             onToggle={(v) => void toggleIncy(v)}
-            rows={[
-              { label: 'Узел', value: incyNode?.name ?? (nodes.length ? 'не выбран' : 'нет серверов') },
-              { label: 'Режим', value: incyMode }
+            live={nodes.length ? <PingMeter node={incyNode?.name ?? null} ping={nodePing} on={incyOn} /> : undefined}
+            chips={[
+              { icon: <Route />, label: 'Режим', value: incyMode },
+              ...(nodes.length ? [{ icon: <Server />, label: 'Серверов', value: `Серверов: ${nodes.length}` }] : [])
             ]}
             note={incy.state === 'error' ? incy.lastError : undefined}
+            footer={
+              subWarn ? (
+                <button
+                  type="button"
+                  onClick={() => navigate('/incy')}
+                  title={`${subWarn} — продлите, чтобы VPN не отключился`}
+                  className="flex w-full cursor-pointer items-center gap-2 rounded-xl border border-st-warn/45 bg-st-warn/10 px-3 py-2 text-left text-[11.5px] font-semibold leading-snug text-st-warn-text"
+                >
+                  <ShieldAlert className="size-3.5 shrink-0" />
+                  <span className="line-clamp-2 flex-1">{subWarn.replace(/^Подписка «[^»]*»: /, 'Подписка: ')} — продлите</span>
+                  <ChevronRight className="size-3.5 shrink-0" />
+                </button>
+              ) : nodes.length === 0 ? (
+                <ActionHint icon={<Plus />} text="Добавить подписку или сервер" onClick={() => navigate('/incy')} />
+              ) : undefined
+            }
             onOpen={() => navigate('/incy')}
+            onHoverChange={(h) => setHot(h ? 'incy' : null)}
           />
         </div>
 
-        {subWarn && (
-          <button
-            type="button"
-            onClick={() => navigate('/incy')}
-            className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl border border-st-warn/40 bg-st-warn/10 px-4 py-2.5 text-left text-xs font-semibold text-st-warn-text"
-          >
-            <ShieldAlert className="size-4 shrink-0" />
-            <span className="flex-1">{subWarn} — продлите, чтобы VPN не отключился</span>
-            <ChevronRight className="size-4" />
-          </button>
-        )}
+        <SiteStrip onSummary={setSites} />
 
-        <LiveTrafficMonitor />
-
-        {/* Быстрые действия */}
-        <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-4">
-          {[
-            {
-              icon: <Gauge className="size-[18px]" />,
-              title: 'Скорость интернета',
-              sub: incyOn ? 'Через подключённый VPN' : 'Напрямую, без VPN',
-              onClick: () => setSpeedOpen(true)
-            },
-            {
-              icon: <Target className="size-[18px]" />,
-              title: 'Пинг до Faceit',
-              sub: 'Лучший узел для матча',
-              onClick: () => navigate('/optimizer')
-            },
-            {
-              icon: <Zap className="size-[18px]" />,
-              title: 'Сменить узел',
-              sub: nodes.length ? `Серверов в подписке: ${nodes.length}` : 'Добавить подписку',
-              onClick: () => navigate('/incy')
-            },
-            {
-              icon: <ScrollText className="size-[18px]" />,
-              title: 'Логи и отчёт',
-              sub: 'Если что-то не работает',
-              onClick: () => navigate('/logs')
-            }
-          ].map((a) => (
+        {/* Инструменты — одна полоса, а не четыре отдельные карточки */}
+        <LzPanel className="grid grid-cols-2 lg:grid-cols-4">
+          {tools.map((a, i) => (
             <button
               key={a.title}
               type="button"
               onClick={a.onClick}
-              className="group flex cursor-pointer items-center gap-3 ui-card rounded-xl border border-border bg-card px-4 py-3 text-left transition-colors hover:border-primary/35"
+              className={cn(
+                'group flex min-w-0 cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-foreground/[0.04]',
+                i > 0 && 'lg:border-l lg:border-foreground/[0.07]',
+                i % 2 === 1 && 'border-l border-foreground/[0.07]',
+                i > 1 && 'border-t border-foreground/[0.07] lg:border-t-0'
+              )}
             >
-              <span className="text-primary">{a.icon}</span>
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary [&_svg]:size-4">{a.icon}</span>
               <span className="min-w-0 flex-1">
-                <span className="block text-[13px] font-semibold text-foreground">{a.title}</span>
+                <span className="block truncate text-[13px] font-semibold text-foreground">{a.title}</span>
                 <span className="block truncate text-[11px] text-muted-foreground">{a.sub}</span>
               </span>
-              <ChevronRight className="size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+              <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
             </button>
           ))}
-        </div>
+        </LzPanel>
 
         <RescueDialog open={diagOpen} onClose={() => setDiagOpen(false)} />
         <NetSpeedDialog open={speedOpen} onClose={() => setSpeedOpen(false)} vpnOn={incyOn} />
 
         {/* Версия, обновления, поддержка */}
         <div className="ml-auto flex w-fit items-center justify-end gap-1 rounded-xl border border-border/50 bg-card/75 p-0.5 text-[11.5px] font-medium text-foreground/85 backdrop-blur-md">
-          {appVersion && <AppVersionButton className="px-2 tabular-nums">LAZEYKA v{appVersion}</AppVersionButton>}
+          {appVersion && (
+            <AppVersionButton className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 tabular-nums transition-colors hover:bg-accent hover:text-foreground hover:no-underline">
+              <Sparkles className="size-3" />
+              LAZEYKA v{appVersion}
+            </AppVersionButton>
+          )}
           <button
             type="button"
-            onClick={() => void openExternalUrl(SUPPORT_TELEGRAM_URL)}
+            onClick={() => navigate('/support')}
+            title="Автор и поддержка: отчёт о проблеме или идея прямо из программы"
             className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 transition-colors hover:bg-accent hover:text-foreground"
           >
             <Headset className="size-3" />

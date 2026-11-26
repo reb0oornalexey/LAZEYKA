@@ -13,7 +13,8 @@
  */
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import path from 'node:path'
 import { decodeConsole } from '../utils/console-decode'
 import { scanInstalledGamesMac } from './game-scan-mac'
@@ -188,7 +189,52 @@ function scanEpic(): InstalledGame[] {
 
 export async function scanInstalledGames(): Promise<InstalledGame[]> {
   if (process.platform === 'darwin') return scanInstalledGamesMac()
+  if (process.platform === 'linux') return scanSteamLinux()
   if (process.platform !== 'win32') return []
   const [steam, epic] = await Promise.all([scanSteam().catch(() => []), Promise.resolve().then(scanEpic).catch(() => [])])
   return [...steam, ...epic].sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function scanSteamLinux(): InstalledGame[] {
+  const home = homedir()
+  const roots = [
+    path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'Steam'),
+    path.join(home, '.steam', 'steam'),
+    path.join(home, '.steam', 'debian-installation'),
+    path.join(home, '.var', 'app', 'com.valvesoftware.Steam', '.local', 'share', 'Steam')
+  ]
+  const libraries = new Set<string>()
+  for (const root of roots) {
+    try {
+      libraries.add(realpathSync(root))
+      const vdf = readFileSync(path.join(root, 'steamapps', 'libraryfolders.vdf'), 'utf8')
+      for (const item of vdfValues(vdf, 'path')) {
+        if (path.isAbsolute(item)) libraries.add(path.normalize(item))
+      }
+    } catch { /* optional Steam installation or library index */ }
+  }
+  const games = new Map<string, InstalledGame>()
+  for (const library of libraries) {
+    const apps = path.join(library, 'steamapps')
+    let manifests: string[]
+    try {
+      manifests = readdirSync(apps).filter((item) => /^appmanifest_\d+\.acf$/i.test(item))
+    } catch {
+      continue
+    }
+    for (const file of manifests) {
+      try {
+        const manifest = readFileSync(path.join(apps, file), 'utf8')
+        const name = vdfValues(manifest, 'name')[0]
+        const folder = vdfValues(manifest, 'installdir')[0]
+        if (!name || !folder || SKIP_APP.test(name) || path.basename(folder) !== folder || /^\.{1,2}$/.test(folder)) continue
+        const dir = path.join(apps, 'common', folder)
+        if (!existsSync(dir)) continue
+        // The path rule covers the game and child binaries inside its installation.
+        const actual = realpathSync(dir)
+        games.set(actual, { name, source: 'Steam', dir: actual, exes: [actual] })
+      } catch { /* unavailable game manifest or folder */ }
+    }
+  }
+  return [...games.values()].sort((a, b) => a.name.localeCompare(b.name))
 }

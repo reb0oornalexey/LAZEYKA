@@ -173,7 +173,7 @@ export async function runGameModeWatcherCycle(): Promise<void> {
     savedPreviousMode = currentMode
     if (currentMode !== 'all') {
       await applyGameFilter('all')
-      showSystemNotification('Игровой режим LAZEYKA', `Обнаружена игра: ${matched.title}. Game Filter включен (TCP + UDP).`)
+      showSystemNotification('Игровой режим LAZEYKA', `Обнаружена игра: ${matched.title}. Game Filter включен (TCP + UDP).`, undefined, 'errors')
     }
     return
   }
@@ -186,7 +186,7 @@ export async function runGameModeWatcherCycle(): Promise<void> {
     activeProcess = matched.name
     activeGame = matched.title
     if (previous !== matched.title && matched.kind === 'game') {
-      showSystemNotification('Игровой режим LAZEYKA', `Обнаружена игра: ${matched.title}.`)
+      showSystemNotification('Игровой режим LAZEYKA', `Обнаружена игра: ${matched.title}.`, undefined, 'errors')
     }
     return
   }
@@ -197,7 +197,7 @@ export async function runGameModeWatcherCycle(): Promise<void> {
     activeGame = null
     if (currentMode !== savedPreviousMode) {
       await applyGameFilter(savedPreviousMode)
-      showSystemNotification('Игровой режим LAZEYKA', `${old} закрыта. Game Filter возвращён в исходный режим.`)
+      showSystemNotification('Игровой режим LAZEYKA', `${old} закрыта. Game Filter возвращён в исходный режим.`, undefined, 'errors')
     }
   }
 }

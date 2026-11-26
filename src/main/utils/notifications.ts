@@ -1,6 +1,28 @@
 import { Notification, app } from 'electron'
+import { streamerHidesNotifications } from '../core/streamer'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
+import { getAppConfigSync } from '../config'
+
+/**
+ * Вид уведомления (Е6, «Настройки → Уведомления»):
+ *  - actions — горячие клавиши, сценарии, включение и выключение служб;
+ *  - updates — новая версия LAZEYKA;
+ *  - errors  — сбои служб и автоматические переключения (узел заменён, автопилот);
+ *  - author  — ответы, объявления и предупреждения автора;
+ *  - always  — отключается своим переключателем (напоминание о подписке) или не отключается.
+ */
+export type NotifyKind = 'actions' | 'updates' | 'errors' | 'author' | 'always'
+
+/** Показывать ли уведомления этого вида (по умолчанию — да). */
+export function notifyKindEnabled(kind: NotifyKind): boolean {
+  if (kind === 'always') return true
+  try {
+    return getAppConfigSync().notifyKinds?.[kind] !== false
+  } catch {
+    return true
+  }
+}
 
 /**
  * Показать системное уведомление.
@@ -16,8 +38,14 @@ import { existsSync } from 'node:fs'
  */
 const alive = new Set<Notification>()
 
-export function showSystemNotification(title: string, body: string, onClick?: () => void): void {
+export function showSystemNotification(title: string, body: string, onClick?: () => void, kind: NotifyKind = 'always'): void {
   if (!Notification.isSupported()) return
+  if (!notifyKindEnabled(kind)) return
+  // Режим стримера: текст уведомления не показываем, чтобы зрители не увидели IP и названия серверов.
+  if (streamerHidesNotifications()) {
+    title = 'LAZEYKA'
+    body = 'Новое уведомление. Текст скрыт режимом стримера.'
+  }
 
   try {
     const iconPath = path.join(app.getAppPath(), 'resources', 'icon.png')

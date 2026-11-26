@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
-import { Download, Loader2, Sparkles, FlaskConical, CheckCircle2, XCircle, Square, Play, RotateCcw } from 'lucide-react'
+import { Hammer, ListChecks, Loader2, RefreshCw, Settings2, Sparkles, X } from 'lucide-react'
 import { useZapretStore } from '@renderer/store/zapret-store'
 import { useZapretTestStore } from '@renderer/store/zapret-test-store'
+import { attachZapretLab, useZapretLab, type ZapretTab } from '@renderer/store/zapret-lab-store'
 import {
   zapretListStrategies,
   zapretStart,
@@ -19,22 +20,46 @@ import {
   getAppConfig,
   type ZapretUpdateInfo
 } from '@renderer/utils/ipc'
+import { isAutopickRunning, labAutopickStart } from '@renderer/utils/zapret-lab-api'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
-import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import ZapretIcon from '@renderer/components/zapret-icon'
 import { cn, formatInstalledVersion, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
+import { Segmented } from '@renderer/components/lz'
+import { ZapretConsole } from '@renderer/components/zapret/zapret-console'
+import { LinuxZapretLists } from '@renderer/components/zapret/linux-lists'
+import { LinuxGameFilterCard } from '@renderer/components/zapret/linux-game-filter'
+import { LinuxZapretBuilder } from '@renderer/components/zapret/linux-builder'
+import { refreshZapretMeta } from '@renderer/components/zapret/zapret-meta'
+import { useTourTab } from '@renderer/lib/tour-focus'
 import ComponentUpdateDialog from '@renderer/components/component-update-dialog'
 import BasePage from '@renderer/components/base/base-page'
-import SwitcherCard from '@renderer/components/switcher-card'
 import ZapretIpListCard from '@renderer/components/zapret-iplist-card'
 import ZapretServiceSettingsCard from '@renderer/components/zapret-service-settings-card'
 import ZapretAutopilotCard from '@renderer/components/zapret-autopilot-card'
-import ZapretStrategyBuilderCard from '@renderer/components/zapret-strategy-builder-card'
 import ZapretMacServiceCard from '@renderer/components/zapret-mac-service-card'
+import ZapretCatalog from '@renderer/components/zapret-catalog'
+import ZapretBuilder from '@renderer/components/zapret-builder'
+import ZapretAutopickDialog from '@renderer/components/zapret-autopick-dialog'
 import { platform } from '@renderer/utils/init'
 
 const isMac = platform === 'darwin'
+const isLinux = platform === 'linux'
+const hasWindowsBuilder = !isMac && !isLinux
+
+const TABS: { id: ZapretTab; label: string; icon: React.ComponentType<{ className?: string }>; hint: string; win?: boolean }[] = [
+  { id: 'strategies', label: 'Стратегии', icon: ZapretIcon, hint: 'Каталог: встроенные и свои стратегии, проверка и автоподбор' },
+  { id: 'builder', label: 'Конструктор', icon: Hammer, hint: 'Собрать свою стратегию из понятных блоков', win: true },
+  { id: 'lists', label: 'Списки', icon: ListChecks, hint: 'Сайты и IP-адреса, которые обрабатывает Zapret' },
+  { id: 'settings', label: 'Настройки', icon: Settings2, hint: 'Служба, Game Filter, IPset, автопилот и игровой режим' }
+]
+
+const CUSTOM_PREFIX = 'general (LZ '
+const displayName = (file?: string): string | undefined => {
+  if (!file) return undefined
+  if (file.startsWith(CUSTOM_PREFIX) && file.endsWith(').bat')) return `${file.slice(CUSTOM_PREFIX.length, -').bat'.length)} · своя`
+  return file.replace(/\.bat$/i, '')
+}
 
 const Zapret: React.FC = () => {
   const status = useZapretStore((s) => s.status)
@@ -44,20 +69,34 @@ const Zapret: React.FC = () => {
   const active = zapret?.activeStrategy
   const location = useLocation()
   const navigate = useNavigate()
-  const autoStartRef = useRef<boolean>(
-    Boolean((location.state as { autoStart?: boolean } | null)?.autoStart)
-  )
+  const autoStartRef = useRef<boolean>(Boolean((location.state as { autoStart?: boolean } | null)?.autoStart))
   // Переход из «Регионов Valve»: сразу открыть настройки на Game Filter и IPset.
-  const focusFiltersRef = useRef<boolean>(
-    Boolean((location.state as { focusFilters?: boolean } | null)?.focusFilters)
-  )
+  const focusFiltersRef = useRef<boolean>(Boolean((location.state as { focusFilters?: boolean } | null)?.focusFilters))
+
+  const tabState = useZapretLab((s) => s.tab)
+  const setTab = useZapretLab((s) => s.setTab)
+  const autopick = useZapretLab((s) => s.autopick)
+  const setAutopickOpen = useZapretLab((s) => s.setAutopickOpen)
+  const checking = useZapretLab((s) => s.checking)
+  const refreshCustom = useZapretLab((s) => s.refreshCustom)
+  const picking = isAutopickRunning(autopick)
+  // На macOS конструктора нет — запомненная вкладка «Конструктор» открывает каталог.
+  const tab: ZapretTab =
+    isMac && tabState === 'builder' ? 'strategies' : tabState
+  const [focusSignal, setFocusSignal] = useState(0)
+
+  useTourTab<ZapretTab>('/zapret', setTab)
+
   useEffect(() => {
-    // Флаг одноразовый: убираем его из истории, чтобы подсказка не всплывала
-    // снова после перезагрузки окна.
-    if (focusFiltersRef.current) navigate(location.pathname, { replace: true, state: null })
+    // Флаг одноразовый: убираем его из истории, чтобы подсказка не всплывала снова после перезагрузки окна.
+    if (focusFiltersRef.current) {
+      setTab('settings')
+      navigate(location.pathname, { replace: true, state: null })
+    }
+    return isLinux ? undefined : attachZapretLab()
   }, [])
 
-  // ---- Auto-update banner
+  // ---- Обновление сборки
   const [updateInfo, setUpdateInfo] = useState<ZapretUpdateInfo | null>(null)
   // Версия без сети: встроенная сборка показывает свой номер, даже если GitHub недоступен.
   const [localVersion, setLocalVersion] = useState<string | null>(null)
@@ -67,74 +106,52 @@ const Zapret: React.FC = () => {
   const [installing, setInstalling] = useState(false)
   const installingRef = useRef(false)
 
-  // ---- Strategy test
+  // ---- Проверка всех стратегий
   const testProgress = useZapretTestStore((s) => s.progress)
   const testReport = useZapretTestStore((s) => s.report)
   const isTestRunning = useZapretTestStore((s) => s.isRunning)
   const isTestStopping = useZapretTestStore((s) => s.stopping)
-
-  // After a test run, show strategies best-to-worst by score (okCount out
-  // of 10 targets) instead of file order — untested strategies (shouldn't
-  // normally happen once a full run has completed, but defensively
-  // handled) sort to the bottom. Before any test has run, keep the plain
-  // file-listing order so browsing available strategies isn't reshuffled
-  // for no reason.
-  const displayedStrategies = useMemo(() => {
-    if (!testReport) return strategies
-    const scoreOf = (file: string): number => testReport.results[file]?.score ?? -1
-    return [...strategies].sort((a, b) => scoreOf(b.file) - scoreOf(a.file))
-  }, [strategies, testReport])
+  const labBusy = isTestRunning || picking || checking
+  const [catalogAutopickRunning, setCatalogAutopickRunning] = useState(false)
 
   const refreshStrategies = (): void => {
     zapretListStrategies().then(setStrategies).catch(() => setStrategies([]))
   }
 
+  // Своя стратегия сохранена/удалена — список файлов обновляется.
+  const customCount = useZapretLab((s) => s.custom.length)
+  useEffect(() => {
+    refreshStrategies()
+  }, [customCount])
+
   const runCheckUpdate = async (force = false): Promise<void> => {
-    // Don't await; banner just stays hidden if the API call fails (rate-
-    // limit, offline, etc.) — surfacing a network error here would be
-    // noise for users who never asked to check.
+    // Баннер просто не появится, если запрос не удался (лимит, нет сети).
     const info = await zapretCheckUpdate(force).catch(() => null)
     setUpdateInfo(info)
-    // Manual trigger (the "Проверить сейчас" button) — give explicit
-    // feedback either way, since silence would look broken when the
-    // user just pressed a button.
     if (force) {
-      if (!info) {
-        toast.error('Не удалось проверить обновления Zapret')
-      } else if (info.hasUpdate) {
-        toast.info(`Доступна новая версия Zapret — v${info.latest}`)
-      } else {
-        toast.success('У вас последняя версия Zapret')
-      }
+      if (!info) toast.error('Не удалось проверить обновления Zapret')
+      else if (info.hasUpdate) toast.info(`Доступна новая версия Zapret — v${info.latest}`)
+      else toast.success('У вас последняя версия Zapret')
     }
   }
 
-  const startTest = (resume = false): void => {
+  const startTest = (resume = false, file?: string, autoSelect = false): void => {
     if (useZapretTestStore.getState().isRunning) return
-    // Optimistically flip isRunning so the UI dims immediately — the
-    // first 'starting' IPC tick will arrive within ~100ms and reconcile.
-    useZapretTestStore.getState().set({
-      isRunning: true,
-      progress: { phase: 'starting' }
-    })
-    zapretRunStrategyTest({ resume }).catch((e: unknown) => {
+    useZapretTestStore.getState().set({ isRunning: true, progress: { phase: 'starting', strategy: file } })
+    if (autoSelect) setCatalogAutopickRunning(true)
+    zapretRunStrategyTest({ resume, file, autoSelect }).catch((e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e)
-      toast.error('Тест стратегий не выполнен', { description: msg })
-      useZapretTestStore.getState().set({
-        isRunning: false,
-        progress: { phase: 'error', message: msg }
-      })
+      toast.error('Проверка стратегий не выполнена', { description: msg })
+      useZapretTestStore.getState().set({ isRunning: false, progress: { phase: 'error', message: msg } })
+    }).finally(() => {
+      if (autoSelect) setCatalogAutopickRunning(false)
     })
   }
 
   useEffect(() => {
     refreshStrategies()
-    if (zapret?.autoUpdateCheck !== false) {
-      void runCheckUpdate(false)
-    }
-    // Тест стратегий больше не стартует сам при открытии вкладки — только
-    // по кнопке «Запустить тест» (он на минуты отключает обход блокировок).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!isLinux && zapret?.autoUpdateCheck !== false) void runCheckUpdate(false)
+    // Проверка стратегий и автоподбор не стартуют сами — только по кнопке.
   }, [])
 
   const stopTest = (): void => {
@@ -147,14 +164,11 @@ const Zapret: React.FC = () => {
     try {
       await zapretClearStrategyTestResults()
       useZapretTestStore.getState().set({ report: null, progress: null })
-      toast.success('Результаты теста сброшены', { style: POWER_ON_BANNER_STYLE })
+      toast.success('Баллы проверки сброшены', { style: POWER_ON_BANNER_STYLE })
     } catch (e) {
-      toast.error('Не удалось сбросить результаты', { description: e instanceof Error ? e.message : String(e) })
+      toast.error('Не удалось сбросить баллы', { description: e instanceof Error ? e.message : String(e) })
     }
   }
-
-  const testPartial = !!testReport?.partial
-  const testedCount = testReport ? Object.keys(testReport.results).length : 0
 
   const showBanner = !!updateInfo && updateInfo.hasUpdate && !updateInfo.dismissed && !!updateInfo.assetUrl
 
@@ -181,19 +195,16 @@ const Zapret: React.FC = () => {
         description: `Версия ${res.installedVersion ?? version} — стратегий: ${res.strategies}`,
         style: POWER_ON_BANNER_STYLE
       })
-      // If the active strategy no longer exists in the new bundle, drop it
-      // so the user is forced to pick a fresh one before next start.
       refreshStrategies()
+      void refreshCustom()
       if (zapret && active) {
         const fresh = await zapretListStrategies().catch(() => [])
         if (!fresh.some((s) => s.file === active)) {
-          // Свежий конфиг, а не снимок до обновления: иначе вместе со
-          // стратегией откатывалась и версия, и баннер обновления возвращался.
+          // Свежий конфиг, а не снимок до обновления: иначе откатывалась и версия.
           const cfgNow = await getAppConfig()
           await patchAppConfig({ zapret: { ...(cfgNow.zapret ?? zapret), activeStrategy: undefined } })
         }
       }
-      // Re-check so the banner disappears immediately.
       const fresh = await zapretCheckUpdate(true).catch(() => null)
       setUpdateInfo(fresh)
     } finally {
@@ -209,35 +220,149 @@ const Zapret: React.FC = () => {
   }
 
   const pickStrategy = async (file: string): Promise<void> => {
-    // Defensive: if the user manages to click a disabled strategy via
-    // keyboard or a stale render, drop the request silently.
-    // Стратегию, не прошедшую тест, всё равно можно выбрать: сеть и
-    // провайдер меняются, а старый отчёт иначе блокировал её навсегда.
-    if (isTestRunning) return
-    await patchAppConfig({ zapret: { ...zapret!, activeStrategy: file } })
-    // macOS: выбор записывается в службу и действует сразу — без пароля, перезапуском движка.
-    if (isMac && status.state === 'running') {
+    // Стратегию, не прошедшую проверку, всё равно можно выбрать: сеть и провайдер меняются.
+    if (labBusy || file === active) return
+    try {
+      await patchAppConfig({ zapret: { ...zapret!, activeStrategy: file } })
+    } catch (e) {
+      toast.error('Не удалось выбрать стратегию', { description: e instanceof Error ? e.message : String(e) })
+      return
+    }
+    // Zapret работает — перезапускаем с новой стратегией (macOS — без пароля, перезапуском движка).
+    if (status.state === 'running') {
       try {
         await zapretRestart()
+        toast.success(`Стратегия «${displayName(file)}» включена`, { style: POWER_ON_BANNER_STYLE })
       } catch (e) {
+        if (isLinux) await patchAppConfig({ zapret: { ...zapret!, activeStrategy: active } }).catch(() => void 0)
         toast.error('Не удалось переключить стратегию', { description: e instanceof Error ? e.message : String(e) })
       }
     }
     if (!autoStartRef.current) return
-    // One-shot: drop the flag so re-clicking another strategy on this page
-    // doesn't keep auto-starting and ping-ponging back to Home.
+    // Одноразово: повторный выбор на этой странице не запускает и не уводит на главную.
     autoStartRef.current = false
     try {
       await zapretStart()
       navigate('/home')
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      toast.error('Не удалось запустить Zapret', { description: msg })
+      toast.error('Не удалось запустить Zapret', { description: e instanceof Error ? e.message : String(e) })
     }
   }
 
+  const startAutopick = (): void => {
+    if (isLinux) {
+      setTab('strategies')
+      startTest(false, undefined, true)
+      return
+    }
+    setAutopickOpen(true)
+    if (picking) return
+    void labAutopickStart().catch((e) => {
+      setAutopickOpen(false)
+      toast.error('Автоподбор не запущен', { description: e instanceof Error ? e.message : String(e) })
+    })
+  }
+
+  const visibleTabs = useMemo(() => TABS
+    .filter((t) => !isMac || !t.win)
+    .map((t) => isLinux ? {
+      ...t,
+      hint: t.id === 'settings' ? 'Системная служба Linux и источник сборки'
+        : t.id === 'lists' ? 'Домены для обработки и исключения'
+        : t.id === 'builder' ? 'Свой вариант на основе профиля Flowseal'
+        : 'Стратегии Flowseal для Linux и проверка сайтов'
+    } : t), [])
+
+  const busyReason = isTestRunning
+    ? 'Идёт проверка стратегий — подождите или остановите её'
+    : picking
+      ? 'Идёт автоподбор — подождите или остановите его'
+      : checking
+        ? 'Идёт проверка стратегии из конструктора'
+        : 'Подождите завершения переключения Zapret'
+  const cardsDisabled = labBusy || status.state === 'starting' || status.state === 'stopping'
+
+  // ---- Клавиша питания
+  const [pending, setPending] = useState<boolean | null>(null)
+  const toggle = async (): Promise<void> => {
+    if (pending !== null || labBusy) return
+    const next = !(status.state === 'running' || status.state === 'starting')
+    if (next && !active) {
+      toast.info('Сначала выберите стратегию', { description: isMac ? 'Каталог — ниже.' : 'Или нажмите «Подобрать автоматически».' })
+      setTab('strategies')
+      return
+    }
+    setPending(next)
+    try {
+      await (next ? zapretStart() : zapretStop())
+    } catch {
+      /* ошибку показывает пульт (lastError) */
+    } finally {
+      setPending(null)
+    }
+  }
+
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const manualCheck = async (): Promise<void> => {
+    if (checkingUpdate) return
+    setCheckingUpdate(true)
+    try {
+      await runCheckUpdate(true)
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
+
+  useEffect(() => {
+    void refreshZapretMeta()
+  }, [])
+
+  const ownName = active && active.startsWith(CUSTOM_PREFIX) && active.endsWith(').bat') ? active.slice(CUSTOM_PREFIX.length, -').bat'.length) : null
+  const activeScore = (active && testReport?.results?.[active]) || null
+  const version = (isLinux ? localVersion : zapret?.installedVersion ?? updateInfo?.installed ?? localVersion) ?? null
+
   return (
-    <BasePage title="Zapret">
+    <BasePage
+      title="Zapret"
+      header={
+        isLinux ? undefined : showBanner && updateInfo ? (
+          <div className="mr-1 flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              data-tour="zapret-update"
+              disabled={installing}
+              onClick={() => setUpdateDialogOpen(true)}
+              title={formatInstalledVersion(updateInfo.installed)}
+              className="h-8 gap-1.5 rounded-lg border-primary/45 text-xs"
+            >
+              {installing ? <Loader2 className="size-3.5 animate-spin text-primary" /> : <Sparkles className="size-3.5 text-primary" />}
+              {installing ? 'Устанавливаем Zapret…' : 'Обновить Zapret'}
+              {!installing && (
+                <span className="rounded-md bg-primary px-1.5 py-px text-[10.5px] font-bold text-primary-foreground tabular-nums">v{updateInfo.latest}</span>
+              )}
+            </Button>
+            {!installing && (
+              <Button variant="ghost" size="icon" className="size-8 rounded-lg" onClick={dismissUpdate} title="Позже: не напоминать об этой версии" aria-label="Позже">
+                <X className="size-3.5" />
+              </Button>
+            )}
+          </div>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void manualCheck()}
+            disabled={checkingUpdate || installing}
+            title="Проверить, вышла ли новая сборка Zapret"
+            className="mr-1 h-8 rounded-lg text-xs"
+          >
+            <RefreshCw className={cn('size-3.5', checkingUpdate && 'animate-spin')} />
+            {checkingUpdate ? 'Проверяем…' : 'Проверить обновления'}
+          </Button>
+        )
+      }
+    >
       <ComponentUpdateDialog
         component="zapret"
         open={updateDialogOpen}
@@ -246,274 +371,108 @@ const Zapret: React.FC = () => {
         onLater={dismissUpdate}
         onClose={() => setUpdateDialogOpen(false)}
       />
-      <div className="px-4 pb-6 space-y-4">
-        {showBanner && updateInfo && (
-          <div className={cn(
-            'ui-glow relative flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 transition',
-            installing && 'pointer-events-none opacity-80'
-          )}>
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/20 text-primary ">
-              {installing
-                ? <Loader2 className="h-4 w-4 animate-spin" />
-                : <Sparkles className="h-4 w-4" />}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-foreground">
-                {installing
-                  ? 'Устанавливаем Zapret…'
-                  : `Доступно обновление Zapret — v${updateInfo.latest}`}
-              </div>
-              <div className="text-xs text-muted-foreground truncate">
-                {installing
-                  ? (isMac ? 'Скачиваем и ставим в службу — спросят пароль администратора…' : 'Останавливаем winws.exe, распаковываем архив…')
-                  : formatInstalledVersion(updateInfo.installed)}
-              </div>
-            </div>
-            {!installing && (
-              <div className="flex shrink-0 items-center gap-2">
-                <Button variant="ghost" size="sm" onClick={dismissUpdate}>
-                  Позже
-                </Button>
-                <Button size="sm" onClick={() => setUpdateDialogOpen(true)}>
-                  <Download className="h-3.5 w-3.5" />
-                  Обновить
-                </Button>
-              </div>
+      {hasWindowsBuilder && <ZapretAutopickDialog />}
+      <div className={cn('mx-auto flex w-full max-w-[1080px] flex-col lz-page-gap lz-page-x pb-5', tab === 'strategies' && 'h-full')}>
+        <ZapretConsole
+          status={status}
+          pending={pending}
+          isMac={!hasWindowsBuilder}
+          strategy={active ? (isLinux ? strategies.find((item) => item.file === active)?.title ?? active : ownName ?? active.replace(/\.bat$/i, '')) : null}
+          own={!!ownName}
+          score={activeScore}
+          labBusy={labBusy}
+          busyReason={busyReason}
+          picking={picking || catalogAutopickRunning}
+          catalogAutopick={isLinux}
+          testRunning={isTestRunning}
+          checking={checking}
+          version={version}
+          update={showBanner && updateInfo?.latest ? { latest: updateInfo.latest } : null}
+          onToggle={() => void toggle()}
+          onChange={() => {
+            setTab('strategies')
+            setFocusSignal((n) => n + 1)
+          }}
+          onAutopick={startAutopick}
+          onVersions={() => setUpdateDialogOpen(true)}
+          onSettings={() => setTab('settings')}
+        />
+
+        <div className="flex shrink-0 flex-wrap items-center gap-3">
+          <Segmented
+            items={visibleTabs.map((t) => ({ id: t.id, label: t.label, icon: t.icon, title: t.hint }))}
+            value={tab}
+            onChange={setTab}
+            aria-label="Разделы Zapret"
+            data-tour="zapret-tabs"
+            className={isMac ? 'w-[360px] max-w-full' : 'w-[480px] max-w-full'}
+          />
+          <span className="lz-onwall min-w-0 text-[12px]">{visibleTabs.find((t) => t.id === tab)?.hint}</span>
+        </div>
+
+        {tab === 'strategies' && (
+          <ZapretCatalog
+            strategies={strategies}
+            active={active}
+            isMac={!hasWindowsBuilder}
+            report={testReport}
+            progress={testProgress}
+            testRunning={isTestRunning}
+            testStopping={isTestStopping}
+            onPick={(f) => void pickStrategy(f)}
+            onStartTest={startTest}
+            onStopTest={stopTest}
+            onResetTest={() => void resetTestResults()}
+            onChanged={refreshStrategies}
+            focusSignal={focusSignal}
+          />
+        )}
+
+        {tab === 'builder' && hasWindowsBuilder && <ZapretBuilder disabled={isTestRunning || picking} disabledReason={busyReason} onSaved={refreshStrategies} />}
+        {tab === 'builder' && isLinux &&
+          <LinuxZapretBuilder strategies={strategies} disabled={cardsDisabled} onChanged={refreshStrategies} />}
+
+        {tab === 'lists' && (isLinux
+          ? <LinuxZapretLists disabled={cardsDisabled} />
+          : <ZapretIpListCard disabled={cardsDisabled} disabledReason={busyReason} />)}
+
+        {tab === 'settings' && (
+          <div className="grid items-start gap-3 lg:grid-cols-2">
+            {isLinux ? (<>
+              <section className="rounded-2xl border border-border/70 bg-card p-5">
+                <h2 className="text-sm font-semibold">Системная служба Linux</h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Zapret обрабатывает исходящий трафик этого компьютера. Для управления службой Linux может запросить подтверждение администратора.
+                </p>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Служба продолжает работать после закрытия LAZEYKA. Остановите её кнопкой питания в Zapret или в пульте.
+                </p>
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Движок bol-van nfqws{version ? ` ${version}` : ''}. Стратегии адаптированы из Flowseal. Обновление входит в пакет LAZEYKA.
+                </p>
+              </section>
+              <LinuxGameFilterCard disabled={cardsDisabled} />
+            </>) : isMac ? (
+              <>
+                <ZapretMacServiceCard disabled={cardsDisabled} />
+                <ZapretAutopilotCard />
+              </>
+            ) : (
+              <ZapretServiceSettingsCard
+                focusFilters={focusFiltersRef.current}
+                disabled={cardsDisabled}
+                disabledReason={busyReason}
+                autoUpdateCheck={zapret?.autoUpdateCheck !== false}
+                onAutoUpdateCheckChange={(v) => {
+                  if (!zapret) return
+                  void patchAppConfig({ zapret: { ...zapret, autoUpdateCheck: v } })
+                }}
+                onManualCheckUpdate={() => runCheckUpdate(true)}
+                aside={<ZapretAutopilotCard />}
+              />
             )}
           </div>
         )}
-
-        <SwitcherCard
-          icon={ZapretIcon}
-          title="Обход DPI (Zapret)"
-          subtitle={active ?? 'Выберите стратегию ниже'}
-          version={zapret?.installedVersion ?? updateInfo?.installed ?? localVersion ?? undefined}
-          versionFallback="встроенная"
-          onVersionClick={() => setUpdateDialogOpen(true)}
-          status={status}
-          disabled={isTestRunning}
-          onToggle={(v) => {
-            if (v && !active) return
-            if (isTestRunning) return
-            // Return the promise so SwitcherCard awaits the IPC roundtrip and
-            // keeps the switch optimistically flipped/locked until done.
-            return (v ? zapretStart() : zapretStop()).catch(() => void 0)
-          }}
-          footer={
-            isTestRunning
-              ? 'Идёт тестирование стратегий — переключатель временно недоступен'
-              : active
-                ? null
-                : 'Нужна стратегия'
-          }
-        />
-
-      <ZapretIpListCard
-        disabled={isTestRunning || status.state === 'starting' || status.state === 'stopping'}
-        disabledReason={
-          isTestRunning
-            ? 'Идёт тестирование стратегий — управление списком временно недоступно'
-            : 'Подождите завершения переключения Zapret'
-        }
-      />
-
-      {isMac ? (
-        <ZapretMacServiceCard disabled={isTestRunning || status.state === 'starting' || status.state === 'stopping'} />
-      ) : (
-      <ZapretServiceSettingsCard
-        focusFilters={focusFiltersRef.current}
-        disabled={isTestRunning || status.state === 'starting' || status.state === 'stopping'}
-        disabledReason={
-          isTestRunning
-            ? 'Идёт тестирование стратегий — настройки временно недоступны'
-            : 'Подождите завершения переключения Zapret'
-        }
-        autoUpdateCheck={zapret?.autoUpdateCheck !== false}
-        onAutoUpdateCheckChange={(v) => {
-          if (!zapret) return
-          void patchAppConfig({ zapret: { ...zapret, autoUpdateCheck: v } })
-        }}
-        onManualCheckUpdate={() => runCheckUpdate(true)}
-      />
-      )}
-
-      <ZapretAutopilotCard />
-
-      {!isMac && <ZapretStrategyBuilderCard onStrategyCreated={refreshStrategies} />}
-
-      <Card className="cyber-card">
-        <CardHeader
-          className={cn(
-            'flex flex-row items-center justify-between gap-3 space-y-0 pb-3',
-            isTestRunning && 'flex-col items-stretch gap-3 sm:flex-row sm:items-center'
-          )}
-        >
-          {isTestRunning ? (
-            <div className="flex flex-1 min-w-0 items-center gap-3">
-              <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-bold leading-tight text-foreground">
-                  Идёт тестирование стратегий под вашу сеть…
-                </div>
-                <div className="text-xs text-muted-foreground mt-0.5 font-mono">
-                  {testProgress && testProgress.total ? (
-                    <>
-                      Стратегия <span className="text-primary font-bold">{testProgress.current ?? 0}/{testProgress.total}</span>
-                      {testProgress.strategy ? ` — ${testProgress.strategy}` : ''}
-                    </>
-                  ) : 'Инициализация тестирования…'}
-                </div>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={stopTest}
-                disabled={isTestStopping}
-                title="Остановить после текущей стратегии — потом можно продолжить с этого места"
-                className="shrink-0 h-8 text-xs gap-1.5 rounded-xl cursor-pointer border-border/80 hover:border-st-err/50 hover:text-st-err-text"
-              >
-                {isTestStopping ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3.5" />}
-                <span>{isTestStopping ? 'Останавливаем…' : 'Остановить'}</span>
-              </Button>
-            </div>
-          ) : (
-            <>
-              <div>
-                <CardTitle className="text-base font-bold flex items-center gap-2">
-                  <ZapretIcon className="size-4.5 text-primary" />
-                  <span>Каталог стратегий DPI Bypass</span>
-                </CardTitle>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {testReport ? (
-                    <span className="text-st-ok-text font-semibold font-mono">
-                      {Object.values(testReport.results).filter((r) => r.passed).length} / {testedCount} рабочих на вашем провайдере
-                      {testPartial && (
-                        <span className="ml-1.5 font-normal text-st-warn-text">
-                          (тест остановлен: проверено {testedCount}{testReport.totalStrategies ? ` из ${testReport.totalStrategies}` : ''})
-                        </span>
-                      )}
-                    </span>
-                  ) : 'Выберите оптимальный пресет для обхода блокировок.'}
-                </p>
-              </div>
-              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-                {testPartial && (
-                  <Button
-                    size="sm"
-                    onClick={() => startTest(true)}
-                    disabled={strategies.length === 0}
-                    title="Проверить только оставшиеся стратегии"
-                    className="h-8 text-xs gap-1.5 rounded-xl cursor-pointer"
-                  >
-                    <Play className="size-3.5" />
-                    <span>Продолжить</span>
-                  </Button>
-                )}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => startTest(false)}
-                  disabled={strategies.length === 0}
-                  className="h-8 text-xs gap-1.5 rounded-xl cursor-pointer border-border/80 hover:border-primary/50 hover:text-primary transition-all"
-                >
-                  <FlaskConical className="size-3.5" />
-                  <span>{testReport ? (testPartial ? 'Заново' : 'Перетестировать') : 'Запустить тест'}</span>
-                </Button>
-                {testReport && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => { void resetTestResults() }}
-                    title="Стереть результаты теста — стратегии снова будут в обычном порядке"
-                    className="h-8 text-xs gap-1.5 rounded-xl cursor-pointer text-muted-foreground hover:text-foreground"
-                  >
-                    <RotateCcw className="size-3.5" />
-                    <span>Сбросить</span>
-                  </Button>
-                )}
-              </div>
-            </>
-          )}
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {strategies.length === 0 && (
-            <p className="text-sm text-muted-foreground">
-              Сборка Zapret не найдена.
-            </p>
-          )}
-          {displayedStrategies.map((s) => {
-            const result = testReport?.results[s.file]
-            const isFailed = !!result && result.tested && !result.passed
-            const isPassed = !!result && result.tested && result.passed
-            const isBest = testReport?.bestStrategy === s.file
-            const isActive = active === s.file
-            const disabled = isTestRunning
-
-            return (
-              <button
-                key={s.file}
-                onClick={() => { void pickStrategy(s.file) }}
-                disabled={disabled}
-                aria-disabled={disabled}
-                title={
-                  isFailed
-                    ? `Не прошла последний тест (${result?.okCount ?? 0}/${result?.totalCount ?? 0} целей доступны). Выбрать всё равно можно.`
-                    : undefined
-                }
-                className={cn(
-                  'group relative w-full text-left p-3.5 rounded-xl border transition-all duration-200 cursor-pointer',
-                  isActive
-                    ? 'border-primary/60 bg-primary/15 '
-                    : 'border-border/60 bg-card/40 hover:bg-foreground/[0.04] hover:border-border',
-                  disabled && 'opacity-40 grayscale cursor-not-allowed pointer-events-none'
-                )}
-              >
-                <div className="flex items-center gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="font-bold text-sm flex items-center gap-2">
-                      <span className={cn('truncate', isActive ? 'text-primary' : 'text-foreground')}>
-                        {s.title}
-                      </span>
-                      {isBest && (
-                        <span className="shrink-0 text-[10px] uppercase tracking-wide font-mono font-bold rounded-full px-2 py-0.5 bg-primary/20 text-primary border border-primary/30 ">
-                          лучшая
-                        </span>
-                      )}
-                      {isActive && (
-                        <span className="shrink-0 text-[10px] uppercase tracking-wide font-mono font-bold rounded-full px-2 py-0.5 bg-st-ok/20 text-st-ok-text border border-st-ok/30">
-                          активна
-                        </span>
-                      )}
-                    </div>
-                    {s.description && (
-                      <div className="text-xs text-muted-foreground mt-1 line-clamp-1">{s.description}</div>
-                    )}
-                  </div>
-                  {isFailed ? (
-                    <span className="shrink-0 inline-flex items-center gap-1 text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-st-err/10 text-st-err-text border border-st-err/20">
-                      <XCircle className="size-3.5" />
-                      {result?.okCount ?? 0}/{result?.totalCount ?? 0}
-                    </span>
-                  ) : isPassed ? (
-                    <span className="shrink-0 inline-flex items-center gap-1 text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-st-ok/10 text-st-ok-text border border-st-ok/20">
-                      <CheckCircle2 className="size-3.5" />
-                      {result?.okCount ?? 0}/{result?.totalCount ?? 0}
-                    </span>
-                  ) : null}
-                </div>
-              </button>
-            )
-          })}
-        </CardContent>
-      </Card>
-
-      {status.lastError && (
-        <Card className="border-st-err/40 bg-st-err/20 ">
-          <CardContent className="pt-4">
-            <p className="text-xs text-st-err-text font-mono">{status.lastError}</p>
-          </CardContent>
-        </Card>
-      )}
       </div>
     </BasePage>
   )

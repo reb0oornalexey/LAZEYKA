@@ -1,8 +1,8 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { toast } from 'sonner'
 import {
   Shield,
-  Send,
   Zap,
   Gamepad2,
   Lock,
@@ -10,7 +10,6 @@ import {
   Wrench,
   HelpCircle,
   Sparkles,
-  CheckCircle2,
   Headset,
   ChevronDown,
   Rocket,
@@ -19,14 +18,37 @@ import {
   BarChart2,
   Download,
   Link as LinkIcon,
-  AlertTriangle
+  AlertTriangle,
+  Crosshair,
+  Stethoscope,
+  Network,
+  MessageSquare,
+  ArrowRight,
+  BookOpen,
+  Compass,
+  Heart,
+  RotateCcw,
+  Search,
+  Tv,
+  Users,
+  Activity,
+  Trophy,
+  UserCheck
 } from 'lucide-react'
-import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
-import { Badge } from '@renderer/components/ui/badge'
+import { LanScenariosGuide } from '@renderer/components/lan-scenarios-guide'
+import { TelegramBrandIcon } from '@renderer/components/service-icons'
 import BasePage from '@renderer/components/base/base-page'
-import UsersStats from '@renderer/components/users-stats'
+import { Button } from '@renderer/components/ui/button'
+import { Input } from '@renderer/components/ui/input'
+import { EmptyState, LiveNumber, LzHero, LzPanel, StatChip } from '@renderer/components/lz'
+import { PageColumn, PageTabs, usePageTab, type PageTab } from '@renderer/components/e9/page-tabs'
 import VelvetRecommendation from '@renderer/components/velvet-recommendation'
-import { cn } from '@renderer/lib/utils'
+import { useAppConfig } from '@renderer/hooks/use-app-config'
+import { useOnlineStore, selectInstallNum } from '@renderer/store/online-store'
+import { hasDismissedHints, latestTour, resetHints, startIntroTour, startTour } from '@renderer/lib/tour'
+import { getAppVersion } from '@renderer/utils/ipc'
+import { cn, pluralRu } from '@renderer/lib/utils'
+import logo from '@renderer/assets/logo.png'
 
 /**
  * Страница «Информация» — это справка, а не витрина.
@@ -109,7 +131,7 @@ const MODULES: ModuleInfo[] = [
         what: 'Готовые наборы портов для игр и Discord (голос, звонки, стримы) или свои диапазоны.'
       }
     ],
-    tip: 'Zapret работает только на этом компьютере и только для программ на нём. Телефон, приставка и телевизор через него не пойдут.',
+    tip: 'Zapret обрабатывает трафик компьютера. Для телефона, приставки или телевизора откройте «Локальная сеть» → «По порту» и проверьте доступ через прокси.',
     troubleshoot:
       'Не открывается конкретный сайт — попробуйте другую стратегию. Не работает вообще ничего — выключите Zapret и проверьте, что интернет есть без него.'
   },
@@ -172,6 +194,15 @@ const MODULES: ModuleInfo[] = [
       {
         name: 'Тест скорости сервера',
         what: 'Настоящий замер скачивания и отдачи через выбранный сервер, не разрывая текущее подключение.'
+      },
+      {
+        name: 'Цепочка узлов',
+        what: 'Трафик идёт через два сервера подряд: вход через один, выход через другой. Вкладка «Настройки» INCY.',
+        when: 'Если нужен выход в определённой стране, а прямое подключение к этому серверу работает плохо.'
+      },
+      {
+        name: 'Соединения',
+        what: 'Какая программа куда сейчас подключается. Любой сайт из списка можно отправить через VPN или напрямую.'
       }
     ],
     tip: 'Подписка обновляется сама. Если серверы пропали — нажмите обновление на карточке подписки.',
@@ -179,7 +210,7 @@ const MODULES: ModuleInfo[] = [
       'Подключилось, но сайты не грузятся — переключите профиль на «Глобально». Не помогло — смените сервер. Совсем ничего — вкладка «Логи», последние строки скажут причину.'
   },
   {
-    icon: <Send className="h-5 w-5 text-st-info-text" />,
+    icon: <TelegramBrandIcon className="h-5 w-5" />,
     title: 'Telegram WS Proxy — только для Telegram',
     where: 'Вкладка «Telegram»',
     badge: 'Без подписки',
@@ -193,7 +224,7 @@ const MODULES: ModuleInfo[] = [
       },
       {
         name: 'QR-код для телефона',
-        what: 'Нажмите «Открыть для телефона» — прокси станет доступен в домашней сети, а в QR появится адрес компьютера. Отсканируйте его камерой телефона. Telegram на компьютере продолжит работать.',
+        what: 'Нажмите «Показать QR» — прокси станет доступен в домашней сети, а в QR появится адрес компьютера. Отсканируйте его камерой телефона. Telegram на компьютере продолжит работать.',
         when: 'Телефон должен быть в той же сети Wi-Fi, а компьютер — включён.'
       }
     ],
@@ -230,8 +261,12 @@ const MODULES: ModuleInfo[] = [
       'DNS — это телефонная книга интернета: по названию сайта находит его адрес. Обычно эти запросы видит провайдер и может подменять ответы. Шифрование закрывает их и убирает часть блокировок само по себе.',
     features: [
       {
-        name: 'Готовые серверы',
-        what: 'DNS-AI и MagicDNS (открывают нейросети), AdGuard (режет рекламу), Cloudflare, Google, Quad9, Xbox DNS. Рядом — задержка.'
+        name: 'Каталог серверов',
+        what: 'Готовые серверы с задержкой рядом: одни открывают нейросети, другие режут рекламу, третьи просто быстрые. Список и адреса обновляются сами, без новой версии программы.'
+      },
+      {
+        name: 'Нейросети по DNS',
+        what: 'Проверка, какой сервер открывает ChatGPT, Claude и Gemini именно в вашей сети. Лучший ставится одной кнопкой.'
       },
       {
         name: 'Свой сервер',
@@ -251,15 +286,80 @@ const MODULES: ModuleInfo[] = [
   {
     icon: <Gamepad2 className="h-5 w-5 text-st-warn-text" />,
     title: 'ExitLag и оптимизатор',
-    where: 'Вкладки «ExitLag» и «Оптимизатор»',
+    where: 'Вкладка «ExitLag», группа «Игры» → «Оптимизатор»',
     badge: 'Для игр',
     badgeVariant: 'outline',
     simple:
-      'ExitLag пускает через VPN только выбранные программы (например, игру или браузер), остальное работает как обычно. Оптимизатор подбирает узел с лучшим пингом до игровых серверов (FACEIT, Valve и др.).',
+      'ExitLag пускает через VPN только выбранные программы (например, игру), остальное работает как обычно. Или наоборот: весь компьютер через VPN, кроме выбранных программ. Оптимизатор подбирает узел с лучшим пингом до игрового сервера.',
     features: [
-      { name: 'Список приложений', what: 'Добавьте игру или программу — только она пойдёт через VPN.' },
-      { name: 'Оптимизатор', what: 'Замеряет маршрут через каждый узел и подсказывает лучший; может сам подключиться к нему.' }
+      { name: 'Список приложений', what: 'Готовые наборы, поиск установленных игр Steam и Epic, выбор из запущенных программ или файлом.' },
+      { name: 'Сейчас в сети', what: 'Какие программы из списка выходят в интернет, через VPN или напрямую, и с какой скоростью.' },
+      {
+        name: 'Оптимизатор',
+        what: 'Вставьте строку «connect адрес:порт» из комнаты матча или консоли CS2: программа замерит пинг до сервера напрямую и через каждый узел и подскажет лучший. Для обычного матчмейкинга есть таблица регионов Valve.'
+      }
     ]
+  },
+  {
+    icon: <Crosshair className="h-5 w-5 text-st-err-text" />,
+    title: 'Перед каткой, твики и стример',
+    where: 'Группа «Игры»',
+    badge: 'Для игр',
+    badgeVariant: 'outline',
+    simple: 'Проверка сети перед матчем, настройки системы против скачков пинга и защита от утечки адресов на трансляции.',
+    features: [
+      { name: 'Перед каткой', what: 'За полминуты проверяет пинг, потери и Wi-Fi и говорит, можно ли играть. После игры показывает отчёт.' },
+      { name: 'Твики', what: 'Настройки Windows, которые убирают лишние задержки. У каждой написано, что она делает; всё возвращается одной кнопкой.' },
+      { name: 'Режим стримера', what: 'Размывает IP, названия серверов и ссылки подписок, чтобы зрители их не увидели. Может включаться сам при запуске OBS.' },
+      {
+        name: 'Stream Deck и другие пульты',
+        what: 'Кнопки Elgato Stream Deck, Fifine и других пультов включают VPN, Zapret, Telegram-прокси, ExitLag, мини-окно и ваши сценарии. Страница «Стример».'
+      }
+    ]
+  },
+  {
+    icon: <Stethoscope className="h-5 w-5 text-cyan-400" />,
+    title: 'Диагностика',
+    where: 'Группа «Сеть» → «Диагностика»',
+    badge: 'Проверка',
+    badgeVariant: 'outline',
+    simple: 'Всё, что помогает понять, почему не открывается сайт: проверка сайтов, утечки IP и DNS, каналы Wi-Fi, сети с белыми списками.',
+    features: [
+      { name: 'Проверка сайтов', what: 'Открывает страницу в скрытом окне и проверяет каждый её адрес: где висит, что это (блокировка, фильтр DNS или медленный сервер) и помогает ли Zapret или VPN.' },
+      { name: 'Утечки IP и DNS', what: 'Показывает, что видит сеть снаружи при включённом обходе или VPN, и подсказывает, где утечка.' }
+    ]
+  },
+  {
+    icon: <Network className="h-5 w-5 text-st-info-text" />,
+    title: 'Локальная сеть',
+    where: 'Группа «Сеть» → «Локальная сеть»',
+    badge: 'Другие устройства',
+    badgeVariant: 'outline',
+    simple: 'Пульт на телефоне, прокси для телевизора, приставки и телефона, раздача Wi-Fi с компьютера. По шагам — в блоке «Локальная сеть: телевизор, приставка, телефон» выше.',
+    features: [
+      { name: 'Пульт с телефона', what: 'Откройте по QR-коду, чтобы управлять службами, узлами, DNS и сценариями. Проверка телефона показывает, использует ли его браузер прокси ПК.' },
+      { name: 'По порту', what: 'Компьютер принимает HTTP и SOCKS5 на одном порту. Введите адрес на нужном устройстве и проверьте доступ через прокси.' },
+      { name: 'Общий Wi-Fi', what: 'Проверка маршрута через компьютер. Чтобы трафик устройств шёл через ПК, настройте шлюз на роутере или на устройстве.' },
+      { name: 'Раздать Wi-Fi', what: 'Компьютер с Windows создаёт свою сеть Wi-Fi для устройств, где прокси не настроить.' }
+    ],
+    tip: 'По умолчанию раздел выключен. При включении компьютер слушает только адреса домашней сети; для чужой сети задайте пароль прокси в настройках раздела.'
+  },
+  {
+    icon: <MessageSquare className="h-5 w-5 text-primary" />,
+    title: 'Связь с автором',
+    where: 'Вкладка «Поддержка» и колокольчик в шапке окна',
+    badge: 'Обратная связь',
+    badgeVariant: 'outline',
+    simple: 'Отчёт о проблеме и идеи отправляются прямо из программы, без Telegram и почты. Ответы, объявления и предупреждения автора приходят в колокольчик.',
+    features: [
+      { name: 'Отчёт в поддержку', what: 'Выберите, что случилось, опишите своими словами и при желании приложите журнал. Перед отправкой виден весь текст, адреса и ключи в нём скрыты.' },
+      { name: 'Предупреждения', what: 'Важное сообщение от автора показывается плашкой вверху окна, пока вы не нажмёте «Понятно».' },
+      {
+        name: 'Сбор на развитие',
+        what: 'Полоска показывает, сколько собрано. После перевода нажмите «Я отправил пожертвование»: автор сверит его и добавит ваш ник на стену благодарностей.'
+      }
+    ],
+    tip: 'Пожертвования необязательны и ни на что в программе не влияют: все функции доступны всем.'
   },
   {
     icon: <Sparkles className="h-5 w-5 text-primary" />,
@@ -384,8 +484,14 @@ const MODULES: ModuleInfo[] = [
     where: 'Вкладка «Настройки»',
     badge: 'Внешний вид и запуск',
     badgeVariant: 'outline',
-    simple: 'Поведение самой программы: автозапуск, трей, горячие клавиши, резервные копии. Внешний вид — на вкладке «Оформление».',
+    simple: 'Поведение самой программы: автозапуск, трей, горячие клавиши, звуки, мини-окно. Внешний вид — на вкладке «Оформление».',
     features: [
+      { name: 'Звуки', what: 'Общая громкость и отдельно: сценарии и горячие клавиши, сообщения автора, сигнал о лагах. На звук игры и Discord не влияет.' },
+      {
+        name: 'Мини-окно поверх игры',
+        what: 'Маленькое окно с переключателями или только точки включённых функций. Это обычное окно поверх остальных: в игру оно не встраивается.'
+      },
+      { name: 'Статус в Discord', what: 'Строка «Играет в LAZEYKA» в профиле Discord. Выключается тем же переключателем.' },
       { name: 'Автозапуск', what: 'Запускать LAZEYKA при входе в систему (Windows или macOS), можно без окна.' },
       { name: 'Иконка в трее', what: 'Приложение остаётся работать в трее у часов.' },
       { name: 'Горячие клавиши', what: 'Включение VPN, Zapret и Telegram из любой программы.' },
@@ -399,265 +505,387 @@ const MODULES: ModuleInfo[] = [
     badge: 'Внешний вид',
     badgeVariant: 'outline',
     simple: 'Тема, цвета, готовые пресеты, свой фон (картинка или анимация) с размытием и затемнением — с живым предпросмотром.',
-    features: [{ name: 'Свой фон', what: 'Размытие и затемнение действуют только на фон, интерфейс остаётся чётким.' }]
+    features: [
+      { name: 'Свой фон', what: 'Размытие и затемнение действуют только на фон, интерфейс остаётся чётким.' },
+      { name: 'Галерея тем', what: 'Темы других людей ставятся одним нажатием, своей можно поделиться. Каждая тема проходит проверку автора перед публикацией.' }
+    ]
   }
 ]
 
-/** Три шага для того, кто открыл приложение впервые. */
-const QUICK_START: { step: string; title: string; text: string }[] = [
+/** Три шага для того, кто открыл приложение впервые. Это последовательность, поэтому с номерами. */
+const QUICK_START: { step: string; title: string; text: string; go: string; goLabel: string }[] = [
   {
     step: '1',
     title: 'Включите Zapret',
-    text: 'Вкладка «Zapret» → большая кнопка. Проверьте нужный сайт. Не открылся — запустите «Автоподбор стратегии» и подождите пару минут.'
+    text: 'Вкладка «Zapret» → большая кнопка. Проверьте нужный сайт. Не открылся — нажмите «Подобрать автоматически» и подождите пару минут.',
+    go: '/zapret',
+    goLabel: 'Открыть Zapret'
   },
   {
     step: '2',
     title: 'Не хватило — добавьте VPN',
-    text: 'Вкладка «INCY Proxy» → «Сервера» → вставьте ссылку на подписку или нажмите «Из буфера». Выберите сервер с зелёным пингом и нажмите «Подключить».'
+    text: 'Вкладка «INCY Proxy» → «Сервера» → вставьте ссылку на подписку или нажмите «Из буфера». Выберите сервер с зелёным пингом и нажмите «Подключить».',
+    go: '/incy',
+    goLabel: 'Открыть INCY Proxy'
   },
   {
     step: '3',
     title: 'Тормозит Telegram — включите его прокси',
-    text: 'Вкладка «Telegram» → кнопка подключения. Она сама пропишет настройки в мессенджере.'
+    text: 'Вкладка «Telegram» → кнопка подключения. Она сама пропишет настройки в мессенджере.',
+    go: '/telegram',
+    goLabel: 'Открыть Telegram'
   }
 ]
 
+const FAQ: { q: string; a: React.ReactNode }[] = [
+  {
+    q: 'Zapret или VPN — что выбрать?',
+    a: 'Начните с Zapret: он не меняет ваш IP и не режет скорость. VPN нужен, когда Zapret не справился или требуется зарубежный IP-адрес.'
+  },
+  {
+    q: 'Можно включить и то, и другое сразу?',
+    a: 'Можно, но не нужно: они решают одну задачу разными путями и вместе только запутают диагностику. Включайте по очереди.'
+  },
+  {
+    q: 'Почему приложение просит права администратора?',
+    a: 'Zapret работает на уровне сетевого драйвера Windows, а режим TUN создаёт виртуальный сетевой адаптер. Без прав администратора это невозможно.'
+  },
+  {
+    q: 'Интернет пропал после включения',
+    a: 'Выключите то, что включали последним. Если не помогло — закройте LAZEYKA полностью: при выходе она снимает системный прокси и останавливает свои процессы.'
+  },
+  {
+    q: 'Где взять подписку для INCY Proxy?',
+    a: (
+      <>
+        Приложение не продаёт доступ и не имеет своих серверов — ссылку на подписку выдаёт продавец VPN, а LAZEYKA работает с ней.
+        <VelvetRecommendation className="mt-2" />
+      </>
+    )
+  },
+  {
+    q: 'Мои данные куда-то отправляются?',
+    a: 'Настройки и логи лежат только на вашем компьютере. В сеть программа ходит за обновлениями, к серверу вашей подписки и раз в 30 минут к серверу LAZEYKA за объявлениями и ответами автора, без логов и настроек. Отчёт, идею или тему отправляете только вы сами, кнопкой. Анонимный счётчик «сколько людей онлайн» выключается в «Настройках».'
+  }
+]
+
+type Tab = 'start' | 'features' | 'faq' | 'devices'
+const IDS: Tab[] = ['start', 'features', 'faq', 'devices']
+const TABS: PageTab<Tab>[] = [
+  { id: 'start', label: 'С чего начать', icon: Rocket, hint: 'Три шага для первого запуска' },
+  { id: 'features', label: 'Все функции', icon: BookOpen, hint: `${MODULES.length} разделов: что делает, когда включать, что делать, если не помогло` },
+  { id: 'faq', label: 'Вопросы', icon: HelpCircle, hint: 'Частые вопросы о работе программы' },
+  { id: 'devices', label: 'Другие устройства', icon: Tv, hint: 'Телевизор, приставка и телефон через компьютер' }
+]
+
+/** Значок модуля в списке: одноцветный, горит цветом темы у выбранного. */
+const ModIcon: React.FC<{ icon: React.ReactNode; on: boolean }> = ({ icon, on }) => (
+  <span
+    className={cn(
+      'flex size-8 shrink-0 items-center justify-center rounded-xl transition-colors [&_svg]:!size-4 [&_svg]:!text-current',
+      on ? 'bg-primary/15 text-primary' : 'bg-foreground/[0.05] text-muted-foreground'
+    )}
+  >
+    {icon}
+  </span>
+)
+
+const fmt = (n: number): string => n.toLocaleString('ru-RU')
+
+/** Пульт «Информации»: программа, обучение и живой счётчик пользователей. */
+const AboutHero: React.FC = () => {
+  const navigate = useNavigate()
+  const latest = latestTour()
+  const [canReset, setCanReset] = useState(hasDismissedHints)
+  const [version, setVersion] = useState<string | null>(null)
+  const { appConfig } = useAppConfig()
+  const stats = useOnlineStore((s) => s.stats)
+  const num = useOnlineStore(selectInstallNum)
+  const counterOff = appConfig?.onlineStats === false
+
+  useEffect(() => {
+    getAppVersion()
+      .then((v) => setVersion(v))
+      .catch(() => undefined)
+  }, [])
+
+  const people = (n: number): string => pluralRu(n, 'человек', 'человека', 'человек')
+  const active =
+    stats?.active24h != null && stats.active7d != null && stats.active30d != null
+      ? `Активны: за сутки ${fmt(stats.active24h)}, за неделю ${fmt(stats.active7d)}, за месяц ${fmt(stats.active30d)}`
+      : undefined
+
+  const link = 'inline-flex cursor-pointer items-center gap-1.5 text-[12px] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:cursor-default disabled:opacity-50'
+
+  return (
+    <LzHero
+      data-tour="about-learning"
+      tone="on"
+      visual={
+        <div className="relative flex size-[120px] shrink-0 items-center justify-center">
+          <div
+            aria-hidden
+            className="lz-breathe pointer-events-none absolute inset-2 rounded-full"
+            style={{ background: 'radial-gradient(closest-side, color-mix(in oklab, var(--primary) 28%, transparent), transparent)' }}
+          />
+          <svg aria-hidden className="absolute inset-0 size-full" viewBox="0 0 120 120">
+            {[56, 46].map((r, i) => (
+              <circle key={r} cx="60" cy="60" r={r} fill="none" stroke="var(--primary)" strokeOpacity={i ? 0.35 : 0.18} strokeWidth="1" strokeDasharray={i ? undefined : '2 5'} />
+            ))}
+          </svg>
+          <img src={logo} alt="" className="relative size-16 rounded-2xl shadow-lg" />
+        </div>
+      }
+      title={
+        <>
+          LAZEYKA
+          {version && <span className="ml-2 align-middle text-[15px] font-semibold text-muted-foreground tabular-nums">{version}</span>}
+        </>
+      }
+      text="Свободный интернет без блокировок — четыре способа в одной программе. Здесь — что делает каждая функция, когда её включать и что делать, если не помогло."
+      extra={
+        <>
+          <button
+            type="button"
+            className={link}
+            disabled={!canReset}
+            onClick={() => {
+              resetHints()
+              setCanReset(false)
+              toast.success('Подсказки снова будут показаны')
+            }}
+            title={canReset ? 'Снова показать подсказки, которые вы закрыли (например, в «Оформлении»)' : 'Скрытых подсказок нет'}
+          >
+            <RotateCcw className="size-3.5" /> Сбросить подсказки
+          </button>
+          <button type="button" className={link} onClick={() => navigate('/support')} title="Отчёт о проблеме или идея — прямо из программы">
+            <Headset className="size-3.5" /> Написать автору
+          </button>
+          <button
+            type="button"
+            className={cn(link, 'hover:text-st-err-text')}
+            onClick={() => {
+              navigate('/support')
+              let tries = 0
+              const look = (): void => {
+                const el = document.querySelector<HTMLElement>('[data-tour="support-donations"], [data-tour="support-donate"]')
+                if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+                else if (++tries < 20) setTimeout(look, 100)
+              }
+              setTimeout(look, 50)
+            }}
+            title="LAZEYKA бесплатна и делается одним человеком. Поддержка любой суммой помогает выпускать новые функции — по желанию, все функции и так доступны всем."
+          >
+            <Heart className="size-3.5" /> Поддержать проект
+          </button>
+        </>
+      }
+      actions={
+        <>
+          <Button
+            size="lg"
+            className="h-11 rounded-xl px-5 text-[14px]"
+            onClick={() => startIntroTour()}
+            title="Экскурсия по всем разделам: программа сама откроет нужные разделы и подсветит, куда нажимать. Закрыть можно в любой момент."
+          >
+            <Compass className="size-4" /> Знакомство с программой
+          </Button>
+          {latest && (
+            <Button variant="outline" className="h-10 rounded-xl" onClick={() => startTour(latest.version)} title="Программа по шагам покажет новые разделы этой версии">
+              <Sparkles className="size-4" /> Что нового в {latest.version}
+            </Button>
+          )}
+        </>
+      }
+      footer={
+        counterOff ? (
+          <p className="px-1 text-[12px] text-muted-foreground">Счётчик пользователей выключен в «Настройках».</p>
+        ) : stats || num != null ? (
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {stats?.installs != null && <StatChip icon={<Users />} label="Программу используют" value={<>{fmt(stats.installs)} {people(stats.installs)}</>} />}
+            {stats && <StatChip icon={<Activity />} tone="on" label="Сейчас онлайн" value={<LiveNumber value={fmt(stats.online)} />} title={active} />}
+            {stats?.peakOnline != null && <StatChip icon={<Trophy />} label="Рекорд онлайна" value={fmt(stats.peakOnline)} />}
+            {num != null && <StatChip icon={<UserCheck />} label="Ваш номер установки" value={`#${fmt(num)}`} sensitive="id" title="Каким по счёту вы установили LAZEYKA" />}
+          </div>
+        ) : undefined
+      }
+    />
+  )
+}
+
+/** «Все функции»: список разделов слева, разбор выбранного справа, с поиском. */
+const Features: React.FC = () => {
+  const navigate = useNavigate()
+  const [pick, setPick] = useState(0)
+  const [q, setQ] = useState('')
+  const needle = q.trim().toLowerCase()
+  const list = MODULES.map((m, i) => ({ m, i })).filter(
+    ({ m }) => !needle || [m.title, m.where, m.simple, m.badge, ...m.features.flatMap((f) => [f.name, f.what, f.when ?? ''])].join(' ').toLowerCase().includes(needle)
+  )
+  const cur = list.find((x) => x.i === pick) ?? list[0]
+  const mod = cur?.m
+
+  return (
+    <div className="grid min-h-[420px] gap-3 md:h-[calc(100vh-420px)] md:grid-cols-[300px_minmax(0,1fr)]">
+      <LzPanel className="flex min-h-0 flex-col p-2">
+        <div className="relative px-1 pt-1 pb-2">
+          <Search className="pointer-events-none absolute top-1/2 left-3.5 size-3.5 -translate-y-[60%] text-muted-foreground" />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Найти функцию" className="h-9 rounded-xl pl-8 text-xs" aria-label="Найти функцию" />
+        </div>
+        <div className="custom-scrollbar min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-0.5">
+          {list.length === 0 && <div className="px-3 py-6 text-center text-xs text-muted-foreground">Ничего не нашлось</div>}
+          {list.map(({ m, i }) => {
+            const on = mod === m
+            return (
+              <button
+                key={m.title}
+                type="button"
+                onClick={() => setPick(i)}
+                className={cn(
+                  'relative flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2 py-1.5 text-left transition-colors',
+                  on ? 'bg-primary/10' : 'hover:bg-foreground/[0.04]'
+                )}
+              >
+                {on && <span aria-hidden className="absolute inset-y-1.5 left-0 w-[3px] rounded-r bg-primary" />}
+                <ModIcon icon={m.icon} on={on} />
+                <span className="min-w-0 flex-1">
+                  <span className={cn('block truncate text-[12.5px] font-semibold', on ? 'text-foreground' : 'text-foreground/85')}>{m.title.split(' — ')[0]}</span>
+                  <span className="block truncate text-[10.5px] text-muted-foreground">{m.badge}</span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </LzPanel>
+
+      <LzPanel className="flex min-h-0 flex-col">
+        {mod ? (
+          <div className="custom-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
+            <div className="flex items-start gap-3">
+              <ModIcon icon={mod.icon} on />
+              <div className="min-w-0 flex-1">
+                <h3 className="text-[16px] font-bold leading-snug text-[color:var(--text-title)]">{mod.title}</h3>
+                <div className="mt-0.5 text-[11.5px] text-muted-foreground">{mod.where}</div>
+              </div>
+              <span className="shrink-0 rounded-lg bg-primary/12 px-2 py-0.5 text-[11px] font-semibold text-primary">{mod.badge}</span>
+            </div>
+            <p className="max-w-[70ch] text-[13px] leading-relaxed text-muted-foreground">{mod.simple}</p>
+
+            <div className="divide-y divide-foreground/[0.06] rounded-xl border border-foreground/[0.08] bg-foreground/[0.025]">
+              {mod.features.map((f) => (
+                <div key={f.name} className="px-3.5 py-2.5">
+                  <div className="text-[12.5px] font-semibold text-foreground">{f.name}</div>
+                  <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{f.what}</p>
+                  {f.when && (
+                    <p className="mt-1 text-[12px] leading-relaxed text-foreground/90">
+                      <span className="font-semibold text-primary">Когда: </span>
+                      {f.when}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {mod.tip && (
+              <div className="flex items-start gap-2 rounded-xl border border-primary/25 bg-primary/[0.06] px-3 py-2.5 text-[12px] leading-relaxed text-foreground/90">
+                <Split className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                <span>{mod.tip}</span>
+              </div>
+            )}
+            {mod.troubleshoot && (
+              <div className="flex items-start gap-2 rounded-xl border border-st-warn/30 bg-st-warn/[0.07] px-3 py-2.5 text-[12px] leading-relaxed text-st-warn-text">
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                <span>
+                  <span className="font-semibold">Если не помогло: </span>
+                  {mod.troubleshoot}
+                </span>
+              </div>
+            )}
+          </div>
+        ) : (
+          <EmptyState icon={<Search />} title="Ничего не нашлось" text="Попробуйте другое слово: например, «пинг», «DNS» или «сайт»." action={<Button size="sm" variant="outline" onClick={() => setQ('')}>Очистить поиск</Button>} />
+        )}
+        <div className="flex items-center justify-between gap-3 border-t border-foreground/[0.07] px-5 py-2.5 text-[12px] text-muted-foreground">
+          <span>Не нашли ответ? Напишите автору прямо из программы.</span>
+          <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => navigate('/support')}>
+            <Headset className="size-3.5" /> Открыть поддержку
+          </Button>
+        </div>
+      </LzPanel>
+    </div>
+  )
+}
+
 const About: React.FC = () => {
   const navigate = useNavigate()
-  const [openId, setOpenId] = useState<number | null>(0)
+  const [tab, setTab] = usePageTab<Tab>('/about', IDS, 'start')
+  const [faq, setFaq] = useState<number | null>(0)
 
   return (
     <BasePage title="Информация и руководство">
-      <div className="px-4 pb-8 space-y-5 max-w-4xl mx-auto">
-        <UsersStats />
+      <PageColumn>
+        <AboutHero />
+        <PageTabs tabs={TABS} value={tab} onChange={setTab} label="Разделы справки" width="w-[640px]" tour="about-tabs" />
 
-        {/* Заголовок */}
-        <Card className="cyber-card border-primary/40 bg-gradient-to-br from-card via-card/90 to-primary/10 shadow-xl">
-          <CardContent className="p-6 space-y-3">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 rounded-2xl bg-primary/20 border border-primary/30 text-primary ">
-                <Sparkles className="size-6" />
-              </div>
-              <div>
-                <h1 className="text-xl font-bold text-foreground">LAZEYKA</h1>
-                <p className="text-xs text-muted-foreground">
-                  Свободный интернет без блокировок — четыре способа в одной программе
-                </p>
-              </div>
+        {tab === 'start' && (
+          <>
+            <div className="grid gap-3 md:grid-cols-3">
+              {QUICK_START.map((s) => (
+                <LzPanel key={s.step} className="flex flex-col p-4">
+                  <div className="flex items-center gap-2.5">
+                    <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[12px] font-bold text-primary tabular-nums">{s.step}</span>
+                    <span className="text-[14px] font-bold leading-snug text-[color:var(--text-title)]">{s.title}</span>
+                  </div>
+                  <p className="mt-2 flex-1 text-[12.5px] leading-relaxed text-muted-foreground">{s.text}</p>
+                  <Button size="sm" variant="outline" className="mt-3 h-8 self-start text-xs" onClick={() => navigate(s.go)}>
+                    {s.goLabel} <ArrowRight className="size-3.5" />
+                  </Button>
+                </LzPanel>
+              ))}
             </div>
-
-            <p className="text-xs text-muted-foreground leading-relaxed pt-1">
-              Каждый способ решает свою задачу, и они дополняют друг друга. Ниже — что делает
-              каждая функция, когда её включать и что делать, если не помогло. Термины
-              расшифрованы: специальных знаний не нужно.
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* С чего начать */}
-        <Card className="cyber-card border-st-ok/30 bg-st-ok/[0.04]">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <Rocket className="size-4 text-st-ok-text" />
-              С чего начать
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2.5">
-            {QUICK_START.map((s) => (
-              <div key={s.step} className="flex items-start gap-3">
-                <span className="shrink-0 size-6 rounded-full bg-st-ok/15 border border-st-ok/40 text-st-ok-text text-[11px] font-bold flex items-center justify-center">
-                  {s.step}
-                </span>
-                <div className="min-w-0">
-                  <div className="text-xs font-bold text-foreground">{s.title}</div>
-                  <div className="text-[11px] text-muted-foreground leading-relaxed">{s.text}</div>
-                </div>
-              </div>
-            ))}
-            <div className="flex items-start gap-2 pt-2 border-t border-border/40 text-[11px] text-muted-foreground leading-relaxed">
-              <AlertTriangle className="size-3.5 mt-px shrink-0 text-st-warn-text" />
+            <LzPanel className="flex items-start gap-2.5 px-4 py-3 text-[12.5px] leading-relaxed text-muted-foreground">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-st-warn-text" />
               <span>
-                Включайте по одному способу за раз и после каждого проверяйте результат. Если
-                запустить всё сразу и что-то сломается, будет непонятно, что именно виновато.
+                Включайте по одному способу за раз и после каждого проверяйте результат. Если запустить всё сразу и что-то сломается, будет непонятно, что именно
+                виновато. Сайт всё равно не открывается — проверьте его в{' '}
+                <button type="button" className="cursor-pointer font-semibold text-primary hover:underline" onClick={() => navigate('/diagnostics')}>
+                  «Диагностике»
+                </button>
+                .
               </span>
-            </div>
-          </CardContent>
-        </Card>
+            </LzPanel>
+          </>
+        )}
 
-        {/* Разделы приложения */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground px-1">
-            <HelpCircle className="size-4 text-primary" />
-            Все функции приложения
-          </div>
+        {tab === 'features' && <Features />}
 
-          <div className="grid grid-cols-1 gap-2.5">
-            {MODULES.map((mod, idx) => {
-              const open = openId === idx
+        {tab === 'faq' && (
+          <LzPanel className="divide-y divide-foreground/[0.06] px-2 py-1">
+            {FAQ.map((item, i) => {
+              const open = faq === i
               return (
-                <Card key={idx} className="cyber-card overflow-hidden">
+                <div key={item.q}>
                   <button
                     type="button"
-                    onClick={() => setOpenId(open ? null : idx)}
-                    className="w-full text-left cursor-pointer"
+                    aria-expanded={open}
+                    onClick={() => setFaq(open ? null : i)}
+                    className="flex w-full cursor-pointer items-center gap-3 px-3 py-3 text-left"
                   >
-                    <CardHeader className="pb-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <CardTitle className="text-sm font-bold flex items-start gap-2.5 min-w-0">
-                          <span className="shrink-0 mt-px">{mod.icon}</span>
-                          <span className="min-w-0">
-                            <span className="block">{mod.title}</span>
-                            <span className="block text-[11px] font-normal text-muted-foreground mt-0.5">
-                              {mod.where}
-                            </span>
-                          </span>
-                        </CardTitle>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <Badge
-                            variant={mod.badgeVariant || 'outline'}
-                            className="text-[10px] px-2.5 py-0.5 font-semibold rounded-full border-border/80"
-                          >
-                            {mod.badge}
-                          </Badge>
-                          <ChevronDown
-                            className={cn(
-                              'size-4 text-muted-foreground transition-transform duration-200',
-                              open && 'rotate-180'
-                            )}
-                          />
-                        </div>
-                      </div>
-                    </CardHeader>
+                    <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-xl', open ? 'bg-primary/12 text-primary' : 'bg-foreground/[0.05] text-muted-foreground')}>
+                      <HelpCircle className="size-4" />
+                    </span>
+                    <span className="min-w-0 flex-1 text-[13.5px] font-semibold text-foreground">{item.q}</span>
+                    <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform duration-200', open && 'rotate-180')} />
                   </button>
-
-                  {open && (
-                    <CardContent className="space-y-3 text-xs pt-0">
-                      <p className="text-muted-foreground leading-relaxed">{mod.simple}</p>
-
-                      <div className="space-y-2 pt-1">
-                        {mod.features.map((f, fIdx) => (
-                          <div
-                            key={fIdx}
-                            className="p-2.5 rounded-lg border border-border/50 bg-card/40"
-                          >
-                            <div className="flex items-center gap-2 text-[12px] font-semibold text-foreground">
-                              <CheckCircle2 className="size-3.5 text-primary shrink-0" />
-                              <span>{f.name}</span>
-                            </div>
-                            <p className="text-[11px] text-muted-foreground leading-relaxed mt-1 pl-5.5">
-                              {f.what}
-                            </p>
-                            {f.when && (
-                              <p className="mt-1.5 ml-5.5 rounded-md bg-primary/10 px-2 py-1 text-[11px] font-medium leading-relaxed text-foreground/90">
-                                <span className="font-bold text-primary [filter:brightness(1.35)]">Когда:</span> {f.when}
-                              </p>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-
-                      {mod.tip && (
-                        <div className="flex items-start gap-2 p-3 rounded-xl border border-primary/20 bg-primary/5 text-foreground/90 text-[11px] leading-relaxed">
-                          <Split className="size-3.5 mt-px shrink-0 text-primary" />
-                          <span>{mod.tip}</span>
-                        </div>
-                      )}
-
-                      {mod.troubleshoot && (
-                        <div className="flex items-start gap-2 p-3 rounded-xl border border-st-warn/25 bg-st-warn/[0.07] text-[11px] leading-relaxed text-st-warn-text">
-                          <AlertTriangle className="size-3.5 mt-px shrink-0" />
-                          <span>
-                            <span className="font-semibold">Если не помогло: </span>
-                            {mod.troubleshoot}
-                          </span>
-                        </div>
-                      )}
-                    </CardContent>
-                  )}
-                </Card>
+                  {open && <div className="max-w-[72ch] px-3 pb-3.5 pl-[52px] text-[12.5px] leading-relaxed text-muted-foreground">{item.a}</div>}
+                </div>
               )
             })}
-          </div>
-        </div>
+          </LzPanel>
+        )}
 
-        {/* Частые вопросы */}
-        <Card className="cyber-card">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <HelpCircle className="size-4 text-primary" />
-              Частые вопросы
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2.5 text-[11px] leading-relaxed">
-            {[
-              {
-                q: 'Zapret или VPN — что выбрать?',
-                a: 'Начните с Zapret: он не меняет ваш IP и не режет скорость. VPN нужен, когда Zapret не справился или требуется зарубежный IP-адрес.'
-              },
-              {
-                q: 'Можно включить и то, и другое сразу?',
-                a: 'Можно, но не нужно: они решают одну задачу разными путями и вместе только запутают диагностику. Включайте по очереди.'
-              },
-              {
-                q: 'Почему приложение просит права администратора?',
-                a: 'Zapret работает на уровне сетевого драйвера Windows, а режим TUN создаёт виртуальный сетевой адаптер. Без прав администратора это невозможно.'
-              },
-              {
-                q: 'Интернет пропал после включения',
-                a: 'Выключите то, что включали последним. Если не помогло — закройте LAZEYKA полностью: при выходе она снимает системный прокси и останавливает свои процессы.'
-              },
-              {
-                q: 'Где взять подписку для INCY Proxy?',
-                a: (
-                  <>
-                    Приложение не продаёт доступ и не имеет своих серверов — ссылку на подписку выдаёт продавец VPN, а
-                    LAZEYKA работает с ней.
-                    <VelvetRecommendation className="mt-2" />
-                  </>
-                )
-              },
-              {
-                q: 'Мои данные куда-то отправляются?',
-                a: 'Нет. Настройки и логи лежат только на вашем компьютере. Приложение обращается в сеть за обновлениями и к серверу вашей подписки — больше никуда.'
-              }
-            ].map((item, i) => (
-              <div key={i} className="pb-2.5 border-b border-border/40 last:border-0 last:pb-0">
-                <div className="font-semibold text-foreground">{item.q}</div>
-                <div className="text-muted-foreground mt-0.5">{item.a}</div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-
-        {/* Автор и поддержка живут на своей странице — здесь только
-            указатель. Раньше это был последний блок самой длинной страницы
-            приложения: чтобы написать о проблеме, надо было пролистать всё
-            руководство. */}
-        <Card className="cyber-card border-primary/40 bg-gradient-to-br from-card via-card to-primary/5">
-          <CardContent className="p-4 flex items-center justify-between gap-3 flex-wrap">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="p-2 rounded-xl bg-primary/15 border border-primary/30 text-primary shrink-0">
-                <Headset className="size-5" />
-              </div>
-              <div className="min-w-0">
-                <div className="text-sm font-bold text-foreground">Не нашли ответ?</div>
-                <div className="text-[11px] text-muted-foreground leading-relaxed">
-                  Напишите в поддержку, предложите идею или поддержите автора — всё на отдельной
-                  странице «Поддержка» в меню слева.
-                </div>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => navigate('/support')}
-              className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-primary text-primary-foreground border border-primary hover:brightness-110 transition-all active:brightness-90 shrink-0"
-            >
-              <Headset className="size-4" />
-              <span>Открыть поддержку</span>
-            </button>
-          </CardContent>
-        </Card>
-      </div>
+        {tab === 'devices' && <LanScenariosGuide />}
+      </PageColumn>
     </BasePage>
   )
 }

@@ -1,41 +1,173 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import {
-  Download,
-  Upload,
-  RotateCw
-} from 'lucide-react'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
-import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
-import { Label } from '@renderer/components/ui/label'
-import { Switch } from '@renderer/components/ui/switch'
-import { Button } from '@renderer/components/ui/button'
-import {
-  appRelaunch,
-  appResetSettings,
-  appCheckUpdateNow,
-  appRefreshOnlineCount,
-  profileExport,
-  profileImport,
-} from '@renderer/utils/ipc'
-import { cn, POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
+import { appRelaunch, appResetSettings, appCheckUpdateNow, appRefreshOnlineCount, profileExport, profileImport, type AppUpdateInfo } from '@renderer/utils/ipc'
+import { POWER_ON_BANNER_STYLE } from '@renderer/lib/utils'
 import BasePage from '@renderer/components/base/base-page'
-import { platform } from '@renderer/utils/init'
-import MacServiceCard from '@renderer/components/mac-service-card'
+import { platform, version } from '@renderer/utils/init'
 import HotkeysCard from '@renderer/components/hotkeys-card'
+import SoundCard from '@renderer/components/sound-card'
+import { DiscordCard } from '@renderer/components/streamer/discord-card'
+import { useStreamerStore } from '@renderer/store/streamer-store'
+import { miniState, onMiniChanged } from '@renderer/utils/mini-api'
+import { getSoundVolume, soundsVersion, subscribeSounds } from '@renderer/lib/sound'
+import { useTourTab } from '@renderer/lib/tour-focus'
+import { LaunchHero } from '@renderer/components/settings/launch-hero'
+import { SettingsNav, SearchResults } from '@renderer/components/settings/settings-nav'
+import { BackupGroup, LaunchGroup, UpdatesGroup } from '@renderer/components/settings/basic-groups'
+import { MiniWindowGroup } from '@renderer/components/settings/mini-window-group'
+import { MacServiceGroup } from '@renderer/components/settings/mac-service-group'
+import { NotifyGroup } from '@renderer/components/settings/e6-groups'
+import { GROUPS, resolveGroup, searchCatalog, type CatalogEntry, type SettingsGroupId } from '@renderer/components/settings/settings-catalog'
 
-// На macOS часть переключателей относится к Windows (панель задач, Zapret, Telegram-прокси).
+/*
+ * «Настройки» на языке «Сигнал» (Е5).
+ *
+ * Сверху пульт — цепочка запуска крупными плитками-переключателями и чипы
+ * (обновления, трей, клавиши, профиль). Ниже слева поиск и список групп,
+ * справа одна открытая группа: вместо длинной простыни — одна карточка за раз.
+ * Открытая группа запоминается (как раньше запоминалось раскрытие секций).
+ *
+ * Переходы: ?open=<группа или старый id секции>&focus=<data-tour или id строки>
+ * открывают группу и подсвечивают строку. Экскурсия открывает группу полем tab
+ * шага (старые id controls / overlay / backup тоже понимаются).
+ */
+
 const isMac = platform === 'darwin'
+const GROUP_KEY = 'lazeyka.settings.group'
+const groups = GROUPS.filter((g) => !g.only || g.only === platform)
+
+/** Built-in горячие клавиши (как в hotkeys-card.tsx; Telegram-прокси — только Windows). */
+const HOTKEY_FIELDS: (keyof AppConfig)[] = [
+  'incyToggleShortcut',
+  'incyBestNodeShortcut',
+  'exitlagToggleShortcut',
+  'zapretToggleShortcut',
+  'zapretRestartShortcut',
+  ...(isMac ? [] : (['tgwsToggleShortcut'] as (keyof AppConfig)[])),
+  'showWindowShortcut',
+  'prematchToggleShortcut',
+  'miniWindowShortcut',
+  'muteSoundsShortcut',
+  'restartAppShortcut'
+]
+
+function readGroup(): SettingsGroupId {
+  try {
+    const v = localStorage.getItem(GROUP_KEY)
+    if (v && groups.some((g) => g.id === v)) return v as SettingsGroupId
+  } catch {
+    /* хранилище недоступно */
+  }
+  return 'launch'
+}
+
+/** Подпись сочетания для текста: Control+Alt+M → Ctrl + Alt + M. */
+function accelText(a?: string): string | undefined {
+  if (!a) return undefined
+  return a
+    .split('+')
+    .map((p) => (p === 'CommandOrControl' || p === 'Control' ? 'Ctrl' : p === 'Super' || p === 'Meta' ? 'Win' : p === 'Command' ? 'Cmd' : p))
+    .join('+')
+}
 
 const Settings: React.FC = () => {
   const { appConfig, patchAppConfig } = useAppConfig()
-
+  const [group, setGroup] = useState<SettingsGroupId>(readGroup)
+  const [query, setQuery] = useState('')
   const [checkingUpdate, setCheckingUpdate] = useState(false)
-  const [resetStep, setResetStep] = useState<'idle' | 'confirm' | 'busy'>('idle')
+  const [update, setUpdate] = useState<AppUpdateInfo | null>(null)
+  const [miniOpen, setMiniOpen] = useState<boolean | null>(null)
+  const discordOn = useStreamerStore((s) => s.state?.settings.discordEnabled)
+  useSyncExternalStore(subscribeSounds, soundsVersion)
+  const [params, setParams] = useSearchParams()
+  const contentRef = useRef<HTMLDivElement>(null)
+  const hitTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const results = useMemo(() => searchCatalog(query, platform), [query])
+  const searching = query.trim().length > 0
+
+  useEffect(() => {
+    miniState()
+      .then((s) => setMiniOpen(s.open))
+      .catch(() => void 0)
+    const off = onMiniChanged((s) => setMiniOpen(s.open))
+    return () => {
+      off()
+      if (hitTimer.current) clearTimeout(hitTimer.current)
+    }
+  }, [])
+
+  /** Подсветить строку (data-setting или data-tour) и прокрутить к ней. */
+  const highlight = useCallback((focus: string): void => {
+    let tries = 0
+    const find = (): void => {
+      const el =
+        document.querySelector<HTMLElement>(`[data-setting="${CSS.escape(focus)}"]`) ??
+        document.querySelector<HTMLElement>(`[data-tour="${CSS.escape(focus)}"]`)
+      if (!el) {
+        // Группа ещё рисуется (данные приходят из главного процесса).
+        if (++tries < 12) hitTimer.current = setTimeout(find, 80)
+        return
+      }
+      document.querySelectorAll('.st-hit').forEach((n) => n.classList.remove('st-hit'))
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      el.classList.add('st-hit')
+      hitTimer.current = setTimeout(() => el.classList.remove('st-hit'), 2600)
+    }
+    if (hitTimer.current) clearTimeout(hitTimer.current)
+    hitTimer.current = setTimeout(find, 60)
+  }, [])
+
+  /** Открыть группу. remember — запомнить как выбор пользователя. */
+  const openGroup = useCallback(
+    (g: SettingsGroupId, focus?: string, remember = true): void => {
+      setQuery('')
+      setGroup(g)
+      if (remember) {
+        try {
+          localStorage.setItem(GROUP_KEY, g)
+        } catch {
+          /* не запомнится — не страшно */
+        }
+      }
+      if (focus) highlight(focus)
+      else
+        setTimeout(() => {
+          const top = contentRef.current
+          if (!top) return
+          const r = top.getBoundingClientRect()
+          if (r.top > window.innerHeight - 160 || r.top < 0) top.scrollIntoView({ block: 'start', behavior: 'smooth' })
+        }, 40)
+    },
+    [highlight]
+  )
+
+  // Экскурсия: шаг с tab = группа (или старый id секции) открывает её, не запоминая.
+  const tourReveal = useCallback(
+    (tab: string): void => {
+      const g = resolveGroup(tab)
+      if (!g) return
+      setQuery('')
+      setGroup(g)
+    },
+    []
+  )
+  useTourTab<string>('/settings', tourReveal)
+
+  // Переход по ссылке из других разделов: /settings?open=controls&focus=hotkeys.
+  const openParam = params.get('open')
+  const focusParam = params.get('focus')
+  useEffect(() => {
+    if (!openParam && !focusParam) return
+    const g = resolveGroup(openParam, focusParam)
+    if (g) openGroup(g, focusParam ?? undefined, false)
+    setParams({}, { replace: true })
+  }, [openParam, focusParam, openGroup, setParams])
 
   /**
    * Спросить GitHub про новую версию прямо сейчас, минуя кэш.
-   *
    * Отвечаем во всех трёх случаях, включая «всё свежее»: кнопка, которая на
    * вид ничего не сделала, вынуждает гадать, сработала она или нет.
    */
@@ -43,6 +175,7 @@ const Settings: React.FC = () => {
     setCheckingUpdate(true)
     try {
       const info = await appCheckUpdateNow()
+      setUpdate(info)
       if (info.hasUpdate && info.assetUrl) {
         // Окно обновления показывается само — оно слушает тот же результат.
         toast.success(`Доступна версия ${info.latest}`, {
@@ -56,10 +189,8 @@ const Settings: React.FC = () => {
       } else {
         toast.success(`Установлена последняя версия — ${info.installed}`)
       }
-    } catch (e: any) {
-      toast.error('Не удалось проверить обновления', {
-        description: e?.message || String(e)
-      })
+    } catch (e: unknown) {
+      toast.error('Не удалось проверить обновления', { description: e instanceof Error ? e.message : String(e) })
     } finally {
       setCheckingUpdate(false)
     }
@@ -68,11 +199,9 @@ const Settings: React.FC = () => {
   const handleExport = async (): Promise<void> => {
     try {
       const res = await profileExport()
-      if (res.success) {
-        toast.success(res.message || 'Профиль сохранён', { style: POWER_ON_BANNER_STYLE })
-      }
-    } catch (e: any) {
-      toast.error('Ошибка экспорта', { description: e?.message || String(e) })
+      if (res.success) toast.success(res.message || 'Профиль сохранён', { style: POWER_ON_BANNER_STYLE })
+    } catch (e: unknown) {
+      toast.error('Ошибка экспорта', { description: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -83,250 +212,140 @@ const Settings: React.FC = () => {
         toast.success(res.message || 'Настройки импортированы', { style: POWER_ON_BANNER_STYLE })
         setTimeout(() => window.location.reload(), 800)
       }
-    } catch (e: any) {
-      toast.error('Ошибка импорта', { description: e?.message || String(e) })
+    } catch (e: unknown) {
+      toast.error('Ошибка импорта', { description: e instanceof Error ? e.message : String(e) })
     }
+  }
+
+  const handleReset = async (): Promise<void> => {
+    try {
+      await appResetSettings()
+      toast.success('Настройки сброшены', { style: POWER_ON_BANNER_STYLE })
+      setTimeout(() => window.location.reload(), 500)
+    } catch (e) {
+      toast.error('Не удалось сбросить настройки', { description: e instanceof Error ? e.message : String(e) })
+      throw e
+    }
+  }
+
+  const patch = (p: Partial<AppConfig>): void => void patchAppConfig(p)
+  const setOnlineStats = (v: boolean): void => {
+    void patchAppConfig({ onlineStats: v }).then(() => appRefreshOnlineCount().catch(() => void 0))
+  }
+
+  const assigned = HOTKEY_FIELDS.filter((f) => Boolean(appConfig?.[f])).length
+  const vol = getSoundVolume()
+  const auto = appConfig?.autoLaunch ?? false
+
+  const status: Partial<Record<SettingsGroupId, { text: string; on: boolean }>> = {
+    launch: { text: auto ? ('вместе с системой') : 'запуск вручную', on: auto },
+    updates: { text: appConfig?.autoCheckUpdate === false ? 'проверка вручную' : 'проверяются сами', on: appConfig?.autoCheckUpdate !== false },
+    notify: (() => {
+      const k = appConfig?.notifyKinds ?? {}
+      const n = (['actions', 'updates', 'errors', 'author'] as const).filter((x) => k[x] !== false).length
+      return { text: n === 4 ? 'все включены' : n ? `включено ${n} из 4` : 'выключены', on: n > 0 }
+    })(),
+    keys: { text: assigned ? `назначено ${assigned} из ${HOTKEY_FIELDS.length}` : 'не назначены', on: assigned > 0 },
+    sounds: { text: vol.muted ? 'без звука' : `громкость ${vol.master}%`, on: !vol.muted && vol.master > 0 },
+    overlay: { text: miniOpen === null ? '…' : miniOpen ? 'показано' : 'скрыто', on: Boolean(miniOpen) },
+    discord: { text: discordOn ? 'показывается' : 'выключен', on: Boolean(discordOn) },
+    backup: { text: 'файл .lazeyka, сброс', on: false }
+  }
+
+  const goFirst = (): void => {
+    const r = results[0]
+    if (r) pick(r)
+  }
+  const pick = (r: CatalogEntry): void => openGroup(r.group, r.id)
+
+  let body: React.ReactNode
+  switch (group) {
+    case 'launch':
+      body = <LaunchGroup cfg={appConfig} isMac={isMac} onPatch={patch} />
+      break
+    case 'updates':
+      body = (
+        <UpdatesGroup
+          cfg={appConfig}
+          isMac={isMac}
+          onPatch={patch}
+          version={version}
+          update={update}
+          checking={checkingUpdate}
+          onCheck={() => void handleCheckUpdate()}
+          onOnlineStats={setOnlineStats}
+        />
+      )
+      break
+    case 'notify':
+      body = <NotifyGroup cfg={appConfig} onPatch={patch} />
+      break
+    case 'keys':
+      body = (
+        <div data-tour="hotkeys">
+          <HotkeysCard onOpenSounds={() => openGroup('sounds', 'sound-actions')} />
+        </div>
+      )
+      break
+    case 'sounds':
+      body = <SoundCard />
+      break
+    case 'overlay':
+      body = <MiniWindowGroup hotkey={accelText(appConfig?.miniWindowShortcut)} onOpenKeys={() => openGroup('keys', 'hk-miniWindowShortcut')} />
+      break
+    case 'discord':
+      body = <DiscordCard />
+      break
+    case 'mac':
+      body = <MacServiceGroup />
+      break
+    case 'backup':
+      body = (
+        <BackupGroup
+          cfg={appConfig}
+          isMac={isMac}
+          onPatch={patch}
+          onExport={() => void handleExport()}
+          onImport={() => void handleImport()}
+          onRelaunch={() => void appRelaunch()}
+          onReset={handleReset}
+        />
+      )
+      break
   }
 
   return (
     <BasePage title="Настройки">
-      <div className="px-4 pb-6 space-y-4">
-        {/* Backups & Profiles */}
-        <Card className="cyber-card">
-          <CardHeader>
-            <CardTitle>Резервные копии и профили (.lazeyka)</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <p className="text-xs text-muted-foreground">
-              Экспорт и импорт всех настроек LAZEYKA, списка хостов Zapret, выбранных UDP-фейков и ключей Telegram в единый файл конфигурации.
-            </p>
-            <div className="flex flex-wrap gap-2 pt-1">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handleExport}
-                className="gap-1.5"
-              >
-                <Download className="h-3.5 w-3.5" />
-                Экспорт настроек (.lazeyka)
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={handleImport}
-                className="gap-1.5"
-              >
-                <Upload className="h-3.5 w-3.5" />
-                Импорт профиля
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+      <div className="mx-auto flex w-full max-w-[1080px] flex-col lz-page-gap lz-page-x pb-5">
+        <LaunchHero
+          cfg={appConfig}
+          isMac={isMac}
+          version={version}
+          update={update}
+          checking={checkingUpdate}
+          hotkeys={{ assigned, total: HOTKEY_FIELDS.length }}
+          onPatch={patch}
+          onCheckUpdate={() => void handleCheckUpdate()}
+          onExport={() => void handleExport()}
+          onImport={() => void handleImport()}
+          onOpen={(g, focus) => openGroup(g, focus)}
+        />
 
-        {/* Служба macOS (TUN) — карточка сама скрыта вне macOS */}
-        <MacServiceCard />
-
-        {/* Launch */}
-        <Card className="cyber-card">
-          <CardHeader>
-            <CardTitle>Запуск</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex items-center justify-between">
-              <Label className="text-sm">{isMac ? 'Запускать при входе в систему' : 'Запускать при входе в Windows'}</Label>
-              <Switch
-                checked={appConfig?.autoLaunch ?? false}
-                onCheckedChange={(v) => patchAppConfig({ autoLaunch: v })}
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <Label className="text-sm">Тихий старт (без окна)</Label>
-              <Switch
-                checked={appConfig?.silentStart ?? false}
-                onCheckedChange={(v) => patchAppConfig({ silentStart: v })}
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <Label className="text-sm">Автозапуск Telegram</Label>
-              <Switch
-                checked={appConfig?.tgws?.autoStart ?? false}
-                onCheckedChange={(v) =>
-                  patchAppConfig({ tgws: { ...appConfig!.tgws!, autoStart: v } })
-                }
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <Label className="text-sm">Автозапуск Zapret</Label>
-              <Switch
-                checked={appConfig?.zapret?.autoStart ?? false}
-                onCheckedChange={(v) =>
-                  patchAppConfig({ zapret: { ...appConfig!.zapret!, autoStart: v } })
-                }
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <div className="flex flex-col">
-                <Label className="text-sm">Проверять обновления LAZEYKA</Label>
-                <span className="text-xs text-muted-foreground">
-                  Если выключено, окно с предложением скачать новую версию LAZEYKA
-                  показываться не будет.
-                </span>
-              </div>
-              <Switch
-                checked={appConfig?.autoCheckUpdate ?? true}
-                onCheckedChange={(v) => patchAppConfig({ autoCheckUpdate: v })}
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <div className="flex flex-col">
-                <Label className="text-sm">Показывать, сколько людей онлайн</Label>
-                <span className="text-xs text-muted-foreground">
-                  Раз в 5 минут LAZEYKA анонимно отмечается на своём счётчике (только случайный номер установки, без
-                  данных о вас) и показывает на главной, сколько человек сейчас в программе. Выключено — не
-                  отправляется ничего.
-                </span>
-              </div>
-              <Switch
-                checked={appConfig?.onlineStats ?? true}
-                onCheckedChange={(v) => {
-                  void patchAppConfig({ onlineStats: v }).then(() => appRefreshOnlineCount().catch(() => void 0))
-                }}
-              />
-            </div>
-
-            {/* Проверка по кнопке.
-                Ответ GitHub кэшируется, и без принудительной проверки «новой
-                версии нет» и «мы её просто не спрашивали» выглядели с экрана
-                одинаково. Здесь кэш обходится, а ошибка показывается вслух —
-                молчащая проверка хуже честного «не смогли». */}
-            <div className="flex items-center justify-between">
-              <div className="flex flex-col">
-                <Label className="text-sm">Проверить обновления сейчас</Label>
-                <span className="text-xs text-muted-foreground">
-                  Спросить GitHub напрямую, не дожидаясь плановой проверки.
-                </span>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={checkingUpdate}
-                onClick={() => { void handleCheckUpdate() }}
-                className="gap-1.5 text-xs shrink-0"
-              >
-                <RotateCw className={cn('size-3.5', checkingUpdate && 'animate-spin')} />
-                {checkingUpdate ? 'Проверяем…' : 'Проверить'}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <HotkeysCard />
-
-        {/* Interface */}
-        <Card className="cyber-card">
-          <CardHeader>
-            <CardTitle>Интерфейс</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex flex-col">
-                <Label className="text-sm">Иконка в трее</Label>
-                <span className="text-xs text-muted-foreground">
-                  Если выключена — при нажатии на «X» приложение полностью закрывается и
-                  завершает работу.
-                </span>
-              </div>
-              <Switch
-                checked={!(appConfig?.disableTray ?? false)}
-                onCheckedChange={(v) => patchAppConfig({ disableTray: !v })}
-              />
-            </div>
-            {!isMac && (
-            <div className="flex items-center justify-between">
-              <div className="flex flex-col">
-                <Label className="text-sm">Убрать иконку с панели задач</Label>
-                <span className="text-xs text-muted-foreground">
-                  Приложение будет полностью скрыто из панели задач и доступно только через системный трей.
-                </span>
-              </div>
-              <Switch
-                checked={appConfig?.hideTaskbarIcon ?? false}
-                onCheckedChange={(v) => patchAppConfig({ hideTaskbarIcon: v })}
-              />
-            </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Additional */}
-        <Card className="cyber-card">
-          <CardHeader>
-            <CardTitle>Дополнительно</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex items-center justify-between">
-              <Label className="text-sm">Отключить аппаратное ускорение (нужен перезапуск)</Label>
-              <Switch
-                checked={appConfig?.disableGPU ?? false}
-                onCheckedChange={(v) => patchAppConfig({ disableGPU: v })}
-              />
-            </div>
-            <Button size="sm" variant="outline" onClick={() => appRelaunch()}>
-              Перезапустить приложение
-            </Button>
-          </CardContent>
-        </Card>
-
-        {/* Danger zone */}
-        <Card className="cyber-card border-destructive/40">
-          <CardHeader>
-            <CardTitle className="text-destructive">Сброс настроек</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <p className="text-xs text-muted-foreground">
-              Все настройки LAZEYKA вернутся к значениям по умолчанию. Не затрагиваются: тема, подписки, узлы и
-              профили INCY, ваши списки хостов и IPSet, выбранная стратегия Zapret, адрес и ключ Telegram-прокси.
-              Работающие службы не останавливаются.
-            </p>
-            {resetStep === 'idle' ? (
-              <Button
-                size="sm"
-                variant="outline"
-                className="border-destructive/50 text-destructive hover:bg-destructive/10"
-                onClick={() => setResetStep('confirm')}
-              >
-                Сбросить настройки
-              </Button>
-            ) : (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium">Точно сбросить?</span>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  disabled={resetStep === 'busy'}
-                  onClick={async () => {
-                    setResetStep('busy')
-                    try {
-                      await appResetSettings()
-                      toast.success('Настройки сброшены', { style: POWER_ON_BANNER_STYLE })
-                      setTimeout(() => window.location.reload(), 500)
-                    } catch (e) {
-                      toast.error('Не удалось сбросить настройки', {
-                        description: e instanceof Error ? e.message : String(e)
-                      })
-                      setResetStep('idle')
-                    }
-                  }}
-                >
-                  {resetStep === 'busy' ? 'Сбрасываю…' : 'Да'}
-                </Button>
-                <Button size="sm" variant="ghost" disabled={resetStep === 'busy'} onClick={() => setResetStep('idle')}>
-                  Отмена
-                </Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        <div className="grid @min-[720px]:grid-cols-[220px_minmax(0,1fr)] items-start gap-3">
+          <SettingsNav
+            groups={groups}
+            active={group}
+            status={status}
+            query={query}
+            results={results}
+            onQuery={setQuery}
+            onSelect={(g) => openGroup(g)}
+            onSubmit={goFirst}
+          />
+          <div ref={contentRef} data-section={searching ? 'search' : group} className="min-w-0 scroll-mt-3">
+            {searching ? <SearchResults query={query} results={results} onPick={pick} onClear={() => setQuery('')} /> : body}
+          </div>
+        </div>
       </div>
     </BasePage>
   )

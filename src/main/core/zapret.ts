@@ -1,8 +1,10 @@
-import { spawn, spawnSync, ChildProcess } from 'child_process'
-import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync, writeFileSync, statSync, renameSync, cpSync } from 'fs'
+import { spawn, spawnSync, execFile, ChildProcess } from 'child_process'
+import { emitServiceStatusChanged } from '../utils/status-bus'
+import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync, writeFileSync, statSync, renameSync, cpSync, realpathSync } from 'fs'
+import os from 'os'
 import path from 'path'
 import AdmZip from 'adm-zip'
-import { BrowserWindow } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { zapretBundleDir, zapretRuntimeDir } from '../utils/dirs'
 import { getAppConfig } from '../config'
 import { showSystemNotification } from '../utils/notifications'
@@ -11,12 +13,38 @@ import { getGameFilterVars, getZapretWindowsServiceStatus } from './zapret-servi
 import { createConsoleDecoder, decodeConsole } from '../utils/console-decode'
 import { mergeLazeykaIpset, addHostsToZapretUserList } from './zapret-iplist'
 import { adoptRunningZapretMac, listMacStrategies, startZapretMac, stopZapretMac, type ZapretMacHost } from './zapret-mac'
+import { isRunningAsAdmin } from '../utils/elevation'
+import {
+  ERROR_ACCESS_DENIED,
+  ERROR_SERVICE_ALREADY_RUNNING,
+  RETRY_DELAYS_MS,
+  classifyWinws,
+  decideDriverPrep,
+  decideVerification,
+  finalErrorText,
+  hasUsableNetwork,
+  isBootReady,
+  needsFullReset,
+  nextAutoStep,
+  scDeleteOutcome,
+  stillAlive,
+  normalizeWinPath,
+  parseScQc,
+  parseScQuery,
+  parseWinwsProcesses,
+  reasonText,
+  retryText,
+  samePath,
+  type ScQuery,
+  type ScState,
+  type StartFailReason,
+  type WinwsProc
+} from './zapret-logic'
+import { listStrategyFiles, readStrategyDir, validateStrategyName, type StrategyDescriptor } from './zapret-strategy'
+import { ensureCustomMaterialized } from './zapret-custom'
+import { applyLinuxZapretStrategy, linuxZapretSystemState, listLinuxStrategies, resolveLinuxStrategy, stopLinuxZapret } from './zapret-linux'
 
-export interface StrategyDescriptor {
-  file: string
-  title: string
-  description: string
-}
+export type { StrategyDescriptor }
 
 let child: ChildProcess | null = null
 let status: CoreStatus = { state: 'stopped' }
@@ -44,11 +72,12 @@ function setStatus(next: Partial<CoreStatus>): void {
   const prev = status.state
   status = { ...status, ...next }
   broadcast('zapret:status', status)
+  emitServiceStatusChanged()
 
   if (prev !== 'running' && status.state === 'running') {
-    showSystemNotification('Zapret запущен', 'Обход блокировок YouTube и Discord активен')
+    showSystemNotification('Zapret запущен', 'Обход блокировок YouTube и Discord активен', undefined, 'actions')
   } else if (prev !== 'error' && status.state === 'error' && status.lastError) {
-    showSystemNotification('Ошибка Zapret', status.lastError)
+    showSystemNotification('Ошибка Zapret', status.lastError, undefined, 'errors')
   }
 }
 
@@ -57,39 +86,25 @@ export function getZapretStatus(): CoreStatus {
 }
 
 /**
- * Scan zapretBundleDir() for `general*.bat` and extract the first
- * one-line REM/rem comment as a description. Returns an empty array
- * if the bundle isn't present yet.
+ * Стратегии из zapretBundleDir(): `general*.bat`, подпись — первый осмысленный
+ * комментарий в файле (строка «:: 65001 - UTF-8» пропускается) или короткая
+ * подпись по названию; порядок естественный (ALT2 перед ALT10).
  */
 export function listStrategies(): StrategyDescriptor[] {
+  if (process.platform === 'linux') return listLinuxStrategies()
   // macOS: стратегии из сборки Flowseal для Mac (file — идентификатор вида general-alt3).
   if (process.platform === 'darwin') return listMacStrategies()
   const dir = zapretBundleDir()
   if (!existsSync(dir)) return []
-  const out: StrategyDescriptor[] = []
-  for (const f of readdirSync(dir)) {
-    if (!/^general.*\.bat$/i.test(f)) continue
-    const full = path.join(dir, f)
-    let description = ''
-    try {
-      const head = readFileSync(full, 'utf-8').split(/\r?\n/).slice(0, 10)
-      for (const line of head) {
-        const m = line.match(/^\s*(?:::|REM)\s*(.+)$/i)
-        if (m) { description = m[1].trim(); break }
-      }
-    } catch { /* noop */ }
-    out.push({
-      file: f,
-      title: f.replace(/\.bat$/i, ''),
-      description
-    })
-  }
-  return out.sort((a, b) => a.title.localeCompare(b.title))
+  // Свои стратегии из конструктора: пропавший после обновления сборки .bat пишется заново.
+  ensureCustomMaterialized()
+  return readStrategyDir(dir)
 }
 
 export async function installZapretBundle(
   zipBytes: Uint8Array
 ): Promise<{ strategies: number; installedVersion?: string }> {
+  if (process.platform === 'linux') throw new Error('Zapret обновляется вместе с пакетом LAZEYKA для Linux.')
   if (!zipBytes || zipBytes.length === 0) {
     throw new Error('Пустой архив')
   }
@@ -236,14 +251,14 @@ export async function installZapretBundle(
         const existingLines = prevBuf
           .toString('utf-8')
           .split(/\r?\n/)
-          .map((s) => s.replace(/^﻿/, '').trim())
+          .map((s) => s.replace(/^\uFEFF/, '').trim())
           .filter((s) => s.length > 0 && !s.startsWith('#') && !s.startsWith(';'))
 
         if (!existingLines.length) continue
 
         const freshLines = readFileSync(destFile, 'utf-8')
           .split(/\r?\n/)
-          .map((s) => s.replace(/^﻿/, '').trim())
+          .map((s) => s.replace(/^\uFEFF/, '').trim())
           .filter(Boolean)
 
         const seenLower = new Set(freshLines.map((s) => s.toLowerCase()))
@@ -382,28 +397,78 @@ const macHost: ZapretMacHost = {
   ensureHosts: () => ensureLazeykaHosts(zapretBundleDir())
 }
 
+async function syncLinuxZapretState(): Promise<boolean> {
+  const live = await linuxZapretSystemState().catch(() => null)
+  if (live?.state === 'active') {
+    if (status.state !== 'running' || status.pid !== live.pid) {
+      setStatus({ state: 'running', pid: live.pid, startedAt: Date.now(), lastError: undefined, phase: undefined, detail: undefined })
+    }
+    return true
+  }
+  if (live?.state === 'failed' && status.state === 'running') {
+    setStatus({ state: 'error', pid: undefined, lastError: 'Служба Zapret прервана. Подробности в системном журнале.' })
+  } else if (live?.state === 'inactive' && status.state === 'running') {
+    setStatus({ state: 'stopped', pid: undefined, startedAt: undefined })
+  }
+  return false
+}
+
+async function changeLinuxZapret(running: boolean): Promise<void> {
+  setStatus({ state: running ? 'starting' : 'stopping', lastError: undefined,
+    detail: 'Ожидаю службу Zapret. При необходимости подтвердите действие в диалоге Linux.' })
+  try {
+    if (running) {
+      const cfg = await getAppConfig()
+      await applyLinuxZapretStrategy(resolveLinuxStrategy(cfg.zapret?.activeStrategy))
+      await syncLinuxZapretState()
+    } else {
+      await stopLinuxZapret()
+      setStatus({ state: 'stopped', pid: undefined, startedAt: undefined, detail: undefined })
+    }
+    log('info', running ? 'Служба Zapret запущена' : 'Служба Zapret остановлена')
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e)
+    if (!(await syncLinuxZapretState())) setStatus({ state: 'error', pid: undefined, lastError: reason, detail: undefined })
+    log('error', reason)
+    throw e
+  }
+}
+
 export function startZapret(): Promise<void> {
+  if (process.platform === 'linux') return withLock(() => changeLinuxZapret(true))
   // macOS: движок utunws в root-службе, управление — zapret-mac.ts.
   if (process.platform === 'darwin') return withLock(() => startZapretMac(macHost))
+  // Пользователь включает сам — ожидание и повторы автозапуска больше не нужны.
+  startEpoch++
   return withLock(() => startZapretImpl())
 }
 /** macOS: подхватить службу Zapret, оставшуюся работать от прошлого запуска. */
 export function adoptRunningZapret(): Promise<boolean> {
+  if (process.platform === 'linux') {
+    const poll = setInterval(() => {
+      if (status.state !== 'starting' && status.state !== 'stopping') void syncLinuxZapretState()
+    }, 4000)
+    poll.unref()
+    return syncLinuxZapretState()
+  }
   return adoptRunningZapretMac(macHost)
 }
 export function stopZapret(): Promise<void> {
+  if (process.platform === 'linux') return withLock(() => changeLinuxZapret(false))
   if (process.platform === 'darwin') return withLock(() => stopZapretMac(macHost))
+  // Прерываем идущий запуск/самопроверку, не дожидаясь очереди: иначе «Выключить» ждало бы до 45 с.
+  startEpoch++
+  abortStart = true
   return withLock(() => stopZapretImpl())
 }
 
-/** Kill any orphan winws.exe instances by image name. */
+/**
+ * Kill ALL winws.exe by image name — включая чужие копии. Нужен, когда список процессов
+ * получить не удалось; в обычном ходе используется killOwnWinws().
+ */
 export function killWinws(): Promise<void> {
-  if (process.platform === 'darwin') return Promise.resolve()
-  return new Promise((resolve) => {
-    const p = spawn('taskkill.exe', ['/F', '/IM', 'winws.exe'], { windowsHide: true })
-    p.on('exit', () => resolve())
-    p.on('error', () => resolve())
-  })
+  if (process.platform !== 'win32') return Promise.resolve()
+  return runCmd('taskkill.exe', ['/F', '/IM', 'winws.exe'], 8_000).then(() => undefined)
 }
 
 /**
@@ -412,7 +477,8 @@ export function killWinws(): Promise<void> {
  * The first match is remembered in `detectedWinDivertSvc` to save on
  * repeated `sc query` calls during status checks.
  */
-const WINDIVERT_SERVICE_NAMES = ['WinDivert', 'windivert', 'WinDivert64', 'windivert64'] as const
+// Имена служб в Windows не различают регистр, поэтому 'windivert' отдельно не нужен.
+const WINDIVERT_SERVICE_NAMES = ['WinDivert', 'WinDivert14', 'WinDivert64'] as const
 let detectedWinDivertSvc: string | null = null
 
 interface ScQueryResult {
@@ -421,30 +487,23 @@ interface ScQueryResult {
   binaryPath: string | null
 }
 
-/** Run `sc query` + `sc qc` for a single service name. */
+/** Run `sc query` + `sc qc` for a single service name (синхронно, для проверки перед тестом стратегий). */
 function scQueryOne(name: string): ScQueryResult {
-  const q = spawnSync('sc.exe', ['query', name], { windowsHide: true, timeout: 2000 })
+  const q = spawnSync('sc.exe', ['query', name], { windowsHide: true, timeout: 3000 })
   const qOut = q.stdout ? decodeConsole(q.stdout) : ''
-  if (q.status !== 0 || !qOut) return { exists: false, state: 'unknown', binaryPath: null }
-  const stateMatch = qOut.match(/STATE\s*:\s*\d+\s+(\w+)/i) ?? qOut.match(/:\s*\d+\s+(RUNNING|STOPPED|START_PENDING|STOP_PENDING)/i)
-  const stateRaw = (stateMatch?.[1] ?? '').toLowerCase()
-  const state: ScQueryResult['state'] =
-    stateRaw === 'running' ? 'running' :
-    stateRaw === 'stopped' ? 'stopped' :
-    stateRaw === 'start_pending' ? 'start_pending' :
-    stateRaw === 'stop_pending' ? 'stop_pending' : 'unknown'
-  // `sc qc` exposes BINARY_PATH_NAME — needed so we can detect a stale
-  // registration pointing at a previous install directory.
-  // sc.exe пишет в кодировке консоли (CP866), а не UTF-8: путь
-  // C:\Users\Алексей\... приходил испорченным, проверка «файл существует»
-  // проваливалась, и служба WinDivert удалялась при каждом запуске.
-  const qc = spawnSync('sc.exe', ['qc', name], { windowsHide: true, timeout: 2000 })
+  // Разбор по структуре строк (русская Windows: заголовки переведены, код и имя состояния — нет).
+  const parsed = parseScQuery(qOut, q.status)
+  if (!parsed.found) return { exists: false, state: 'unknown', binaryPath: null }
+  // sc.exe пишет в кодировке консоли (CP866), а не UTF-8: decodeConsole это учитывает —
+  // путь C:\Users\Алексей\... иначе приходил испорченным и служба удалялась при каждом запуске.
+  const qc = spawnSync('sc.exe', ['qc', name], { windowsHide: true, timeout: 3000 })
   const qcOut = qc.stdout ? decodeConsole(qc.stdout) : ''
-  const pathMatch = qcOut.match(/BINARY_PATH_NAME\s*:\s*(.+)$/im) ?? qcOut.match(/(?:ИМЯ_ДВОИЧНОГО_ФАЙЛА|BINARY_PATH_NAME)\s*:\s*(.+)$/im)
   return {
     exists: true,
-    state,
-    binaryPath: pathMatch?.[1].trim() ?? null
+    state: parsed.state === 'running' || parsed.state === 'stopped' || parsed.state === 'start_pending' || parsed.state === 'stop_pending'
+      ? parsed.state
+      : 'unknown',
+    binaryPath: parseScQc(qcOut).binaryPath
   }
 }
 
@@ -504,6 +563,13 @@ export function ensureWinDivertReady(): void {
     const registered = svc.info.binaryPath.replace(/^\\\?\?\\/, '').toLowerCase()
     const expected = expectedSys.toLowerCase()
     if (!existsSync(svc.info.binaryPath.replace(/^\\\?\?\\/, '')) || registered !== expected) {
+      // Драйвером может пользоваться живой winws.exe другой копии LAZEYKA (dev и установленная версия
+      // делят имя службы) — тогда её регистрацию не трогаем.
+      const live = spawnSync('tasklist.exe', ['/FI', 'IMAGENAME eq winws.exe', '/NH'], { windowsHide: true, timeout: 4000 })
+      if (/winws\.exe/i.test(live.stdout ? decodeConsole(live.stdout) : '')) {
+        log('warn', `WinDivert service points at ${svc.info.binaryPath}, но winws.exe уже работает — службу не трогаю`)
+        return
+      }
       log('warn', `WinDivert service points at stale path: ${svc.info.binaryPath}; re-registering`)
       spawnSync('sc.exe', ['stop', svc.name], { windowsHide: true, timeout: 2000 })
       spawnSync('sc.exe', ['delete', svc.name], { windowsHide: true, timeout: 2000 })
@@ -531,13 +597,232 @@ export function ensureWinDivertReady(): void {
 /** Returns true if at least one winws.exe is running. */
 export function isWinwsRunning(): Promise<boolean> {
   if (process.platform === 'darwin') return Promise.resolve(false)
+  return runCmd('tasklist.exe', ['/FI', 'IMAGENAME eq winws.exe', '/NH'], 6_000).then((r) => /winws\.exe/i.test(r.stdout))
+}
+
+/**
+ * Для проверок (автоподбор, проверка из конструктора): убрать свои остатки winws.exe и
+ * убедиться, что чужого нет. Установленная версия и dev делят драйвер WinDivert —
+ * чужой winws.exe не трогаем, а проверку не начинаем.
+ * Возвращает текст причины, если проверять нельзя.
+ */
+export async function clearOwnWinwsForProbe(): Promise<string | null> {
+  if (process.platform !== 'win32') return null
+  if (isZapretServiceRunningSync()) {
+    return 'Zapret работает как служба Windows — проверка остановила бы её. Удалите службу на вкладке «Настройки» или проверяйте позже'
+  }
+  if (!(await isWinwsRunning())) return null
+  const k = await killOwnWinws()
+  if (k.foreign.length > 0) {
+    const f = k.foreign[0]
+    log('warn', `проверка стратегии: работает winws.exe из другой папки (pid ${f.pid}, ${f.path ?? 'путь неизвестен'}) — не трогаю`)
+    return `Уже работает другой winws.exe (${f.path ?? `pid ${f.pid}`}) — закройте другую копию LAZEYKA или Zapret и повторите`
+  }
+  if (k.unknown.length > 0) {
+    const alive = stillAlive(k.unknown, await listWinwsProcesses())
+    if (alive.length > 0) return `Уже работает другой winws.exe (pid ${alive.map((p) => p.pid).join(', ')}) — закройте его и повторите`
+  }
+  return null
+}
+
+/** Завершить свои winws.exe (чужие не трогает). Для проверок. */
+export async function killOwnWinwsForProbe(): Promise<void> {
+  if (process.platform !== 'win32') return
+  await killOwnWinws().catch(() => void 0)
+}
+
+// ---- Системные вызовы Windows: execFile, windowsHide, таймаут на каждую команду ----
+
+interface RunResult {
+  code: number | null
+  stdout: string
+  stderr: string
+  timedOut: boolean
+  spawnFailed: boolean
+}
+
+function runCmd(file: string, args: string[], timeoutMs: number): Promise<RunResult> {
   return new Promise((resolve) => {
-    const p = spawn('tasklist.exe', ['/FI', 'IMAGENAME eq winws.exe', '/NH'], { windowsHide: true })
-    let out = ''
-    p.stdout?.on('data', (b) => { out += b.toString() })
-    p.on('exit', () => resolve(/winws\.exe/i.test(out)))
-    p.on('error', () => resolve(false))
+    try {
+      execFile(
+        file,
+        args,
+        { windowsHide: true, timeout: timeoutMs, encoding: 'buffer', maxBuffer: 4 * 1024 * 1024 },
+        (err, stdout, stderr) => {
+          const e = err as (NodeJS.ErrnoException & { killed?: boolean }) | null
+          resolve({
+            code: !e ? 0 : typeof e.code === 'number' ? e.code : null,
+            stdout: stdout ? decodeConsole(stdout) : '',
+            stderr: stderr ? decodeConsole(stderr) : '',
+            timedOut: Boolean(e?.killed),
+            spawnFailed: Boolean(e && typeof e.code === 'string')
+          })
+        }
+      )
+    } catch {
+      resolve({ code: null, stdout: '', stderr: '', timedOut: false, spawnFailed: true })
+    }
   })
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/** Пауза, которую можно прервать: false — прервано (отмена пользователем). Без частых опросов: шаг 500 мс. */
+async function sleepUnless(ms: number, cancelled: () => boolean): Promise<boolean> {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (cancelled()) return false
+    await sleep(Math.min(500, end - Date.now()))
+  }
+  return !cancelled()
+}
+
+/** Идёт попытка запуска: выход cmd/winws разбирает она сама. */
+let attemptActive = false
+/** Пользователь нажал «Выключить» — идущая попытка запуска должна остановиться. */
+let abortStart = false
+/** Меняется при любом ручном включении/выключении: автозапуск понимает, что его отменили. */
+let startEpoch = 0
+
+const SIGNAL_GRACE_MS = 8_000
+const STABLE_MS = 2_500
+const LAUNCH_TIMEOUT_MANUAL_MS = 20_000
+// При загрузке сценарий (netsh/sc внутри service.bat) бывает медленным — ждём winws заметно дольше.
+const LAUNCH_TIMEOUT_AUTO_MS = 45_000
+const BOOT_WAIT_MAX_MS = 60_000
+
+async function scQueryAsync(name: string): Promise<ScQuery> {
+  const r = await runCmd('sc.exe', ['query', name], 5_000)
+  if (r.spawnFailed || r.timedOut) return { found: false, state: 'unknown', code: null }
+  return parseScQuery(r.stdout, r.code)
+}
+
+interface DriverSvc {
+  name: string
+  query: ScQuery
+  binaryPath: string | null
+}
+
+/** Служба драйвера WinDivert (под любым из известных имён) с её путём из `sc qc`. */
+async function readDriverService(): Promise<DriverSvc | null> {
+  const ordered = detectedWinDivertSvc
+    ? [detectedWinDivertSvc, ...WINDIVERT_SERVICE_NAMES.filter((n) => n !== detectedWinDivertSvc)]
+    : [...WINDIVERT_SERVICE_NAMES]
+  for (const name of ordered) {
+    const query = await scQueryAsync(name)
+    if (!query.found) continue
+    detectedWinDivertSvc = name
+    const qc = await runCmd('sc.exe', ['qc', name], 5_000)
+    return { name, query, binaryPath: qc.timedOut ? null : parseScQc(qc.stdout).binaryPath }
+  }
+  detectedWinDivertSvc = null
+  return null
+}
+
+function findExpectedSys(): string | null {
+  const bundle = zapretBundleDir()
+  return (
+    [
+      path.join(bundle, 'bin', 'WinDivert64.sys'),
+      path.join(bundle, 'bin', 'WinDivert.sys'),
+      path.join(bundle, 'WinDivert64.sys'),
+      path.join(bundle, 'WinDivert.sys')
+    ].find((p) => existsSync(p)) ?? null
+  )
+}
+
+function canonPath(p: string): string {
+  const n = normalizeWinPath(p)
+  try {
+    return realpathSync.native(n)
+  } catch {
+    return n
+  }
+}
+
+/** Пути совпадают: текстуально либо после раскрытия коротких имён (C:\USERS\ALEKSE~1). */
+function pathsMatch(a: string, b: string): boolean {
+  return samePath(a, b) || samePath(canonPath(a), canonPath(b))
+}
+
+/** Удаляет службу WinDivert: стоп, удаление, ожидание исчезновения (до ~7 с). true — службы больше нет. */
+async function removeDriverService(name: string): Promise<boolean> {
+  const st = await runCmd('sc.exe', ['stop', name], 8_000)
+  // Код 5 — нет прав: ждать остановки бессмысленно, удаление ответит так же.
+  if (st.code !== ERROR_ACCESS_DENIED) {
+    for (let i = 0; i < 12; i++) {
+      const q = await scQueryAsync(name)
+      if (!q.found || q.state === 'stopped') break
+      await sleep(250)
+    }
+  }
+  const d = await runCmd('sc.exe', ['delete', name], 8_000)
+  const outcome = scDeleteOutcome(d.code, d.timedOut)
+  if (outcome.level === 'warn') log('warn', `WinDivert (${name}): ${outcome.text}`)
+  detectedWinDivertSvc = null
+  // Без прав служба точно осталась — не ждём её исчезновения 4 с.
+  if (d.code === ERROR_ACCESS_DENIED) return false
+  for (let i = 0; i < 16; i++) {
+    const q = await scQueryAsync(name)
+    if (!q.found) return true
+    await sleep(250)
+  }
+  return false
+}
+
+// Path у Get-Process пуст для процессов с повышением, если LAZEYKA сама без прав администратора;
+// тогда пробуем Win32_Process.ExecutablePath (может тоже быть пустым — это нормально, см. classifyWinws).
+// В команде нет двойных кавычек: Node экранирует их при передаче аргументов, а PowerShell понимает по-своему.
+const PS_LIST_WINWS =
+  '[Console]::OutputEncoding=[Text.Encoding]::UTF8; ' +
+  '$p=@(Get-Process -Name winws -ErrorAction SilentlyContinue | ForEach-Object { ' +
+  '$id=$_.Id; $path=$_.Path; ' +
+  "if (-not $path) { try { $path=(Get-CimInstance Win32_Process -Filter ('ProcessId=' + $id) -ErrorAction Stop).ExecutablePath } catch { $path=$null } }; " +
+  '[pscustomobject]@{ ProcessId=$id; ExecutablePath=$path } }); ' +
+  'ConvertTo-Json -InputObject $p -Compress'
+
+/** Живые winws.exe с путями к файлам (путь может быть null); null — получить список не удалось. */
+async function listWinwsProcesses(): Promise<WinwsProc[] | null> {
+  const r = await runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', PS_LIST_WINWS], 12_000)
+  if (r.spawnFailed || r.timedOut || r.code !== 0) return null
+  return parseWinwsProcesses(r.stdout)
+}
+
+function ownWinwsExe(): string {
+  return path.join(zapretBundleDir(), 'bin', 'winws.exe')
+}
+
+/**
+ * Завершает winws.exe, которые принадлежат этой копии LAZEYKA (и остатки удалённых установок).
+ * winws.exe из другой существующей папки (dev-сборка рядом с установленной, отдельный Zapret) не трогаем.
+ * Процессы с неизвестным путём тоже не трогаем: это может быть чужая копия с повышенными правами.
+ * Если список процессов получить нельзя — старое поведение: по имени образа.
+ */
+async function killOwnWinws(): Promise<{ foreign: WinwsProc[]; unknown: WinwsProc[] }> {
+  const procs = await listWinwsProcesses()
+  if (!procs) {
+    await killWinws()
+    return { foreign: [], unknown: [] }
+  }
+  const { own, foreign, unknown } = classifyWinws(procs, ownWinwsExe(), existsSync)
+  for (const p of own) await runCmd('taskkill.exe', ['/F', '/T', '/PID', String(p.pid)], 8_000)
+  return { foreign, unknown }
+}
+
+/** Ждёт службу BFE (фильтрация трафика, нужна WinDivert) и сетевой интерфейс с адресом: до maxMs, шаг 1 с. */
+async function waitForBootReady(
+  maxMs: number,
+  cancelled: () => boolean
+): Promise<{ ready: boolean; waitedMs: number; bfe: ScState; net: boolean }> {
+  const t0 = Date.now()
+  for (;;) {
+    const bfe = (await scQueryAsync('BFE')).state
+    const net = hasUsableNetwork(os.networkInterfaces())
+    const waitedMs = Date.now() - t0
+    if (isBootReady(bfe, net)) return { ready: true, waitedMs, bfe, net }
+    if (waitedMs >= maxMs || cancelled()) return { ready: false, waitedMs, bfe, net }
+    await sleep(1_000)
+  }
 }
 
 let stopRequested = false
@@ -551,6 +836,11 @@ let stopRequested = false
  */
 let winwsHealth: 'unknown' | 'capturing' | 'failed' = 'unknown'
 let winwsLastError: string | null = null
+
+/** Чтение через функцию: TypeScript иначе «запоминает» значение внутри долгих async-циклов. */
+function health(): 'unknown' | 'capturing' | 'failed' {
+  return winwsHealth
+}
 
 function resetWinwsHealth(): void {
   winwsHealth = 'unknown'
@@ -623,6 +913,343 @@ function ensureLazeykaHosts(bundleDir: string): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Запуск Zapret (Windows)
+//
+// Порядок одной попытки:
+//   1. подготовка: чужой winws.exe не трогаем; свой остаток убираем; драйвер WinDivert
+//      приводим в порядок (перерегистрация, только если им никто не пользуется);
+//   2. запуск .bat и ожидание winws.exe (на загрузке сценарий может «думать» десятки секунд);
+//   3. самопроверка: winws жив, драйвер RUNNING, есть признак захвата, всё это держится ещё
+//      пару секунд. До этого статус — «запущен, проверяю» (жёлтый). Драйвер из папки другой копии
+//      LAZEYKA — не провал (тот же драйвер), только запись в журнал.
+// Без прав администратора запуск не начинается (см. attemptStart).
+// Ошибка показывается, только когда не помогла и полная очистка («Перезагрузить службы»).
+// ---------------------------------------------------------------------------
+
+interface AttemptOpts {
+  /** Полная очистка перед запуском: убрать свой winws и заново зарегистрировать драйвер. */
+  force: boolean
+  /** Автозапуск при входе в Windows: winws может появиться заметно позже. */
+  auto: boolean
+}
+
+type AttemptResult =
+  | { ok: true; weak: boolean }
+  | { ok: false; reason: StartFailReason; detail?: string; foreignPath?: string }
+
+async function resolveStrategy(): Promise<{ dir: string; batPath: string }> {
+  const cfg = await getAppConfig()
+  const z = cfg.zapret
+  if (!z || !z.activeStrategy) {
+    throw new Error('no active zapret strategy configured')
+  }
+  const dir = zapretBundleDir()
+  ensureCustomMaterialized()
+  // Только имя файла из списка стратегий этой папки: значение могло прийти
+  // из импортированного профиля или старого конфига (путь с «..» и т. п.).
+  let name: string
+  try {
+    name = validateStrategyName(z.activeStrategy, listStrategyFiles(dir))
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    setStatus({ state: 'error', phase: undefined, detail: undefined, lastError: msg })
+    log('error', `${msg} (значение в настройках: ${JSON.stringify(String(z.activeStrategy).slice(0, 120))})`)
+    throw new Error(msg)
+  }
+  const batPath = path.join(dir, name)
+  if (path.dirname(batPath) !== path.join(dir) || !existsSync(batPath)) {
+    setStatus({ state: 'error', phase: undefined, detail: undefined, lastError: `strategy not found: ${batPath}` })
+    log('error', `strategy not found: ${batPath}`)
+    throw new Error(`zapret strategy not found: ${batPath}`)
+  }
+  return { dir, batPath }
+}
+
+/** Приводит драйвер WinDivert в состояние, с которым winws.exe запустится надёжно. */
+async function prepareDriver(force: boolean, admin: boolean): Promise<void> {
+  const expectedSys = findExpectedSys()
+  const svc = await readDriverService()
+  const svcPath = svc?.binaryPath ?? null
+  const decision = decideDriverPrep({
+    svc: svc ? { state: svc.query.state } : null,
+    svcPath: svcPath && expectedSys && pathsMatch(svcPath, expectedSys) ? expectedSys : svcPath,
+    expectedSys,
+    svcPathExists: svcPath ? existsSync(normalizeWinPath(svcPath)) : false,
+    foreignWinws: false, // чужой winws.exe отсеян раньше — сюда с ним не доходим
+    admin,
+    force
+  })
+  switch (decision.action) {
+    case 'register-by-winws':
+      log('info', 'WinDivert service not registered — winws.exe will register it')
+      return
+    case 'reuse':
+      return
+    case 'start-service': {
+      log('info', `starting WinDivert service (${svc?.name}, was ${svc?.query.state})`)
+      const r = await runCmd('sc.exe', ['start', svc!.name], 8_000)
+      if (r.code !== 0 && r.code !== ERROR_SERVICE_ALREADY_RUNNING) {
+        log('warn', `sc start ${svc!.name} failed (код ${r.code ?? '?'}${r.timedOut ? ', таймаут' : ''})`)
+      }
+      return
+    }
+    case 'reregister': {
+      const why =
+        decision.reason === 'forced'
+          ? 'полная очистка'
+          : decision.reason === 'stuck-stopping'
+            ? 'драйвер завис в остановке'
+            : `служба указывает на ${svcPath ?? '?'}`
+      log('warn', `WinDivert: перерегистрирую службу ${svc!.name} (${why})`)
+      const removed = await removeDriverService(svc!.name)
+      if (!removed) {
+        // Не ошибка: если драйвер RUNNING и winws подтвердит захват — всё работает с драйвером из другой папки.
+        log('warn', 'WinDivert: служба осталась прежней — продолжаю, самопроверка решит')
+      }
+      return
+    }
+    case 'keep':
+      if (svcPath && expectedSys && !pathsMatch(svcPath, expectedSys)) {
+        log('warn', `WinDivert: служба указывает на ${svcPath}; перерегистрировать нельзя (${decision.reason === 'no-admin' ? 'нет прав администратора' : 'драйвером пользуется другой winws'}) — использую как есть`)
+      }
+      return
+  }
+}
+
+/** Состояние драйвера для самопроверки: служба и совпадение пути с нашим .sys. */
+async function driverSnapshot(): Promise<{ state: ScState; pathOk: boolean | null } | null> {
+  const svc = await readDriverService()
+  if (!svc) return null
+  const expected = findExpectedSys()
+  const pathOk = expected && svc.binaryPath ? pathsMatch(svc.binaryPath, expected) : null
+  return { state: svc.query.state, pathOk }
+}
+
+async function dropLaunch(me: ChildProcess | null): Promise<void> {
+  if (me && child === me) {
+    await killOwnTree()
+    child = null
+  }
+  await killOwnWinws().catch(() => void 0)
+}
+
+async function attemptStart(dir: string, batPath: string, opts: AttemptOpts): Promise<AttemptResult> {
+  setStatus({ state: 'starting', startedAt: Date.now(), lastError: undefined, phase: undefined, detail: undefined })
+  log('info', `launching: ${batPath}${opts.force ? ' (после полной очистки)' : ''}`)
+
+  // Если Zapret уже работает как служба Windows — его winws.exe и драйвер трогать нельзя.
+  const svc = await getZapretWindowsServiceStatus()
+  if (svc.installed && svc.running) {
+    setStatus({ state: 'running', startedAt: Date.now(), lastError: undefined, phase: undefined, detail: undefined })
+    log('info', 'Zapret is running as a Windows service')
+    return { ok: true, weak: false }
+  }
+
+  // Без прав администратора winws.exe (в его манифесте requireAdministrator) из нашего cmd не
+  // запустить как дочерний: cmd поднимает его отдельно через UAC, его вывод до нас не доходит,
+  // остановить его LAZEYKA потом не может, службу WinDivert тоже не трогает (код 5).
+  // Поэтому запуск без прав не начинаем и честно говорим, что нужно.
+  const admin = await isRunningAsAdmin().catch(() => true)
+  if (!admin) {
+    log('warn', 'LAZEYKA работает без прав администратора — Zapret не запускаю')
+    return { ok: false, reason: 'no-admin' }
+  }
+
+  // winws.exe, оставшийся от прошлого запуска, — убираем; чужой (другая копия LAZEYKA,
+  // отдельный Zapret) — не трогаем: он продолжит работать.
+  if (await isWinwsRunning()) {
+    const k = await killOwnWinws()
+    if (k.foreign.length > 0) {
+      const f = k.foreign[0]
+      log('warn', `winws.exe из другой папки уже работает (pid ${f.pid}, ${f.path ?? 'путь неизвестен'}) — не трогаю`)
+      return { ok: false, reason: 'foreign', foreignPath: f.path ?? undefined }
+    }
+    if (k.unknown.length > 0) {
+      // Путь не прочитался. Мешает, только если процесс действительно жив.
+      const alive = stillAlive(k.unknown, await listWinwsProcesses())
+      if (alive.length > 0) {
+        log('warn', `уже работает winws.exe с неизвестным путём (pid ${alive.map((p) => p.pid).join(', ')}) — не трогаю`)
+        return { ok: false, reason: 'foreign' }
+      }
+    }
+    log('info', 'stale winws.exe detected — cleaned up')
+  }
+  if (opts.force) await sleep(500)
+  if (abortStart) return { ok: false, reason: 'cancelled' }
+
+  await prepareDriver(opts.force, admin)
+  if (abortStart) return { ok: false, reason: 'cancelled' }
+
+  resetWinwsHealth()
+  const gameVars = getGameFilterVars()
+
+  // .bat patched at install time to drop `start /min`: winws.exe is a direct child of cmd,
+  // so the whole tree can be killed via taskkill /F /T /PID.
+  const me = spawn('cmd.exe', [ '/c', batPath ], {
+    cwd: dir,
+    windowsHide: true,
+    detached: false,
+    env: {
+      ...process.env,
+      // Skip the .bat's network update check — it can hang for several seconds on cold boot.
+      NO_UPDATE_CHECK: '1',
+      ...gameVars
+    }
+  })
+  child = me
+  let exitCode: number | null | undefined
+  attemptActive = true
+  const decodeOut = createConsoleDecoder()
+  const decodeErr = createConsoleDecoder()
+  me.stdout?.on('data', (buf) => {
+    const s = decodeOut(buf)
+    log('info', s.trimEnd())
+    for (const line of s.split(/\r?\n/)) ingestWinwsLine(line)
+  })
+  me.stderr?.on('data', (buf) => {
+    const s = decodeErr(buf)
+    log('warn', s.trimEnd())
+    for (const line of s.split(/\r?\n/)) ingestWinwsLine(line)
+  })
+  me.on('error', (err) => {
+    log('error', `child error: ${err.message}`)
+    if (child !== me) return
+    child = null
+    exitCode = null
+    if (!attemptActive) setStatus({ state: 'error', phase: undefined, detail: undefined, lastError: err.message })
+  })
+  me.on('exit', (code, signal) => {
+    log('info', `zapret exited code=${code} signal=${signal ?? 'none'}`)
+    // Процесс уже заменён или остановлен нами (stop/сброс) — состоянием занимается тот, кто его убил.
+    if (child !== me) return
+    child = null
+    exitCode = code
+    // Идёт попытка запуска: итог решит она сама (повтор, очистка, затем ошибка).
+    if (attemptActive) return
+    // Уже «работает» и вдруг упал — это и есть наблюдение за процессом, дополнительных опросов нет.
+    if (status.state === 'error') return
+    if (stopRequested) {
+      setStatus({ state: 'stopped', pid: undefined, lastError: undefined, phase: undefined, detail: undefined })
+    } else {
+      setStatus({
+        state: code === 0 || signal === 'SIGTERM' ? 'stopped' : 'error',
+        pid: undefined,
+        phase: undefined,
+        detail: undefined,
+        lastError: code && code !== 0 ? `winws.exe exited with code ${code}` : undefined
+      })
+    }
+  })
+
+  try {
+    // ---- 1. ждём появления winws.exe ----
+    const t0 = Date.now()
+    const launchDeadline = t0 + (opts.auto ? LAUNCH_TIMEOUT_AUTO_MS : LAUNCH_TIMEOUT_MANUAL_MS)
+    for (;;) {
+      if (abortStart) {
+        await dropLaunch(me)
+        return { ok: false, reason: 'cancelled' }
+      }
+      if (health() === 'failed') {
+        log('error', `winws.exe reported a fatal error: ${winwsLastError ?? '(no detail)'}`)
+        await dropLaunch(me)
+        return { ok: false, reason: 'winws-error', detail: winwsLastError ?? undefined }
+      }
+      if (health() === 'capturing') break
+      if (child !== me) {
+        await killOwnWinws().catch(() => void 0)
+        return { ok: false, reason: 'bat-exited', detail: exitCode != null ? `код ${exitCode}` : undefined }
+      }
+      if (await isWinwsRunning()) break
+      if (Date.now() > launchDeadline) {
+        log('warn', `winws.exe не появился за ${Math.round((Date.now() - t0) / 1000)} с`)
+        await dropLaunch(me)
+        return { ok: false, reason: 'launch-timeout' }
+      }
+      await sleep(400)
+    }
+
+    // ---- 2. самопроверка ----
+    setStatus({ state: 'starting', phase: 'verifying', detail: 'Запущен, проверяю…' })
+    const v0 = Date.now()
+    let weak = false
+    let foreignDriver = false
+    for (;;) {
+      if (abortStart) {
+        await dropLaunch(me)
+        return { ok: false, reason: 'cancelled' }
+      }
+      const alive = child === me && (await isWinwsRunning())
+      const v = decideVerification({
+        winwsAlive: alive,
+        capture: health() === 'capturing',
+        fatalLine: health() === 'failed',
+        driver: await driverSnapshot(),
+        waitedForSignalMs: Date.now() - v0,
+        signalGraceMs: SIGNAL_GRACE_MS
+      })
+      if (v.verdict === 'wait') {
+        await sleep(500)
+        continue
+      }
+      if (v.verdict === 'fail') {
+        log('warn', `самопроверка Zapret не пройдена: ${reasonText(v.reason)}`)
+        await dropLaunch(me)
+        return { ok: false, reason: v.reason, detail: v.reason === 'winws-error' ? winwsLastError ?? undefined : undefined }
+      }
+      weak = v.weak
+      foreignDriver = v.foreignDriver
+      break
+    }
+
+    // ---- 3. держится ли это пару секунд ----
+    await sleep(STABLE_MS)
+    const alive2 = child === me && (await isWinwsRunning())
+    const v2 = decideVerification({
+      winwsAlive: alive2,
+      capture: health() === 'capturing',
+      fatalLine: health() === 'failed',
+      driver: await driverSnapshot(),
+      waitedForSignalMs: 0,
+      signalGraceMs: SIGNAL_GRACE_MS
+    })
+    if (v2.verdict !== 'ok') {
+      const reason: StartFailReason = v2.verdict === 'fail' ? v2.reason : 'no-capture-signal'
+      log('warn', `Zapret не удержался после запуска: ${reasonText(reason)}`)
+      await dropLaunch(me)
+      return { ok: false, reason }
+    }
+
+    if (weak) log('warn', 'служба WinDivert не найдена под известными именами, но winws.exe подтвердил перехват — принимаю')
+    if (foreignDriver) {
+      log('warn', 'драйвер WinDivert загружен из папки другой копии LAZEYKA — это тот же драйвер, winws подтвердил перехват, работаю с ним')
+    }
+    setStatus({ state: 'running', pid: me.pid, phase: undefined, detail: undefined, lastError: undefined })
+    log('info', `winws.exe is capturing (${Date.now() - (status.startedAt ?? Date.now())}ms), самопроверка пройдена`)
+    return { ok: true, weak }
+  } finally {
+    attemptActive = false
+  }
+}
+
+/** Итог неудачи: честное сообщение (про права — только если прав действительно нет). */
+async function finishFailed(res: Extract<AttemptResult, { ok: false }>, attempts: number, earlyBoot: boolean): Promise<void> {
+  const adminOk = await isRunningAsAdmin().catch(() => true)
+  const ctx = {
+    reason: res.reason,
+    adminOk,
+    earlyBoot,
+    detail: res.detail,
+    foreignPath: res.foreignPath,
+    dev: !app.isPackaged
+  }
+  const text = finalErrorText(ctx, attempts)
+  log('error', `Zapret не запустился: ${reasonText(res.reason)}`)
+  child = null
+  setStatus({ state: 'error', pid: undefined, phase: undefined, detail: undefined, lastError: text })
+}
+
 async function startZapretImpl(): Promise<void> {
   // Процесс остался от запуска, который не дождался winws (таймаут), —
   // гасим его, иначе повторный «Старт» молча ничего не делал.
@@ -631,161 +1258,107 @@ async function startZapretImpl(): Promise<void> {
     child = null
   }
   if (child) return
+  abortStart = false
   stopRequested = false
-  const cfg = await getAppConfig()
-  const z = cfg.zapret
-  if (!z || !z.activeStrategy) {
-    throw new Error('no active zapret strategy configured')
-  }
-  const dir = zapretBundleDir()
-  const batPath = path.join(dir, z.activeStrategy)
-  if (!existsSync(batPath)) {
-    setStatus({ state: 'error', lastError: `strategy not found: ${batPath}` })
-    log('error', `strategy not found: ${batPath}`)
-    throw new Error(`zapret strategy not found: ${batPath}`)
-  }
-
+  const { dir, batPath } = await resolveStrategy()
   ensureLazeykaHosts(dir)
-  setStatus({ state: 'starting', startedAt: Date.now(), lastError: undefined })
-  log('info', `launching: ${batPath}`)
-  // If Zapret is already running as a Windows Service, mark as running and return
-  const svc = await getZapretWindowsServiceStatus()
-  if (svc.installed && svc.running) {
-    setStatus({ state: 'running', startedAt: Date.now(), lastError: undefined })
-    log('info', 'Zapret is running as a Windows service')
-    return
+
+  let attempts = 1
+  let res = await attemptStart(dir, batPath, { force: false, auto: false })
+  // Самопроверка не прошла — один раз делаем то же, что кнопка «Перезагрузить службы».
+  if (!res.ok && needsFullReset(res.reason) && !abortStart) {
+    attempts = 2
+    log('warn', `первая попытка не удалась (${reasonText(res.reason)}) — полная очистка и повторный запуск`)
+    setStatus({ state: 'starting', phase: 'retrying', detail: 'Проверка не прошла — перезапускаю драйвер…' })
+    res = await attemptStart(dir, batPath, { force: true, auto: false })
   }
-
-  // Only kill stale winws.exe if one actually exists — saves ~150ms at
-  // autostart on a fresh boot when there's nothing to clean up. WinDivert
-  // is loaded on first .bat run, so we want the spawn ASAP.
-  if (await isWinwsRunning()) {
-    log('info', 'stale winws.exe detected — cleaning up')
-    await killWinws()
+  if (!res.ok && res.reason !== 'cancelled') {
+    // Ручное включение: готовность сети не проверялась, поэтому «Windows ещё загружала сеть» не утверждаем.
+    await finishFailed(res, attempts, false)
   }
+}
 
-  ensureWinDivertReady()
-  resetWinwsHealth()
+/**
+ * Автозапуск при входе в Windows (Windows). Ждёт готовности системы (служба BFE, сеть),
+ * затем запускает; при неудаче — до трёх повторов с паузами 5/15/30 с, перед повтором — полная очистка.
+ * Пользователь может отменить это переключателем (stop/start сбрасывают ожидание).
+ */
+export async function autoStartZapret(): Promise<void> {
+  if (process.platform === 'linux') return
+  if (process.platform === 'darwin') return startZapret()
+  const epoch = ++startEpoch
+  abortStart = false
+  const cancelled = (): boolean => startEpoch !== epoch || abortStart
+  if (child) return
 
-  const gameVars = getGameFilterVars()
-
-  // .bat files were patched at install time to drop `start /min`, so winws.exe
-  // is now a direct child of cmd — no visible window, no taskbar icon, and
-  // the whole tree can be killed via taskkill /F /T /PID.
-  child = spawn('cmd.exe', ['/c', batPath], {
-    cwd: dir,
-    windowsHide: true,
-    detached: false,
-    env: {
-      ...process.env,
-      // Skip the .bat's network update check — it can hang for several
-      // seconds on cold-boot autostart while DNS/network is initialising.
-      NO_UPDATE_CHECK: '1',
-      ...gameVars
-    }
-  })
-  const decodeOut = createConsoleDecoder()
-  const decodeErr = createConsoleDecoder()
-  child.stdout?.on('data', (buf) => {
-    const s = decodeOut(buf)
-    log('info', s.trimEnd())
-    for (const line of s.split(/\r?\n/)) ingestWinwsLine(line)
-  })
-  child.stderr?.on('data', (buf) => {
-    const s = decodeErr(buf)
-    log('warn', s.trimEnd())
-    for (const line of s.split(/\r?\n/)) ingestWinwsLine(line)
-  })
-  child.on('error', (err) => {
-    log('error', `child error: ${err.message}`)
-    setStatus({ state: 'error', lastError: err.message })
-    child = null
-  })
-  child.on('exit', (code, signal) => {
-    log('info', `zapret exited code=${code} signal=${signal ?? 'none'}`)
-    child = null
-    // Понятная ошибка уже показана (например, про WinDivert) — не затираем её
-    // общим «exited with code 1».
-    if (status.state === 'error') return
-    if (stopRequested) {
-      setStatus({ state: 'stopped', pid: undefined, lastError: undefined })
-    } else {
-      setStatus({
-        state: code === 0 || signal === 'SIGTERM' ? 'stopped' : 'error',
-        pid: undefined,
-        lastError: code && code !== 0 ? `winws.exe exited with code ${code}` : undefined
-      })
-    }
-  })
-
-  const deadline = Date.now() + 7000
-  while (Date.now() < deadline) {
-    if (!child) return   // cmd already died — exit handler will set error
-
-    if (winwsHealth === 'failed') {
-      log('error', `winws.exe reported a fatal error: ${winwsLastError ?? '(no detail)'}`)
-      await killWinws()
-      setStatus({
-        state: 'error',
-        pid: undefined,
-        lastError:
-          winwsLastError ??
-          'WinDivert не загрузился. Запустите LAZEYKA от администратора и попробуйте снова.'
-      })
-      return
-    }
-
-    if (winwsHealth === 'capturing' && await isWinwsRunning()) {
-      setStatus({ state: 'running', pid: child.pid })
-      log('info', `winws.exe is capturing (${Date.now() - (status.startedAt ?? Date.now())}ms)`)
-      return
-    }
-
-    await new Promise((r) => setTimeout(r, 100))
-  }
-
-  if (await isWinwsRunning() && child) {
-    setStatus({ state: 'running', pid: child.pid })
-    log('warn', 'winws.exe is up but no health signal seen in 7s — assuming OK')
-    return
-  }
+  // Стратегия обязательна — те же ошибки, что и раньше (их показывает index.ts).
+  await resolveStrategy()
 
   setStatus({
-    state: 'error',
-    lastError: 'winws.exe не запустился за 7с — запустите приложение от администратора'
+    state: 'starting',
+    startedAt: Date.now(),
+    lastError: undefined,
+    phase: 'waiting',
+    detail: 'Жду, пока Windows подготовит сеть…'
   })
-  log('error', 'winws.exe did not appear — check admin rights / antivirus')
-  // Не оставляем висящий cmd: иначе следующий «Старт» упирался в `if (child)`.
-  await killOwnTree()
-  child = null
+  const ready = await waitForBootReady(BOOT_WAIT_MAX_MS, cancelled)
+  log(
+    ready.ready ? 'info' : 'warn',
+    ready.ready
+      ? `Windows готова к запуску Zapret (служба BFE и сеть; ожидание ${Math.round(ready.waitedMs / 1000)} с)`
+      : `Windows не подтвердила готовность за ${Math.round(ready.waitedMs / 1000)} с (BFE: ${ready.bfe}, сеть: ${ready.net ? 'есть' : 'нет'}) — запускаю как есть`
+  )
+  if (cancelled()) return
+  const earlyBoot = !ready.ready || ready.waitedMs > 2_000 || os.uptime() < 300
+
+  let attempt = 1
+  let force = false
+  for (;;) {
+    const res = await withLock<AttemptResult>(async () => {
+      if (cancelled()) return { ok: false, reason: 'cancelled' }
+      if (child) return { ok: true, weak: false } // пользователь уже включил сам
+      stopRequested = false
+      const { dir, batPath } = await resolveStrategy()
+      ensureLazeykaHosts(dir)
+      return attemptStart(dir, batPath, { force, auto: true })
+    })
+    const step = nextAutoStep(attempt, res.ok ? { ok: true } : { ok: false, reason: res.reason })
+    if (step.kind === 'done' || step.kind === 'cancelled') return
+    if (step.kind === 'giveup') {
+      if (!res.ok) await finishFailed(res, step.attempts, earlyBoot)
+      return
+    }
+    // retry
+    if (!res.ok) {
+      const adminOk = await isRunningAsAdmin().catch(() => true)
+      const text = retryText({ reason: res.reason, adminOk, earlyBoot })
+      log('warn', `${text} (попытка ${attempt} из ${RETRY_DELAYS_MS.length + 1}, пауза ${step.delayMs / 1000} с)`)
+      setStatus({ state: 'starting', phase: 'retrying', detail: text })
+    }
+    if (!(await sleepUnless(step.delayMs, cancelled))) return
+    attempt = step.nextAttempt
+    force = step.cleanup
+  }
 }
 
 async function stopZapretImpl(): Promise<void> {
   stopRequested = true
-  setStatus({ state: 'stopping', lastError: undefined })
+  setStatus({ state: 'stopping', lastError: undefined, phase: undefined, detail: undefined })
 
-  // Kill winws.exe by image name — most reliable since it's a single-instance
-  // userland process holding the WinDivert handle.
-  await killWinws()
-
-  // Kill the launcher cmd tree too (in case it's still alive waiting).
-  if (child?.pid) {
-    await new Promise<void>((resolve) => {
-      const p = spawn('taskkill.exe', ['/F', '/T', '/PID', String(child!.pid)], { windowsHide: true })
-      p.on('exit', () => resolve())
-      p.on('error', () => resolve())
-    })
-  }
+  // Сначала своё дерево (cmd → winws): быстро и точно. Остаток ищем по имени, но чужие копии не трогаем.
+  if (child?.pid) await killOwnTree()
   child = null
-  await new Promise((r) => setTimeout(r, 150))
-  setStatus({ state: 'stopped', pid: undefined, lastError: undefined })
+  if (await isWinwsRunning()) await killOwnWinws()
+  await sleep(150)
+  setStatus({ state: 'stopped', pid: undefined, lastError: undefined, phase: undefined, detail: undefined })
   log('info', 'zapret stopped')
 }
 
 export async function restartZapret(): Promise<void> {
+  if (process.platform === 'linux') return startZapret()
   // macOS: запуск уже перезапускает движок службы целиком (без цикла остановки).
   if (process.platform === 'darwin') return startZapret()
   await stopZapret()
-  await new Promise((r) => setTimeout(r, 500))
+  await sleep(500)
   await startZapret()
 }
