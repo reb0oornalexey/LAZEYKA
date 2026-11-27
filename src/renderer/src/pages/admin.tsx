@@ -15,7 +15,10 @@ import { AdminCloudflarePanel, AdminStatsPanel, cfMaxPct, share20 } from '@rende
 import { AdminNav, isAdminTab, type AdminNavStatus, type AdminTab } from '@renderer/components/hub/admin-nav'
 import { AdminHero } from '@renderer/components/hub/admin-hero'
 import { AdminOverview } from '@renderer/components/hub/admin-overview'
+import { AdminDnsBar } from '@renderer/components/hub/admin-dns-bar'
 import { HubModal } from '@renderer/components/hub/modal'
+import { onDnsCatalogChanged } from '@renderer/utils/dns-catalog-api'
+import { useOnlineStore } from '@renderer/store/online-store'
 import { adminDnsPlan, adminStats, adminUnpair, adminWarns, adminWhoami, type AdminStats, type AdminWarn, type AdminWhoami, type DnsPlan } from '@renderer/utils/hub-admin-api'
 import { adminDonations, type DonationsAdmin } from '@renderer/utils/hub-donations-api'
 
@@ -29,8 +32,7 @@ import { adminDonations, type DonationsAdmin } from '@renderer/utils/hub-donatio
  *
  * Пункт меню и страница есть только при привязке режима автора; без неё адрес ведёт
  * на главную. Все запросы — из главного процесса с ключом автора; окно знает только
- * «привязка есть / нет». Данные грузятся при открытии и по кнопке «Обновить»,
- * фоновых опросов нет.
+ * «привязка есть / нет». Данные грузятся при открытии и по кнопке «Обновить».
  */
 
 const TAB_KEY = 'lazeyka.admin.tab'
@@ -65,6 +67,9 @@ const Admin: React.FC = () => {
   const [don, setDon] = useState<DonationsAdmin | null>(null)
   const [warns, setWarns] = useState<AdminWarn[] | null>(null)
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [retryCount, setRetryCount] = useState(0)
+  const liveOnline = useOnlineStore((s) => s.stats)
   const [rk, setRk] = useState(0)
   const [unpairAsk, setUnpairAsk] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -89,14 +94,15 @@ const Admin: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [w, s, p, d, wr] = await Promise.allSettled([adminWhoami(), adminStats(), adminDnsPlan(), adminDonations(), adminWarns()])
-    if (w.status === 'fulfilled') setWho(w.value)
-    if (s.status === 'fulfilled') setStats(s.value)
-    if (p.status === 'fulfilled') setPlan(p.value)
-    if (d.status === 'fulfilled') setDon(d.value)
-    if (wr.status === 'fulfilled') setWarns(wr.value)
-    const err = [w, s, d].find((x) => x.status === 'rejected') as PromiseRejectedResult | undefined
-    if (err) toast.error('Админка', { description: msg(err.reason) })
+    const results = await Promise.allSettled([
+      adminWhoami().then(setWho), adminStats().then((value) => { setStats(value); return value }), adminDnsPlan().then(setPlan),
+      adminDonations().then(setDon), adminWarns().then(setWarns)
+    ])
+    const error = results.find((r) => r.status === 'rejected')
+    const stat = results[1]
+    setLoadError(error?.status === 'rejected' ? msg(error.reason) : stat.status === 'fulfilled' && stat.value.counter?.online == null
+      ? 'Счётчик онлайна временно недоступен.'
+      : null)
     setLoading(false)
   }, [])
 
@@ -104,13 +110,27 @@ const Admin: React.FC = () => {
     if (paired) void load()
   }, [paired, load])
 
+  useEffect(() => {
+    if (!paired || loading || !loadError || retryCount >= 2) return
+    const timer = window.setTimeout(() => {
+      setRetryCount((n) => n + 1)
+      void load()
+    }, retryCount === 0 ? 15_000 : 45_000)
+    return () => window.clearTimeout(timer)
+  }, [paired, loading, loadError, retryCount, load])
+
+  useEffect(() => {
+    if (!paired) return
+    return onDnsCatalogChanged(() => { void adminDnsPlan().then(setPlan).catch(() => void 0) })
+  }, [paired])
+
   if (st && !paired) return <Navigate to="/home" replace />
 
   const c = stats?.counter
   const s20 = share20(stats?.versions?.day)
   const cf = stats?.cf
   const cfPct = cfMaxPct(cf)
-  const pending = plan ? plan.edits.length + plan.remove.length + plan.restore.length : 0
+  const pending = plan ? plan.add.length + plan.edits.length + plan.remove.length + plan.restore.length : 0
   const until = who?.until ?? st?.until ?? null
   const daysLeft = until ? Math.max(0, Math.ceil((until - Date.now()) / 86_400_000)) : null
   const claimsWait = don?.hasClaims ? don.claims.filter((x) => x.status === 'wait').length : null
@@ -119,6 +139,7 @@ const Admin: React.FC = () => {
   const annN = who?.announces.length ?? null
 
   const refresh = (): void => {
+    setRetryCount(0)
     void load()
     setRk((k) => k + 1)
   }
@@ -208,15 +229,15 @@ const Admin: React.FC = () => {
         <LzPanel className="p-4" data-tour="admin-dns">
           <LzSectionHead
             title="Каталог DNS"
-            sub={who?.dns ? `Опубликован: версия ${who.dns.version} от ${who.dns.updated}` : 'В Hub ещё не публиковался'}
-            hint="Правки адресов и отметки «убрать у всех» делаются на странице DNS (меню у строки сервера) и публикуются там кнопкой «Опубликовать правки DNS»."
+            sub={who?.dns ? `Опубликован: версия ${who.dns.version} от ${who.dns.updated}` : who ? 'В Hub ещё не публиковался' : undefined}
             right={
               <Button size="sm" variant={pending ? 'default' : 'outline'} onClick={() => navigate('/dns')}>
-                {pending ? 'Опубликовать на странице DNS' : 'Открыть DNS'} <ArrowRight />
+                Открыть DNS <ArrowRight />
               </Button>
             }
             className="mb-3"
           />
+          <div className="mb-3"><AdminDnsBar /></div>
           <div className="grid grid-cols-3 gap-2">
             <DnsCount label="Изменено" value={plan?.edits.length ?? 0} />
             <DnsCount label="Убрать у всех" value={plan?.remove.length ?? 0} />
@@ -300,9 +321,14 @@ const Admin: React.FC = () => {
       }
     >
       <div className="mx-auto flex w-full max-w-[1080px] flex-col lz-page-gap lz-page-x pb-5">
+        {loadError && (
+          <div role="status" className="rounded-xl border border-border/70 bg-card px-3 py-2 text-sm text-muted-foreground">
+            {loadError} {retryCount < 2 ? 'Повторим загрузку автоматически.' : 'Можно повторить кнопкой «Обновить».'}
+          </div>
+        )}
         <AdminHero
           p={{
-            online: c?.online ?? null,
+            online: c?.online ?? (liveOnline && Date.now() - liveOnline.at <= 20 * 60_000 ? liveOnline.online : null),
             peak: c?.peak ?? null,
             day: c?.day ?? null,
             week: c?.week ?? null,

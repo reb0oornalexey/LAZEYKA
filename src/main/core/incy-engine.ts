@@ -588,6 +588,7 @@ export interface IncyStatus {
   /** VPN оборвался, идёт автоматическое переподключение. */
   recovering?: boolean
   activeNodeId: string | null
+  /** Последний успешно подключённый узел, отличный от текущего. */
   previousNodeId?: string
   selectedNodeId: string | null
   connectionMode: 'tun' | 'system_proxy' | 'only_proxy'
@@ -2560,6 +2561,21 @@ export async function refreshIncySubscription(subscriptionId?: string): Promise<
   saveIncySubscription({ ...subscription, id: current.id })
   saveIncyNodes(merged)
 
+  // Подписка выдаёт новые id. Переносим оба узла из истории, чтобы после
+  // переключения текущий узел по-прежнему мог стать целью следующего нажатия.
+  const remapHistoryNodeId = (id: string): string | undefined => {
+    const before = previous.find((node) => node.id === id)
+    if (before?.subscriptionId !== current.id) return id
+    return findSameNode(before, fresh)?.id
+  }
+  const previousNodeId = currentStatus.previousNodeId
+    ? remapHistoryNodeId(currentStatus.previousNodeId)
+    : undefined
+  if (lastSuccessfulNodeId) lastSuccessfulNodeId = remapHistoryNodeId(lastSuccessfulNodeId) ?? null
+  if (previousNodeId !== currentStatus.previousNodeId) {
+    broadcastStatus({ previousNodeId })
+  }
+
   // Re-point the selection at the same endpoint under its new id, so the
   // "selected server" card doesn't silently reset to the first entry.
   const settings = loadIncySettings()
@@ -3609,7 +3625,8 @@ function readSingBoxVersion(bin: string): Promise<string> {
 
 export function validateCoreConfig(
   bin: string,
-  args: string[]
+  args: string[],
+  env?: NodeJS.ProcessEnv
 ): Promise<{ ok: boolean; reason?: string }> {
   return new Promise((resolve) => {
     let out = ''
@@ -3620,7 +3637,7 @@ export function validateCoreConfig(
       resolve({ ok, reason })
     }
     try {
-      const p = spawn(bin, args, { windowsHide: true })
+      const p = spawn(bin, args, { windowsHide: true, env })
       p.stdout?.on('data', (b) => { out += b.toString() })
       p.stderr?.on('data', (b) => { out += b.toString() })
       p.on('exit', (code) => {
@@ -4454,14 +4471,20 @@ async function connectIncyNodeImpl(nodeId: string | undefined, myEpoch: number):
       }
       const tunMtu = Number(settings.tunMtu) || 0
       if (tunMtu >= 1280 && tunMtu <= 9000) tunInbound.mtu = tunMtu
-      // Исключённые маршруты: эти подсети в туннель не попадают. Список пуст —
-      // поле в конфиг не пишется, поведение прежнее.
+      // Пакеты локальной сети должны оставаться на физическом интерфейсе даже
+      // при создании TUN. Правило ip_is_private работает уже после входа в TUN.
       const routes = checkExcludedRoutes(settings.excludedRoutes)
+      if (process.platform === 'win32' || process.platform === 'linux') {
+        routes.valid.push('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16')
+        if (tunV6) routes.valid.push('fc00::/7', 'fe80::/10')
+        if (process.platform === 'win32') {
+          routes.valid.push('224.0.0.0/24', '239.255.255.250/32', '255.255.255.255/32')
+          if (tunV6) routes.valid.push('ff02::/16')
+        }
+      }
       if (process.platform === 'linux') {
         tunInbound.iproute2_table_index = LINUX_TUN_TABLE
         tunInbound.iproute2_rule_index = LINUX_TUN_TABLE
-        routes.valid.push('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16')
-        if (tunV6) routes.valid.push('fc00::/7', 'fe80::/10')
         if (topology.needsXray) {
           routes.valid.push(...resolvedServerIps.map((ip) => `${ip}/${net.isIPv6(ip) ? 128 : 32}`))
         }
@@ -5178,7 +5201,10 @@ async function connectIncyNodeImpl(nodeId: string | undefined, myEpoch: number):
           }
         }
         writeFileSync(xrayCfgFile, JSON.stringify(cfg, null, 2), 'utf-8')
-        return validateCoreConfig(xrayBin, ['-test', '-config', xrayCfgFile])
+        return validateCoreConfig(xrayBin, ['-test', '-config', xrayCfgFile], {
+          ...process.env,
+          XRAY_LOCATION_ASSET: xrayAssetsDir()
+        })
       }
 
       // Walk down the tiers until the core accepts a config. Each attempt is a

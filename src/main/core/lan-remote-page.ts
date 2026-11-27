@@ -232,10 +232,16 @@ function guideKey(id: string): string {
 }
 
 /** Вкладка «Подключение» (бывшая /setup) — рисуется сервером, работает и без скриптов. */
+const tgwsCard = `<div class="card hide" id="tgws-card"><b>Telegram через TGWS</b>
+<p class="small muted">Для Telegram на этом телефоне. Работает независимо от раздачи прокси Wi-Fi.</p>
+<button class="btn" type="button" id="tgws-check">Проверить доступ к TGWS</button>
+<p class="small muted" role="status" id="tgws-status"></p>
+<a class="btn tgb hide" id="tgws-open">Подключить TGWS в Telegram</a></div>`
+
 function setupView(setup: SetupInfo | null): string {
   const invite = `<div class="invite hide" id="invite"><div class="qr">${ICONS.qr}</div><div><b>Чтобы управлять программой</b><p>Отсканируйте QR пульта в LAZEYKA: раздел «Локальная сеть» на компьютере.</p></div></div>`
   if (!setup) {
-    return `${invite}<h2 class="sec">Прокси для устройств</h2><div class="card small muted" data-tour="lan-setup-address">Раздача интернета на устройства выключена в программе на компьютере. Её включают в разделе «Локальная сеть».</div>`
+    return `${invite}${tgwsCard}<h2 class="sec">Прокси для устройств</h2><div class="card small muted" data-tour="lan-setup-address">Раздача интернета на устройства выключена в программе на компьютере. Её включают в разделе «Локальная сеть».</div>`
   }
   const host = escapeHtml(setup.host)
   const tg = buildTelegramLinks({ host: setup.host, port: setup.port })
@@ -249,7 +255,7 @@ function setupView(setup: SetupInfo | null): string {
     const ign = g.ignores ? `<div class="note warn"><b>Что не заработает.</b> ${escapeHtml(g.ignores)}</div>` : ''
     return `<div class="guide card${i === 0 ? '' : ' js-hide'}" data-panel="${guideKey(g.id)}"><ol>${steps}</ol>${note}${ign}</div>`
   }).join('')
-  return `${invite}
+  return `${invite}${tgwsCard}
 <h2 class="sec">Прокси для этого устройства</h2>
 <div class="card" data-tour="lan-setup-address">
 <div class="addr"><div><div class="l">Адрес</div><div class="v mono">${host}</div></div><button class="cp" type="button" data-copy="${host}" aria-label="Копировать адрес">${ICONS.copy}<span>Копировать</span></button></div>
@@ -257,9 +263,9 @@ function setupView(setup: SetupInfo | null): string {
 ${auth}</div>
 <h2 class="sec">Telegram</h2>
 <div class="card" data-tour="lan-setup-telegram">
-<div class="tgh">${TG_BRAND}<div><b>Прокси для Telegram</b><div class="small muted">Отдельно от настроек Wi-Fi</div></div></div>
+<div class="tgh">${TG_BRAND}<div><b>Telegram через общий SOCKS5-прокси</b><div class="small muted">Отдельно от настроек Wi-Fi</div></div></div>
 <div class="small muted">${escapeHtml(TELEGRAM_HINT)}</div>
-<div class="stack"><a class="btn tgb" href="${escapeHtml(tg.tg)}">Добавить прокси в Telegram</a><a class="btn" href="${escapeHtml(tg.https)}">Если не открылось: через t.me</a></div>
+<div class="stack"><a class="btn tgb" href="${escapeHtml(tg.tg)}">Добавить SOCKS5 в Telegram</a><a class="btn" href="${escapeHtml(tg.https)}">Если не открылось: через t.me</a></div>
 ${setup.authRequired ? '<div class="note">Telegram спросит логин и пароль после добавления: впишите те, что показаны в программе.</div>' : ''}
 </div>
 <div class="card setup-check">

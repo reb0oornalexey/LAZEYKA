@@ -282,22 +282,33 @@ const Home: React.FC = () => {
     if (reloading) return
     setReloading(true)
     try {
-      const tasks: Promise<unknown>[] = []
-      if (tgws.state === 'running' || tgws.state === 'error') tasks.push(tgwsRestart())
-      if (zapret.state === 'running' || zapret.state === 'error') tasks.push(zapretRestart())
-      if (incy.state === 'running' || incy.state === 'error') tasks.push(incyConnect())
+      const tasks: (() => Promise<unknown>)[] = []
+      if (zapret.state === 'running' || zapret.state === 'error') tasks.push(zapretRestart)
+      if (incy.state === 'running' || incy.state === 'error') {
+        tasks.push(async () => {
+          const result = await incyConnect(incy.activeNodeId ?? undefined)
+          if (result.state !== 'running') throw new Error(result.lastError || 'INCY не подключился')
+        })
+      }
+      if (tgws.state === 'running' || tgws.state === 'error') tasks.push(tgwsRestart)
       if (tasks.length === 0) {
         toast.info('Нет запущенных служб для перезапуска')
         return
       }
-      const results = await Promise.allSettled(tasks)
-      const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[]
+      const failed: unknown[] = []
+      for (const restart of tasks) {
+        try {
+          await restart()
+        } catch (error) {
+          failed.push(error)
+        }
+      }
       if (failed.length === 0) {
         toast.success('Службы перезапущены', { style: POWER_ON_BANNER_STYLE })
       } else {
-        const reason = failed[0].reason
+        const reason = failed[0]
         toast.error(
-          failed.length === results.length ? 'Службы не перезапустились' : 'Перезапустились не все службы',
+          failed.length === tasks.length ? 'Службы не перезапустились' : 'Перезапустились не все службы',
           { description: reason instanceof Error ? reason.message : String(reason) }
         )
       }

@@ -2229,7 +2229,13 @@ export default function IncyPage(): React.ReactElement {
         toast.error('Нельзя сменить выход цепочки', { description: check.reason })
         return
       }
-      await handleSelectNode(previousNode.id)
+      if (isConnected) {
+        await handleConnect(previousNode.id)
+        const subscription = await incyGetSubscription().catch(() => null)
+        if (subscription) setSubscription(subscription)
+      } else {
+        await handleSelectNode(previousNode.id)
+      }
     } catch (error) {
       toast.error('Не удалось проверить предыдущий узел', { description: String(error) })
     } finally {
@@ -2546,7 +2552,7 @@ export default function IncyPage(): React.ReactElement {
                 )}
                 {previousNode && (
                   <Button size="sm" variant="outline" disabled={previousChecking || isBusy} onClick={() => void selectPrevious()}>
-                    {isConnected ? 'Вернуться на' : 'Выбрать предыдущий:'} {cleanServerName(previousNode.name)}
+                    {isConnected ? 'Переключиться на' : 'Выбрать'} {cleanServerName(previousNode.name)}
                   </Button>
                 )}
               </LzPanel>

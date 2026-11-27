@@ -217,6 +217,17 @@ function renderPhoneCheck(){
     if(result.textContent!==text)result.textContent=text;
   });
 }
+$('tgws-check').onclick=async function(){
+  var button=this,link=$('tgws-open'),status=$('tgws-status');
+  button.disabled=true;link.removeAttribute('href');link.classList.add('hide');status.textContent='Проверяю…';
+  try{
+    var r=await api('/api/telegram/link');
+    if(!S.authed)return;
+    if(r.ok&&r.value.link){link.href=r.value.link;link.classList.remove('hide');status.textContent='Откройте ссылку и подтвердите подключение в Telegram.'}
+    else status.textContent=(r.value&&r.value.message)||'Не удалось получить ссылку.';
+  }catch(e){status.textContent=e.auth?'Снова откройте пульт по QR.':e.message}
+  finally{button.disabled=false}
+};
 var setupPhone=$('setup-phone');if(setupPhone)setupPhone.onclick=runPhoneCheck;
 function runYouTubeCheck(){
   if(S.offline||!proxyState().on||proxyState().busy||S.net.checking||S.net.toggling)return;
@@ -806,12 +817,14 @@ function closed(why){
   $('sub').textContent=t;
 }
 function guest(){
+  $('tgws-card').classList.add('hide');$('tgws-open').removeAttribute('href');$('tgws-open').classList.add('hide');
   S.authed=false;document.body.classList.add('guest');
   $('invite').classList.toggle('hide',!boot.remote);
   $('conn').classList.add('hide');$('refresh').classList.add('hide');
   setTab('setup');
 }
 function enter(){
+  $('tgws-card').classList.remove('hide');
   S.authed=true;S.stopped=false;document.body.classList.remove('guest');
   $('invite').classList.add('hide');$('conn').classList.remove('hide');$('refresh').classList.remove('hide');
   // Значок на экране «Домой» должен открывать пульт уже с кодом (у установленного приложения на iPhone своё хранилище).

@@ -155,6 +155,8 @@ export interface DnsRemovedInfo {
 }
 
 export interface DnsPlan {
+  add: DnsAddition[]
+  available: { id: string; name: string }[]
   edits: DnsEdit[]
   /** Отмечены «убрать у всех», ещё не опубликованы. */
   remove: { id: string; name: string; reason: string }[]
@@ -164,14 +166,23 @@ export interface DnsPlan {
   removed: DnsRemovedInfo[]
 }
 
+export interface DnsAddition extends DnsAddrs {
+  id: string
+  name: string
+  description: string
+  tags: string[]
+  site?: string
+}
+
 /** Локально: правки, отметки «убрать / вернуть» и уже убранные. */
 export const adminDnsPlan = (): Promise<DnsPlan> => invoke('hubAdmin:dnsPlan')
+export const adminDnsStageAddition = (preset: DnsAddition): Promise<DnsPlan> => invoke('hubAdmin:dnsStageAddition', preset)
 /** Отметить «убрать у всех» (публикуется кнопкой в «Панели автора»). */
 export const adminDnsMarkRemove = (id: string, reason: string): Promise<DnsPlan> => invoke('hubAdmin:dnsMarkRemove', id, reason)
 export const adminDnsMarkRestore = (id: string): Promise<DnsPlan> => invoke('hubAdmin:dnsMarkRestore', id)
 export const adminDnsUnmark = (id: string): Promise<DnsPlan> => invoke('hubAdmin:dnsUnmark', id)
 /** Правки, «убрать» и «вернуть» одним запросом (списки id). */
-export const adminDnsPublishPlan = (pick: { edits: string[]; remove: string[]; restore: string[] }): Promise<{ version: number }> =>
+export const adminDnsPublishPlan = (pick: { add?: string[]; edits: string[]; remove: string[]; restore: string[] }): Promise<{ version: number }> =>
   invoke('hubAdmin:dnsPublish', pick)
 
 export function onAdminChanged(cb: (s: AdminState) => void): () => void {

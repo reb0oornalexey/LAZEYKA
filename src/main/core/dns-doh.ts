@@ -561,8 +561,7 @@ export async function getDohProvidersWithPing(): Promise<DohProvider[]> {
  *  3. «только шифрованно» — флаг адаптера DohFlags = 2 (ручной шаблон) и
  *     DohTemplate для каждого адреса
  *     (Dnscache\InterfaceSpecificParameters\{GUID}\DohInterfaceSettings\
- *     Doh|Doh6\<IP>), после чего список DNS записывается ещё раз, чтобы
- *     служба DNS перечитала флаг;
+ *     Doh|Doh6\<IP>) до записи списка DNS;
  *  4. сброс DNS-кэша.
  *
  * Меняются только физические адаптеры, через которые идёт интернет, без VPN
@@ -649,10 +648,6 @@ if ($Mode -eq 'set') {
     $useV6 = ($v6.Count -gt 0) -and (Has-V6 $a)
     if ($useV6) { $v6used = $true }
     $servers = if ($useV6) { @($v4 + $v6) } else { @($v4) }
-    # Сначала сбрасываем ОБА семейства: Set-DnsClientServerAddress со списком из
-    # одних IPv4 не трогает IPv6, и у адаптера оставался IPv6 прошлого сервера.
-    Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses
-    Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ServerAddresses $servers
     $keep = @()
     if ($cfg.doh -and $hasDoh -and -not $fallback) {
       $sets = @(@{ Fam = 'Doh'; Ips = $v4 })
@@ -672,6 +667,11 @@ if ($Mode -eq 'set') {
       }
     }
     Clear-OurFlags $a $keep
+    # IPv4-список не очищает прежний статический IPv6. Сброс нужен только при
+    # переходе с прежнего IPv6 DNS на профиль без IPv6.
+    if (-not $useV6 -and $before[[string]$a.InterfaceIndex].v6.Count -gt 0) {
+      Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses
+    }
     Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ServerAddresses $servers
   }
 } elseif ($Mode -eq 'reset') {

@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRight, Globe, Info, Loader2, PencilLine, RotateCcw, Send, Trash2, Undo2 } from 'lucide-react'
+import { ArrowRight, Globe, Info, Loader2, Plus, RotateCcw, Send, Trash2, Undo2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import { Input } from '@renderer/components/ui/input'
 import { cn } from '@renderer/lib/utils'
 import {
+  adminDnsMarkRemove,
   adminDnsMarkRestore,
   adminDnsPlan,
   adminDnsPublishPlan,
+  adminDnsStageAddition,
   adminDnsUnmark,
   type DnsAddrs,
   type DnsPlan
@@ -33,7 +36,8 @@ const Addrs: React.FC<{ a: DnsAddrs; other: DnsAddrs }> = ({ a, other }) => {
   )
 }
 
-const EMPTY: DnsPlan = { edits: [], remove: [], restore: [], removed: [] }
+const EMPTY: DnsPlan = { add: [], available: [], edits: [], remove: [], restore: [], removed: [] }
+const splitList = (value: string): string[] => value.split(/[\s,;]+/).filter(Boolean)
 
 const Check: React.FC<{ checked: boolean; onChange: (v: boolean) => void; children: React.ReactNode }> = ({ checked, onChange, children }) => (
   <label className="flex cursor-pointer items-center gap-2 text-sm font-semibold">
@@ -58,6 +62,10 @@ const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title
 export function AdminDnsBar(): React.JSX.Element | null {
   const st = useAuthorState()
   const [open, setOpen] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [removeId, setRemoveId] = useState('')
+  const [removeReason, setRemoveReason] = useState('')
   const [plan, setPlan] = useState<DnsPlan>(EMPTY)
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState(false)
@@ -79,7 +87,7 @@ export function AdminDnsBar(): React.JSX.Element | null {
   if (!paired) return null
 
   const allKeys = (p: DnsPlan): Set<string> =>
-    new Set([...p.edits.map((e) => 'e:' + e.id), ...p.remove.map((x) => 'r:' + x.id), ...p.restore.map((x) => 'b:' + x.id)])
+    new Set([...p.add.map((p) => 'a:' + p.id), ...p.edits.map((e) => 'e:' + e.id), ...p.remove.map((x) => 'r:' + x.id), ...p.restore.map((x) => 'b:' + x.id)])
 
   const start = async (): Promise<void> => {
     try {
@@ -100,13 +108,40 @@ export function AdminDnsBar(): React.JSX.Element | null {
       return n
     })
 
-  const act = async (fn: () => Promise<DnsPlan>, key?: string): Promise<void> => {
+  const act = async (fn: () => Promise<DnsPlan>, key: string, select: boolean): Promise<void> => {
+    if (busy || saving) return
+    setSaving(true)
     try {
       const p = await fn()
       setPlan(p)
-      if (key) setPicked((s) => new Set([...s, key]))
+      toggle(key, select)
     } catch (e) {
       toast.error('Не получилось', { description: msg(e) })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const addDraft = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    if (saving) return
+    const form = new FormData(event.currentTarget)
+    const get = (key: string): string => String(form.get(key) ?? '').trim()
+    setSaving(true)
+    try {
+      const p = await adminDnsStageAddition({
+        id: get('id'), name: get('name'), description: get('description'),
+        ipv4: splitList(get('ipv4')), ipv6: splitList(get('ipv6')),
+        doh: get('doh'), dohOnly: form.has('dohOnly'), tags: splitList(get('tags')), site: get('site')
+      })
+      setPlan(p)
+      setAdding(false)
+      setPicked(allKeys(p))
+      setOpen(true)
+    } catch (e) {
+      toast.error('Не удалось добавить DNS', { description: msg(e) })
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -114,7 +149,7 @@ export function AdminDnsBar(): React.JSX.Element | null {
     setBusy(true)
     const ids = (prefix: string): string[] => [...picked].filter((k) => k.startsWith(prefix)).map((k) => k.slice(2))
     try {
-      const r = await adminDnsPublishPlan({ edits: ids('e:'), remove: ids('r:'), restore: ids('b:') })
+      const r = await adminDnsPublishPlan({ add: ids('a:'), edits: ids('e:'), remove: ids('r:'), restore: ids('b:') })
       toast.success(`Каталог DNS опубликован (версия ${r.version})`, { description: 'Программы получат его при запуске (не чаще раза в 6 часов) или по «Обновить список».' })
       setOpen(false)
       void load()
@@ -125,10 +160,10 @@ export function AdminDnsBar(): React.JSX.Element | null {
     }
   }
 
-  const pending = plan.edits.length + plan.remove.length + plan.restore.length
-  const nothing = pending === 0
+  const selected = [...allKeys(plan)].some((key) => picked.has(key))
   const restoreMarked = new Set(plan.restore.map((x) => x.id))
   const summary = [
+    plan.add.length ? `добавить: ${plan.add.length}` : '',
     plan.edits.length ? `правок: ${plan.edits.length}` : '',
     plan.remove.length ? `убрать: ${plan.remove.length}` : '',
     plan.restore.length ? `вернуть: ${plan.restore.length}` : ''
@@ -142,45 +177,87 @@ export function AdminDnsBar(): React.JSX.Element | null {
       <div className="min-w-0 flex-1">
         <div className="text-sm font-semibold">Панель автора</div>
         <div className="text-[11px] text-muted-foreground">
-          {summary ? `Готово к публикации: ${summary}.` : 'Правки адресов и отметки «Убрать у всех» (меню «⋯» у записи) можно опубликовать для всех.'}
+          {summary ? `Готово к публикации: ${summary}.` : 'Общий каталог DNS для пользователей LAZEYKA.'}
           {plan.removed.length > 0 && ` Убрано у всех: ${plan.removed.length}.`}
         </div>
       </div>
+      <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+        <Plus /> Добавить DNS
+      </Button>
       <Button size="sm" onClick={() => void start()}>
-        <Send /> Опубликовать правки DNS
+        <Send /> Управление каталогом
       </Button>
 
       <HubModal
+        open={adding}
+        onClose={() => setAdding(false)}
+        locked={saving}
+        title="Добавить DNS в общий каталог"
+        icon={Globe}
+        footer={<Button type="submit" form="admin-dns-add" disabled={saving}>Сохранить черновик</Button>}
+      >
+        <form id="admin-dns-add" className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => void addDraft(e)}>
+          <label className="space-y-1 text-sm">Название<Input name="name" required maxLength={60} /></label>
+          <label className="space-y-1 text-sm">ID<Input name="id" required pattern="[a-z0-9][a-z0-9\-]{1,31}" placeholder="my-dns" /></label>
+          <label className="space-y-1 text-sm">IPv4<Input name="ipv4" required placeholder="1–2 публичных адреса" /></label>
+          <label className="space-y-1 text-sm">IPv6<Input name="ipv6" placeholder="До двух публичных адресов" /></label>
+          <label className="space-y-1 text-sm">DoH<Input name="doh" placeholder="https://…/dns-query" maxLength={200} /></label>
+          <label className="space-y-1 text-sm">Сайт<Input name="site" type="url" maxLength={200} /></label>
+          <label className="space-y-1 text-sm sm:col-span-2">Описание<Input name="description" maxLength={240} /></label>
+          <label className="space-y-1 text-sm">Метки<Input name="tags" placeholder="Через запятую" /></label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="dohOnly" /> Только DoH</label>
+        </form>
+      </HubModal>
+
+      <HubModal
         open={open}
-        onClose={() => !busy && setOpen(false)}
-        locked={busy}
+        onClose={() => setOpen(false)}
+        locked={busy || saving}
         icon={Globe}
         title="Опубликовать правки DNS"
         subtitle="Отмеченное попадёт в каталог для всех."
         className="max-w-2xl"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setOpen(false)} disabled={busy}>
+            <Button variant="ghost" onClick={() => setOpen(false)} disabled={busy || saving}>
               Отмена
             </Button>
-            <Button onClick={() => void publish()} disabled={busy || picked.size === 0 || nothing}>
+            <Button onClick={() => void publish()} disabled={busy || saving || !selected}>
               {busy ? <Loader2 className="animate-spin" /> : <Send />} Опубликовать всем
             </Button>
           </>
         }
       >
-        {nothing && (
-          <div className="flex items-start gap-3 rounded-xl border border-dashed border-border/70 bg-card/30 p-4">
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground">
-              <PencilLine className="size-4" />
-            </div>
-            <div className="min-w-0 space-y-1">
-              <p className="text-sm font-medium text-foreground">Пока нечего публиковать</p>
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                Измените адреса встроенного DNS (значок карандаша у записи) или отметьте запись «Убрать у всех» в меню «⋯», затем вернитесь сюда.
-              </p>
-            </div>
-          </div>
+        {plan.available.length > 0 && (
+          <Section title="Убрать DNS из каталога">
+            <select aria-label="DNS для удаления" className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm" value={removeId} onChange={(e) => setRemoveId(e.target.value)}>
+              <option value="">Выберите DNS</option>
+              {plan.available.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            {removeId && plan.available.some((p) => p.id === removeId) && (
+              <div className="flex flex-wrap gap-2">
+                <Input className="min-w-32 flex-1" aria-label="Причина удаления" placeholder="Причина (необязательно)" value={removeReason} maxLength={200} onChange={(e) => setRemoveReason(e.target.value)} />
+                <Button size="sm" variant="outline" disabled={busy || saving} onClick={() => void act(() => adminDnsMarkRemove(removeId, removeReason), 'r:' + removeId, true)}>
+                  Отметить удаление
+                </Button>
+              </div>
+            )}
+          </Section>
+        )}
+        {plan.add.length > 0 && (
+          <Section title="Будут добавлены">
+            {plan.add.map((p) => (
+              <div key={p.id} className="flex items-start justify-between gap-2 rounded-lg border border-border/60 p-3">
+                <div className="min-w-0">
+                  <Check checked={picked.has('a:' + p.id)} onChange={(v) => toggle('a:' + p.id, v)}>{p.name} ({p.id})</Check>
+                  <Addrs a={p} other={p} />
+                </div>
+                <Button size="sm" variant="ghost" disabled={busy || saving} onClick={() => void act(() => adminDnsUnmark(p.id), 'a:' + p.id, false)}>
+                  Удалить черновик
+                </Button>
+              </div>
+            ))}
+          </Section>
         )}
         {plan.edits.length > 0 && (
           <Section title="Изменятся адреса">
@@ -213,7 +290,7 @@ export function AdminDnsBar(): React.JSX.Element | null {
                     </Check>
                     <div className="pl-6 text-[11px] text-muted-foreground">{x.reason ? `Причина: ${x.reason}` : 'Без причины'}</div>
                   </div>
-                  <Button size="sm" variant="ghost" className="text-xs" title="Снять отметку: запись останется в программе" onClick={() => void act(() => adminDnsUnmark(x.id))}>
+                  <Button size="sm" variant="ghost" className="text-xs" disabled={busy || saving} onClick={() => void act(() => adminDnsUnmark(x.id), 'r:' + x.id, false)}>
                     Снять отметку
                   </Button>
                 </li>
@@ -231,7 +308,7 @@ export function AdminDnsBar(): React.JSX.Element | null {
                       <Undo2 className="size-3.5 text-st-ok-text" /> {x.name}
                     </Check>
                   </div>
-                  <Button size="sm" variant="ghost" className="text-xs" onClick={() => void act(() => adminDnsUnmark(x.id))}>
+                  <Button size="sm" variant="ghost" className="text-xs" disabled={busy || saving} onClick={() => void act(() => adminDnsUnmark(x.id), 'b:' + x.id, false)}>
                     Снять отметку
                   </Button>
                 </li>
@@ -250,7 +327,7 @@ export function AdminDnsBar(): React.JSX.Element | null {
                       <div className="truncate text-sm font-medium">{r.name}</div>
                       <div className="truncate text-[11px] text-muted-foreground">{r.reason ? `Причина: ${r.reason}` : 'Без причины'}</div>
                     </div>
-                    <Button size="sm" variant="outline" className="text-xs" title="Отметить «вернуть»: запись снова появится у всех после публикации" onClick={() => void act(() => adminDnsMarkRestore(r.id), 'b:' + r.id)}>
+                    <Button size="sm" variant="outline" className="text-xs" disabled={busy || saving} onClick={() => void act(() => adminDnsMarkRestore(r.id), 'b:' + r.id, true)}>
                       <RotateCcw className="size-3.5" /> Вернуть
                     </Button>
                   </li>

@@ -197,6 +197,11 @@ async function doRefresh(force: boolean): Promise<RefreshResult> {
     appLog('warn', 'dns-catalog: обновить не удалось — ' + errors.join('; '))
     return { outcome: 'failed', changedNames: [], error: errors.join('; '), status: await getStatus() }
   }
+  return applyFetchedCatalog(fetched)
+}
+
+export async function applyFetchedCatalog(fetched: { catalog: Catalog; source: string }): Promise<RefreshResult> {
+  const prev = loadCatalogCache()
   // Защита от отката: «кэш» CDN бывает старше основной копии. Равная версия с другим содержимым — принимаем.
   if (prev && fetched.catalog.version < prev.catalog.version) {
     touchCatalogCache()
@@ -205,7 +210,7 @@ async function doRefresh(force: boolean): Promise<RefreshResult> {
   const changedIds = changedPresetIds(prev?.catalog ?? null, fetched.catalog)
   const same = prev ? JSON.stringify(prev.catalog) === JSON.stringify(fetched.catalog) : false
   saveCatalogCache(fetched)
-  const names = changedIds.map((id) => fetched!.catalog.presets.find((p) => p.id === id)?.name ?? id)
+  const names = changedIds.map((id) => fetched.catalog.presets.find((p) => p.id === id)?.name ?? id)
   if (!same) broadcastChanged()
   await notifyIfStale()
   await notifyIfRemoved()

@@ -27,6 +27,7 @@ export interface RemoteResult {
 }
 
 export interface LanServerHandlers {
+  telegramLink?(host: string): Promise<{ link: string | null; message?: string }>
   getState(): Promise<unknown> | unknown
   /** Быстро отвечает: долгие действия идут в фоне, результат страница видит в состоянии. */
   toggle(service: RemoteService, on: boolean): Promise<RemoteResult | void>
@@ -300,6 +301,7 @@ export class LanServer {
 
     const hd = this.opts.handlers
     if (method === 'GET') {
+      if (path === '/api/telegram/link' && hd.telegramLink) return this.json(res, 200, { ok: true, value: await hd.telegramLink(req.socket.localAddress?.replace(/^::ffff:/, '') || '') })
       if (path === '/api/state') return this.json(res, 200, { ok: true, value: await hd.getState() })
       if (path === '/api/vpn/nodes' && hd.vpnNodes) return this.json(res, 200, { ok: true, value: await hd.vpnNodes() })
       if (path === '/api/dns' && hd.dnsState) return this.json(res, 200, { ok: true, value: await hd.dnsState(url.searchParams.get('ping') === '1') })

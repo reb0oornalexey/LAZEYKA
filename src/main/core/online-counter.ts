@@ -117,12 +117,13 @@ async function postPing(url: string, body: string): Promise<Record<string, unkno
   }
   try {
     const { net } = await import('electron')
-    const res = await net.fetch(url, { ...opts, signal: AbortSignal.timeout(15_000) })
-    return (await res.json().catch(() => null)) as Record<string, unknown> | null
-  } catch {
-    const res = await fetch(url, { ...opts, signal: AbortSignal.timeout(15_000) })
-    return (await res.json().catch(() => null)) as Record<string, unknown> | null
-  }
+    const res = await net.fetch(url, { ...opts, signal: AbortSignal.timeout(8_000) })
+    if (res.ok) return (await res.json()) as Record<string, unknown>
+    if (![502, 503, 504].includes(res.status)) return { error: `HTTP ${res.status}` }
+    void res.body?.cancel().catch(() => void 0)
+  } catch { /* Повторная отметка с тем же ID допустима. */ }
+  const res = await fetch(url, { ...opts, signal: AbortSignal.timeout(12_000) })
+  return res.ok ? (await res.json()) as Record<string, unknown> : { error: `HTTP ${res.status}` }
 }
 
 async function ping(): Promise<boolean> {
@@ -163,6 +164,10 @@ async function ping(): Promise<boolean> {
     throw new Error('пустой ответ')
   } catch (e) {
     failures++
+    if (lastOnline && Date.now() - lastOnline.at > 20 * 60_000) {
+      lastOnline = null
+      broadcast()
+    }
     const answered = Boolean((e as { serverAnswered?: boolean } | null)?.serverAnswered)
     const cause = e instanceof Error && (e as Error & { cause?: { code?: string } }).cause?.code
     logToFile({

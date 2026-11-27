@@ -641,7 +641,8 @@ export function buildXrayConfig(
 
       const blocked = on(GEOSITE_BLOCK)
       const proxied = on(GEOSITE_PROXY)
-      const direct = on(GEOSITE_DIRECT)
+      // Храним прежний ID настройки, а ядру передаём имя категории из geosite.dat.
+      const direct = on(GEOSITE_DIRECT).map((id) => id === 'geosite:epic-games' ? 'geosite:epicgames' : id)
       if (blocked.length) rules.push({ type: 'field', domain: blocked, outboundTag: 'block' })
       if (proxied.length) rules.push({ type: 'field', domain: proxied, outboundTag: 'proxy' })
       if (direct.length) rules.push({ type: 'field', domain: direct, outboundTag: 'direct' })

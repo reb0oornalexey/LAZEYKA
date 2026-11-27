@@ -20,7 +20,7 @@ import { dataDir } from '../utils/dirs'
 import { writeFileAtomic } from '../utils/atomic-write'
 import { appLog } from '../utils/app-logger'
 import { physicalSourceIp } from './core-probe'
-import { getLocalNetworkIps, getTgwsStatus, startTgws, stopTgws } from './tgws'
+import { getLocalNetworkIps, getTgwsShareLinks, getTgwsStatus, startTgws, stopTgws } from './tgws'
 import { getZapretStatus, startZapret, stopZapret } from './zapret'
 import {
   connectIncyNode,
@@ -722,6 +722,13 @@ async function startAll(): Promise<void> {
     getToken: () => loadLanSettings().token,
     handlers: {
       getState: remoteState,
+      telegramLink: async (host) => {
+        if (getTgwsStatus().state !== 'running') {
+          return { link: null, message: 'Включите Telegram-прокси в пульте и повторите проверку.' }
+        }
+        const { lanLink } = await getTgwsShareLinks(host)
+        return lanLink ? { link: lanLink } : { link: null, message: 'На ПК откройте Telegram → «Показать QR» и разрешите доступ из локальной сети. Затем повторите проверку.' }
+      },
       toggle: remoteToggle,
       scenario: remoteScenario,
       all: remoteAll,

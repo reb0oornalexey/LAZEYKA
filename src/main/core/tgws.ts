@@ -839,7 +839,7 @@ export async function enableTgwsLan(): Promise<TgwsShareInfo> {
   return getTgwsShareLinks()
 }
 
-export async function getTgwsShareLinks(): Promise<TgwsShareInfo> {
+export async function getTgwsShareLinks(preferredLanIp?: string): Promise<TgwsShareInfo> {
   const cfg = await getAppConfig()
   const t = cfg.tgws || { host: '127.0.0.1', port: 1443, secret: '' }
   const rawSecret = isValidSecret(t.secret) ? t.secret : await ensureSecret(t.secret)
@@ -861,7 +861,7 @@ export async function getTgwsShareLinks(): Promise<TgwsShareInfo> {
   const lanIps = getLocalNetworkIps()
   const bindHost = (t.host || '127.0.0.1').trim()
   const listensLan = bindHost === '0.0.0.0' || lanIps.includes(bindHost)
-  const lanIp = listensLan ? (bindHost === '0.0.0.0' ? lanIps[0] || null : bindHost) : null
+  const lanIp = listensLan ? (bindHost === '0.0.0.0' ? (preferredLanIp && lanIps.includes(preferredLanIp) ? preferredLanIp : lanIps[0]) || null : bindHost) : null
   const lanLink = lanIp
     ? `tg://proxy?server=${encodeURIComponent(lanIp)}&port=${t.port}&secret=${encodeURIComponent(clientSecret)}`
     : null

@@ -24,11 +24,12 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { dataDir } from '../utils/dirs'
 import { writeFileAtomic } from '../utils/atomic-write'
+import { logToFile } from '../utils/file-logger'
 import { devHubUrl, HUB_URL } from './hub-pure'
 import { loadCatalogCache, loadOverrides, removeOverride } from './dns-catalog-store'
 import { validateCatalog, type Catalog, type CatalogPreset } from './dns-catalog-logic'
 import { builtinsWithoutOverrides, type DohProvider } from './dns-doh'
-import { broadcastChanged, refreshCatalog, removedList, type CatalogStatus, type RemovedInfo } from './dns-catalog'
+import { applyFetchedCatalog, broadcastChanged, refreshCatalog, removedList, type CatalogStatus, type RemovedInfo } from './dns-catalog'
 import { invalidateDonations, registerHubDonationsIpc } from './hub-donations'
 import { cleanEmoji, DON_BADGES, DON_METHOD_ICONS, parseDonationsAdmin, safeLink, type DonationsAdmin } from './hub-donations-logic'
 import { ACCENT_KEYS } from './hub-notes'
@@ -128,16 +129,20 @@ async function installId(): Promise<string> {
 
 class AdminError extends Error {}
 
-async function rawFetch(url: string, init: RequestInit): Promise<Response> {
-  const signal = AbortSignal.timeout(TIMEOUT_MS)
-  const opts = { ...init, signal, cache: 'no-store' as const, redirect: 'error' as const }
+const RETRYABLE_READS = new Set(['/admin/whoami', '/admin/stats', '/admin/donations', '/admin/warns', '/admin/templates', '/admin/dns'])
+
+async function rawFetch(url: string, init: RequestInit, retryRead: boolean): Promise<Response> {
+  const signal = AbortSignal.timeout(retryRead ? 8_000 : TIMEOUT_MS)
+  const opts = { ...init, cache: 'no-store' as const, redirect: 'error' as const }
   try {
     const { net } = await import('electron')
-    return await net.fetch(url, opts as Parameters<typeof net.fetch>[1])
+    const response = await net.fetch(url, { ...opts, signal } as Parameters<typeof net.fetch>[1])
+    if (!retryRead || ![502, 503, 504].includes(response.status)) return response
+    void response.body?.cancel().catch(() => void 0)
   } catch (e) {
-    if (signal.aborted) throw e
-    return await fetch(url, opts)
+    if (!retryRead && signal.aborted) throw e
   }
+  return await fetch(url, { ...opts, signal: retryRead ? AbortSignal.timeout(TIMEOUT_MS) : signal })
 }
 
 async function postJson(route: string, method: 'POST' | 'PUT' | 'DELETE', body: Record<string, unknown>, key?: string): Promise<{ status: number; data: Record<string, unknown> }> {
@@ -147,8 +152,11 @@ async function postJson(route: string, method: 'POST' | 'PUT' | 'DELETE', body: 
       method,
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'LAZEYKA', ...(key ? { Authorization: `Bearer ${key}` } : {}) },
       body: JSON.stringify({ ...body, install: await installId() })
-    })
-  } catch {
+    }, method === 'POST' && RETRYABLE_READS.has(route))
+  } catch (error) {
+    const cause = (error as { cause?: { code?: string } })?.cause?.code
+    const code = cause && /^[A-Z0-9_]+$/.test(cause) ? cause : error instanceof Error ? error.name : 'unknown'
+    logToFile({ time: Date.now(), type: 'warn', source: 'app', payload: `Hub ${method} ${route}: ${code}` })
     throw new AdminError('Сервер недоступен. Проверьте подключение к интернету.')
   }
   const data = ((await res.json().catch(() => null)) ?? {}) as Record<string, unknown>
@@ -165,6 +173,9 @@ async function adminCall(route: string, method: 'POST' | 'PUT' | 'DELETE', body:
     throw new AdminError('Привязка больше не действует (её отозвали или истёк срок). Привяжите программу заново.')
   }
   if (r.status === 429) throw new AdminError('Слишком много запросов. Подождите минуту.')
+  if (r.status === 404 && route === '/admin/dns/additions') {
+    throw new AdminError('Для публикации новых DNS нужно обновить LAZEYKA Hub. Черновики сохранены.')
+  }
   if (r.data.ok !== true) {
     const reason = typeof r.data.reason === 'string' ? `: ${r.data.reason.slice(0, 200)}` : ''
     throw new AdminError(`Сервер не принял запрос (${String(r.data.error ?? r.status).slice(0, 40)})${reason}`)
@@ -296,6 +307,7 @@ function localCatalog(): Catalog | null {
 
 /** Отметки хранятся локально, пока автор не нажмёт «Опубликовать» (или не снимет их). */
 interface DnsPending {
+  add: CatalogPreset[]
   remove: Record<string, string>
   restore: string[]
 }
@@ -305,14 +317,15 @@ const ID_OK = /^[a-z0-9][a-z0-9-]{1,31}$/
 
 function loadPending(): DnsPending {
   try {
-    if (!existsSync(pendingFile())) return { remove: {}, restore: [] }
+    if (!existsSync(pendingFile())) return { add: [], remove: {}, restore: [] }
     const j = JSON.parse(readFileSync(pendingFile(), 'utf-8')) as Partial<DnsPending>
     const remove: Record<string, string> = {}
     for (const [id, why] of Object.entries(j.remove ?? {})) if (ID_OK.test(id)) remove[id] = String(why ?? '').slice(0, 200)
     const restore = Array.isArray(j.restore) ? j.restore.map(String).filter((id) => ID_OK.test(id)) : []
-    return { remove, restore: [...new Set(restore)] }
+    const drafts = validateCatalog(JSON.stringify({ version: 1, updated: '2026-01-01', presets: j.add }))
+    return { add: drafts.ok ? drafts.catalog.presets : [], remove, restore: [...new Set(restore)] }
   } catch {
-    return { remove: {}, restore: [] }
+    return { add: [], remove: {}, restore: [] }
   }
 }
 
@@ -331,6 +344,8 @@ const cleanReason = (v: unknown): string =>
     .slice(0, 200)
 
 export interface DnsPlan {
+  add: CatalogPreset[]
+  available: { id: string; name: string }[]
   edits: DnsEdit[]
   /** Отмечены «убрать у всех», ещё не опубликованы. */
   remove: { id: string; name: string; reason: string }[]
@@ -342,13 +357,15 @@ export interface DnsPlan {
 
 /** Только локально: что автор собирается опубликовать. Отметки, ставшие неактуальными, не показываются. */
 function dnsPlan(): DnsPlan {
-  if (!readStored()) return { edits: [], remove: [], restore: [], removed: [] }
+  if (!readStored()) return { add: [], available: [], edits: [], remove: [], restore: [], removed: [] }
   const pend = loadPending()
   const removed = removedList()
   const goneIds = new Set(removed.map((r) => r.id))
   const all = builtinsWithoutOverrides()
   const nameOf = (id: string): string => all.find((b) => b.id === id)?.name ?? removed.find((r) => r.id === id)?.name ?? id
   return {
+    add: pend.add,
+    available: all.filter((b) => !goneIds.has(b.id) && !Object.hasOwn(pend.remove, b.id)).map(({ id, name }) => ({ id, name })),
     edits: dnsEdits(),
     remove: Object.entries(pend.remove)
       .filter(([id]) => !goneIds.has(id) && all.some((b) => b.id === id))
@@ -356,6 +373,21 @@ function dnsPlan(): DnsPlan {
     restore: pend.restore.filter((id) => goneIds.has(id)).map((id) => ({ id, name: nameOf(id) })),
     removed
   }
+}
+
+function stageDnsAddition(raw: unknown): DnsPlan {
+  if (!readStored()) throw new AdminError('Режим автора не включён на этом устройстве.')
+  const check = validateCatalog(JSON.stringify({ version: 1, updated: new Date().toISOString().slice(0, 10), presets: [raw] }))
+  if (!check.ok) throw new AdminError(check.reason)
+  const [preset] = check.catalog.presets
+  const p = loadPending()
+  if (p.add.some((x) => x.id === preset.id) || builtinsWithoutOverrides().some((x) => x.id === preset.id) || removedList().some((x) => x.id === preset.id)) {
+    throw new AdminError('Этот ID уже используется в каталоге или в черновиках.')
+  }
+  if (p.add.length >= 30) throw new AdminError('Можно сохранить до 30 черновиков.')
+  p.add.push(preset)
+  savePending(p)
+  return dnsPlan()
 }
 
 function markRemove(idRaw: unknown, reasonRaw: unknown): DnsPlan {
@@ -381,8 +413,10 @@ function markRestore(idRaw: unknown): DnsPlan {
 }
 
 function unmark(idRaw: unknown): DnsPlan {
+  if (!readStored()) throw new AdminError('Режим автора не включён на этом устройстве.')
   const id = String(idRaw ?? '')
   const p = loadPending()
+  p.add = p.add.filter((x) => x.id !== id)
   delete p.remove[id]
   p.restore = p.restore.filter((x) => x !== id)
   savePending(p)
@@ -393,34 +427,52 @@ function unmark(idRaw: unknown): DnsPlan {
  * Публикация: правки адресов, «убрать у всех» и «вернуть» — одним запросом.
  * Аргумент — список id правок (как раньше) или { edits, remove, restore } (списки id).
  */
-async function dnsPublish(arg: unknown): Promise<{ version: number; status: CatalogStatus }> {
+async function publishDnsPlan(arg: unknown): Promise<{ version: number; status: CatalogStatus }> {
   const pick = (v: unknown): Set<string> => new Set(Array.isArray(v) ? v.map(String) : [])
   const o = (Array.isArray(arg) ? { edits: arg } : arg && typeof arg === 'object' ? arg : {}) as Record<string, unknown>
   const ids = pick(o.edits)
   const plan = dnsPlan()
+  const addIds = pick(o.add)
+  const add = plan.add.filter((p) => addIds.has(p.id))
   const edits = plan.edits.filter((e) => ids.has(e.id))
   const rmIds = pick(o.remove)
   const backIds = pick(o.restore)
   const remove = plan.remove.filter((x) => rmIds.has(x.id))
   const restore = plan.restore.filter((x) => backIds.has(x.id))
-  if (!edits.length && !remove.length && !restore.length) throw new AdminError('Нечего публиковать.')
+  if (!add.length && !edits.length && !remove.length && !restore.length) throw new AdminError('Нечего публиковать.')
   const changes = edits.map((e) => ({ id: e.id, ...e.after }))
   const body: Record<string, unknown> = { base: localCatalog(), changes }
   if (remove.length) body.remove = remove.map((x) => ({ id: x.id, reason: x.reason }))
   if (restore.length) body.restore = restore.map((x) => x.id)
-  const r = await adminCall('/admin/dns', 'PUT', body)
+  if (add.length) body.add = add
+  const r = await adminCall(add.length ? '/admin/dns/additions' : '/admin/dns', 'PUT', body)
   // Правки теперь в общем каталоге: локальные снимаем и забираем каталог заново.
   for (const e of edits) removeOverride(e.id)
-  if (remove.length || restore.length) {
+  if (add.length || remove.length || restore.length) {
     const p = loadPending()
+    p.add = p.add.filter((draft) => !add.some((x) => JSON.stringify(x) === JSON.stringify(draft)))
     for (const x of remove) delete p.remove[x.id]
     p.restore = p.restore.filter((id) => !restore.some((x) => x.id === id))
     savePending(p)
   }
-  const res = await refreshCatalog(true)
+  const published = r.catalog ? validateCatalog(JSON.stringify(r.catalog)) : null
+  const res = published?.ok
+    ? await applyFetchedCatalog({ catalog: published.catalog, source: new URL(HUB_URL).hostname })
+    : await refreshCatalog(true)
   // Список на странице DNS перечитывается: правки сняты, даже если каталог совпал.
   broadcastChanged()
   return { version: Number(r.version) || 0, status: res.status }
+}
+
+let publishingDns = false
+async function dnsPublish(arg: unknown): Promise<{ version: number; status: CatalogStatus }> {
+  if (publishingDns) throw new AdminError('Публикация каталога уже выполняется.')
+  publishingDns = true
+  try {
+    return await publishDnsPlan(arg)
+  } finally {
+    publishingDns = false
+  }
 }
 
 // ---- Сбор пожертвований (только с ключом автора) -------------------------------------------
@@ -647,6 +699,7 @@ export function registerHubAdminIpc(): void {
   handle('hubAdmin:dnsPublish', (arg) => dnsPublish(arg))
   /** Только локально: правки, отметки «убрать / вернуть» и уже убранные. */
   handle('hubAdmin:dnsPlan', () => dnsPlan())
+  handle('hubAdmin:dnsStageAddition', (preset) => stageDnsAddition(preset))
   handle('hubAdmin:dnsMarkRemove', (id, reason) => markRemove(id, reason))
   handle('hubAdmin:dnsMarkRestore', (id) => markRestore(id))
   handle('hubAdmin:dnsUnmark', (id) => unmark(id))
